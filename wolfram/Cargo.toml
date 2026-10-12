@@ -2,7 +2,7 @@
 name = "wolfram"
 version = "0.1.3"
 edition = "2021"
-authors = ["notvcto <vic@notvc.to>"]
+authors = ["notvcto <git@notvc.to>"]
 description = "Wolfram kernel — capability-based microkernel for RISC-V"
 license = "GPL-2.0-only"
 repository = "https://github.com/notvcto/wolfram-os"
