@@ -162,11 +162,12 @@ criteria. Phase 1 boot acceptance is complete: both QEMU ports and the MSI
 test machine reach a diagnosed, intentional panic without a silent reset.
 
 **Phase 2 — Kernel Core**
-- [ ] Capability system
-- [ ] Virtual memory + VMOs
-- [x] Buddy allocator
-- [ ] Process/thread model (no fork)
-- [ ] Job tree
+- [x] Physical memory allocator (bitmap + buddy heap)
+- [x] Virtual Memory Objects (VMO subsystem)
+- [ ] Paging HAL & Address spaces (Sv39 + PML4)
+- [x] Capability primitives & handle tables
+- [ ] Process & thread model (no fork)
+- [ ] Job tree & capability enforcement
 - [ ] Async channels
 - [ ] FastCall IPC
 
