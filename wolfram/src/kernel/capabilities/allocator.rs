@@ -17,17 +17,12 @@ impl CapNodeAllocator {
         }
     }
 
-    pub unsafe fn init(&mut self) {
-        // Any specific init if we were dynamically allocating memory, 
-        // but since we are statically allocated we just zero/reset
-    }
+    pub unsafe fn init(&mut self) {}
 
     pub fn alloc(&mut self, node: CapNode) -> Result<NonNull<CapNode>, ()> {
         for slot in self.nodes.iter_mut() {
             if slot.is_none() {
                 *slot = Some(node);
-                // In a real buddy/slab allocator we'd use raw pointers and init.
-                // For this phase 2 array implementation, we just take the reference.
                 let ptr = NonNull::from(slot.as_ref().unwrap());
                 return Ok(ptr);
             }

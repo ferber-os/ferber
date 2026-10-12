@@ -87,7 +87,6 @@ fn sign_off(s: &StackStr) -> &'static str {
     "we'll figure out what we did."
 }
 
-// format the panic message into a fixed stack buffer — no allocator needed
 fn fmt_message(info: &core::panic::PanicInfo) -> StackStr {
     let mut s = StackStr::new();
     use core::fmt::Write;

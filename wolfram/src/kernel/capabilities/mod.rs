@@ -52,15 +52,13 @@ pub enum ObjectType {
     Resource = 5,
 }
 
-// Placeholders for kernel objects
 pub struct Process;
 impl KernelObject for Process { fn type_name(&self) -> &'static str { "Process" } }
 
 pub struct Thread;
 impl KernelObject for Thread { fn type_name(&self) -> &'static str { "Thread" } }
 
-pub struct Vmo;
-impl KernelObject for Vmo { fn type_name(&self) -> &'static str { "Vmo" } }
+pub use crate::kernel::memory::vmo::Vmo;
 
 pub struct Channel;
 impl KernelObject for Channel { fn type_name(&self) -> &'static str { "Channel" } }
@@ -113,7 +111,7 @@ impl<T: KernelObject, R: RightMarker> Handle<T, R> {
     pub fn attenuate<NewR: RightMarker>(&self, new_rights: Rights, allocator: &mut CapNodeAllocator) -> Result<Handle<T, NewR>, CapError> {
         let child = self.node().attenuate(new_rights, allocator)?;
         Ok(Handle {
-            raw: u32::MAX, // Indicates it's unmapped in the table
+            raw: u32::MAX,
             node: child,
             _type: PhantomData,
             _rights: PhantomData,
@@ -208,8 +206,6 @@ impl CapNode {
 }
 
 pub fn init() {
-    // Initialize the global capability node allocator.
-    // The allocator pool is backed by pages from the bitmap allocator.
     #[allow(static_mut_refs)]
     unsafe { CAP_NODE_ALLOCATOR.init() };
 }

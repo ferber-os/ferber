@@ -1,7 +1,7 @@
 use core::ptr::NonNull;
 use super::CapNode;
 
-const MAX_HANDLES: usize = 256; // Phase 2 limit. Generous for early testing.
+const MAX_HANDLES: usize = 256;
 
 /// Per-process handle table. Maps `u32` indices to `CapNode` pointers.
 ///

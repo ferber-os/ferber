@@ -65,7 +65,6 @@ extern "C" fn kernel_trap_handler(frame: &mut TrapFrame) {
                 frame.sepc += 4;
             }
             8 | 9 => {
-                // ecall — syscall dispatch (Phase 2)
                 frame.sepc += 4;
             }
             _ => {

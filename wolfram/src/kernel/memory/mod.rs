@@ -2,7 +2,12 @@
 //! VMO-everything. No anonymous memory. No implicit backing. Ever.
 
 pub mod bitmap;
+pub mod heap;
+pub mod paging;
 pub mod vmo;
+
+#[allow(unused_imports)]
+pub use vmo::{Vmo, VmoError, VmoFrames};
 
 use crate::boot_info::BootInfo;
 #[cfg(target_arch = "riscv64")]
@@ -64,4 +69,3 @@ pub fn init(device_tree: usize) -> bitmap::MemoryStats {
     let info = BootInfo::new(&regions[..len], kernel_start, kernel_end);
     bitmap::init_from_boot_info(&info)
 }
-pub mod heap;

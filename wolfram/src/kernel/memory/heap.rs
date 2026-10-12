@@ -12,6 +12,8 @@ use crate::kernel::memory::bitmap;
 const PAGE_SIZE: usize = 4096;
 const MIN_BLOCK_SIZE: usize = 32;
 const MAX_ORDER: usize = 7; // 4096 = 32 * 2^7
+pub const MAX_ALLOC_SIZE: usize = 128 * 1024 * 1024;
+
 
 struct FreeBlock {
     next: Option<*mut FreeBlock>,
@@ -59,7 +61,7 @@ fn order_to_size(order: usize) -> usize {
 unsafe impl GlobalAlloc for BuddyAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let size = layout.size().max(layout.align());
-        if size == 0 {
+        if size == 0 || size > MAX_ALLOC_SIZE {
             return ptr::null_mut();
         }
 

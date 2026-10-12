@@ -12,8 +12,9 @@ trap 'rm -f "$log"' EXIT HUP INT TERM
 for size in 128 256; do
     status=0
     timeout 8s qemu-system-riscv64 \
-        -machine virt -smp 4 -nographic -bios default \
-        -kernel "$kernel" -m "${size}M" >"$log" 2>&1 || status=$?
+        -machine virt -smp 4 -display none -bios default \
+        -serial "file:$log" \
+        -kernel "$kernel" -m "${size}M" >/dev/null 2>&1 || status=$?
 
     if [ "$status" -ne 124 ]; then
         cat "$log"
