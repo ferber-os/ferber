@@ -314,12 +314,13 @@ fn kernel_start(
     }
     kprintln!("[task]  process model: ok");
 
-    kprintln!("[ipc]   running Async Channels subsystem tests...");
+    kprintln!("[ipc]   running Async Channels & FastCall IPC tests...");
     {
         use crate::kernel::ipc::channel::{
             Channel, ChannelMessage, ChannelError,
             SIGNAL_READABLE, SIGNAL_WRITABLE, SIGNAL_PEER_CLOSED,
         };
+        use crate::kernel::ipc::fastcall::{fastcall, FastCallArgs};
         use crate::kernel::capabilities::{CapNode, Rights, ObjectType};
         use crate::kernel::task::job::Job;
         use alloc::vec;
@@ -339,7 +340,7 @@ fn kernel_start(
         let recv_b = ep_b.lock().recv().expect("failed to recv on ep_b");
         assert_eq!(recv_b.bytes.as_slice(), &[1, 2, 3, 4]);
         assert_eq!(ep_b.lock().signals() & SIGNAL_READABLE, 0);
-        kprintln!("[ipc]     [1/3] paired endpoint creation & bidirectional messaging: ok");
+        kprintln!("[ipc]     [1/4] paired endpoint creation & bidirectional messaging: ok");
 
         // 2. Capability handle move semantics (sender loses handle, receiver gains handle)
         let root_job = Job::create_root();
@@ -382,16 +383,25 @@ fn kernel_start(
             .expect("transfer_recv into proc_b");
         assert_eq!(proc_b.lock().handle_table().lock().count(), 1);
         assert!(proc_b.lock().handle_table().lock().lookup(h_b).is_ok());
-        kprintln!("[ipc]     [2/3] capability handle move semantics (sender loses handle): ok");
+        kprintln!("[ipc]     [2/4] capability handle move semantics (sender loses handle): ok");
 
         // 3. Queue bounds enforcement & peer closure signaling
         drop(ep_b);
         assert_eq!(ep_a.lock().signals() & SIGNAL_PEER_CLOSED, SIGNAL_PEER_CLOSED);
         let send_err = ep_a.lock().send(ChannelMessage::new(vec![9], Vec::new()));
         assert_eq!(send_err.err(), Some(ChannelError::PeerClosed));
-        kprintln!("[ipc]     [3/3] queue bounds enforcement & peer closure signaling: ok");
+        kprintln!("[ipc]     [3/4] queue bounds enforcement & peer closure signaling: ok");
+
+        // 4. FastCall register transfer & direct thread donation
+        let thread_a = proc_a.lock().create_thread(0x1000, 4096).expect("thread_a");
+        let thread_b = proc_b.lock().create_thread(0x2000, 4096).expect("thread_b");
+        let fc_args = FastCallArgs::new(0x11, 0x22, 0x33, 0x44, 0x55);
+        let fc_ret = fastcall(&thread_a, &thread_b, fc_args).expect("fastcall failed");
+        assert_eq!(fc_ret.ret0, 0x11);
+        assert_eq!(fc_ret.ret1, 0x22);
+        kprintln!("[ipc]     [4/4] FastCall register transfer & direct thread donation: ok");
     }
-    kprintln!("[ipc]   async channels subsystem: ok");
+    kprintln!("[ipc]   channel & fastcall subsystem: ok");
 
     kprintln!();
     kprintln!("Phase 1 boot checks complete.");

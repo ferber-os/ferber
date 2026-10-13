@@ -169,7 +169,7 @@ test machine reach a diagnosed, intentional panic without a silent reset.
 - [x] Process & thread model (no fork)
 - [x] Job tree & capability enforcement
 - [x] Async channels
-- [ ] FastCall IPC
+- [x] FastCall IPC
 
 **Phase 3 — Userspace**
 - [ ] Init process

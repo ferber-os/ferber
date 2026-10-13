@@ -10,6 +10,8 @@ pub use channel::{
     Channel, ChannelEndpoint, ChannelError, ChannelMessage, SIGNAL_PEER_CLOSED, SIGNAL_READABLE,
     SIGNAL_WRITABLE,
 };
+#[allow(unused_imports)]
+pub use fastcall::{fastcall, FastCallArgs, FastCallError, FastCallRet};
 
 #[allow(dead_code)]
 pub fn init() {}
