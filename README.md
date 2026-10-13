@@ -154,10 +154,7 @@ roadmap completion across both RISC-V 64 and x86-64.
 ---
 
 ## Roadmap
-
-Wolfram's development is organized into sequential phases. Phase 1 (Reliable Boots) and Phase 2 (Kernel Core) are complete across both RISC-V 64 and x86-64.
-
-See [ROADMAP.md](ROADMAP.md)
+See [ROADMAP.md](ROADMAP.md).
 ---
 
 ## Building the RISC-V reference port
