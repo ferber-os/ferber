@@ -258,8 +258,9 @@ Both should be precise, honest, and free of unnecessary complexity.
 
 If you find a security issue in the capability model specifically, that's important —
 open an issue marked `[SECURITY]` and be detailed.
-
 <br>
+
+## Special thanks to our contributors:
 
 <p align="center">
   <a href="https://github.com/notvcto/wolfram-os/graphs/contributors">
