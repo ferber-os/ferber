@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/notvcto/wolfram-os/actions/workflows/ci.yml"><img src="https://github.com/notvcto/wolfram-os/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/notvcto/wolfram-os/releases"><img src="https://img.shields.io/github/v/release/notvcto/wolfram-os?color=blue" alt="Release"></a>
+  <a href="https://github.com/notvcto/wolfram-os/releases"><img src="https://img.shields.io/github/v/release/notvcto/wolfram-os?include_prereleases&color=blue" alt="Release"></a>
   <a href="https://github.com/notvcto/wolfram-os/stargazers"><img src="https://img.shields.io/github/stars/notvcto/wolfram-os?style=social" alt="Stars"></a>
   <a href="https://github.com/notvcto/wolfram-os/network/members"><img src="https://img.shields.io/github/forks/notvcto/wolfram-os?style=social" alt="Forks"></a>
   <a href="https://github.com/notvcto/wolfram-os/issues"><img src="https://img.shields.io/github/issues/notvcto/wolfram-os" alt="Issues"></a>
