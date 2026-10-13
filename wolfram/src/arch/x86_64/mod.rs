@@ -3,6 +3,9 @@
 pub mod console;
 pub mod trap;
 pub mod syscall;
+pub mod paging;
+
+pub use paging::Pml4AddressSpace as ArchAddressSpace;
 
 use crate::boot_info::BootInfo;
 

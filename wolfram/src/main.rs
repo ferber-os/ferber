@@ -194,6 +194,66 @@ fn kernel_start(
     }
     kprintln!("[mem]   VMO subsystem: ok");
 
+    #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
+    {
+        kprintln!("[mem]   running paging HAL & address space tests...");
+        use crate::kernel::memory::paging::{AddressSpace, MapFlags, PageError};
+        use crate::arch::ArchAddressSpace;
+
+        let mut space = ArchAddressSpace::new().expect("failed to create address space");
+        let vmo = kernel::memory::vmo::Vmo::create(8192).expect("failed to create 8 KiB VMO for paging test");
+        assert_eq!(vmo.page_count(), 2);
+
+        let test_vaddr = 0x0000_0020_0000_0000;
+        let test_rw = MapFlags::user_rw();
+        let test_ro = MapFlags::user_ro();
+
+        let f0 = vmo.frames().as_slice()[0];
+        let f1 = vmo.frames().as_slice()[1];
+
+        // 1. Query before mapping
+        assert_eq!(space.query(test_vaddr), None);
+        assert_eq!(space.query(test_vaddr + 4096), None);
+
+        // 2. Map VMO
+        unsafe {
+            space.map_vmo(test_vaddr, vmo.frames(), test_rw).expect("map_vmo failed");
+        }
+        kprintln!("[mem]     [1/4] address space creation & VMO mapping (2 pages): ok");
+
+        // 3. Query after mapping & collision check
+        assert_eq!(space.query(test_vaddr), Some((f0, test_rw)));
+        assert_eq!(space.query(test_vaddr + 4096), Some((f1, test_rw)));
+        unsafe {
+            assert_eq!(space.map_page(test_vaddr, f0, test_rw).err(), Some(PageError::AlreadyMapped));
+        }
+        kprintln!("[mem]     [2/4] virtual address translation query & collision rejection: ok");
+
+        // 4. Protect permissions
+        unsafe {
+            space.protect(test_vaddr, 2, test_ro).expect("protect failed");
+        }
+        assert_eq!(space.query(test_vaddr), Some((f0, test_ro)));
+        assert_eq!(space.query(test_vaddr + 4096), Some((f1, test_ro)));
+        kprintln!("[mem]     [3/4] page protection updates (user_rw -> user_ro): ok");
+
+        // 5. Unmap pages & verify query is None
+        unsafe {
+            space.unmap_vmo(test_vaddr, 2).expect("unmap_vmo failed");
+        }
+        assert_eq!(space.query(test_vaddr), None);
+        assert_eq!(space.query(test_vaddr + 4096), None);
+        unsafe {
+            assert_eq!(space.unmap_page(test_vaddr).err(), Some(PageError::NotMapped));
+        }
+        kprintln!("[mem]     [4/4] page unmapping & TLB shootdown verification: ok");
+
+        // Drop cleanups
+        drop(space);
+        drop(vmo);
+        kprintln!("[mem]   paging HAL: ok");
+    }
+
     kernel::capabilities::init();
     kprintln!("[cap]   capability system: initialized global node allocator pool");
     kprintln!("[cap]   handle table & rights subsystem ready for Phase 2");

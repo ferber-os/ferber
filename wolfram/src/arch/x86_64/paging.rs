@@ -1,0 +1,563 @@
+//! x86-64 4-level paging (PML4) implementation.
+//!
+//! Adheres strictly to the Intel 64 and AMD64 Architecture Manuals
+//! (4-level PML4 paging in long mode).
+//!
+//! PML4 translates 48-bit canonical virtual addresses across 4 page table levels:
+//! - Level 4 (PML4): VPN[3] (bits 47..39) -> entries 0..511
+//! - Level 3 (PDPT): VPN[2] (bits 38..30) -> entries 0..511
+//! - Level 2 (PD):   VPN[1] (bits 29..21) -> entries 0..511
+//! - Level 1 (PT):   VPN[0] (bits 20..12) -> entries 0..511
+//! - Offset:         bits 11..0
+//!
+//! Canonical address spaces:
+//! - User space:   0x0000_0000_0000_0000..=0x0000_7FFF_FFFF_FFFF (PML4 entries 0..255)
+//! - Kernel space: 0xFFFF_8000_0000_0000..=0xFFFF_FFFF_FFFF_FFFF (PML4 entries 256..511)
+//!
+//! Non-canonical gap: addresses outside these ranges return Err(PageError::OutOfRange).
+
+#![allow(dead_code)]
+
+use crate::kernel::memory::bitmap;
+use crate::kernel::memory::paging::{AddressSpace, MapFlags, PageError};
+
+/// 4 KiB page size.
+pub const PAGE_SIZE: usize = 4096;
+
+/// Number of 64-bit page table entries per 4 KiB table page.
+pub const ENTRIES_PER_TABLE: usize = 512;
+
+/// PTE Present bit (bit 0). When set, the page or next-level page table is present in physical memory.
+pub const PTE_PRESENT: u64 = 1 << 0;
+/// PTE Writable bit (bit 1). When set, writes are allowed to the 4 KiB page or through this directory entry.
+pub const PTE_WRITABLE: u64 = 1 << 1;
+/// PTE User-accessible bit (bit 2). When set, user-mode (ring 3) access is allowed.
+pub const PTE_USER: u64 = 1 << 2;
+/// PTE Page-level Write-Through bit (bit 3).
+pub const PTE_PWT: u64 = 1 << 3;
+/// PTE Page-level Cache Disable bit (bit 4).
+pub const PTE_PCD: u64 = 1 << 4;
+/// PTE Accessed bit (bit 5). Set by hardware when the page or table is accessed.
+pub const PTE_ACCESSED: u64 = 1 << 5;
+/// PTE Dirty bit (bit 6). Set by hardware when the page is written to.
+pub const PTE_DIRTY: u64 = 1 << 6;
+/// PTE Page Size / Huge page bit (bit 7). When set in PDPT (1 GiB) or PD (2 MiB), entry is a leaf superpage.
+pub const PTE_HUGE: u64 = 1 << 7;
+/// PTE Global bit (bit 8). When set, TLB entry is not flushed on CR3 reload.
+pub const PTE_GLOBAL: u64 = 1 << 8;
+/// PTE No-Execute bit (bit 63). When set, instruction fetches are disabled.
+pub const PTE_NO_EXECUTE: u64 = 1 << 63;
+
+/// Mask for physical address in page table entries (bits 51..12).
+pub const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+
+/// Returns true if the virtual address is canonical in 48-bit x86-64 long mode.
+///
+/// In 48-bit long mode, a virtual address is canonical if bits 63..47 match bit 47
+/// (i.e. bit 47 is sign-extended through bits 63..48).
+/// - User space:   `0x0000_0000_0000_0000..=0x0000_7FFF_FFFF_FFFF` (entries 0..255)
+/// - Kernel space: `0xFFFF_8000_0000_0000..=0xFFFF_FFFF_FFFF_FFFF` (entries 256..511)
+#[inline]
+pub fn is_canonical(va: usize) -> bool {
+    let sign_extended = ((va as isize) << (64 - 48)) >> (64 - 48);
+    sign_extended as usize == va
+}
+
+/// Extract Level 4 PML4 index (bits 47..39).
+#[inline]
+pub fn pml4_index(va: usize) -> usize {
+    (va >> 39) & 0x1ff
+}
+
+/// Extract Level 3 PDPT index (bits 38..30).
+#[inline]
+pub fn pdpt_index(va: usize) -> usize {
+    (va >> 30) & 0x1ff
+}
+
+/// Extract Level 2 PD index (bits 29..21).
+#[inline]
+pub fn pd_index(va: usize) -> usize {
+    (va >> 21) & 0x1ff
+}
+
+/// Extract Level 1 PT index (bits 20..12).
+#[inline]
+pub fn pt_index(va: usize) -> usize {
+    (va >> 12) & 0x1ff
+}
+
+/// Extract page offset (bits 11..0).
+#[inline]
+pub fn page_offset(va: usize) -> usize {
+    va & 0xfff
+}
+
+/// Convert a PTE to its target 4 KiB-aligned physical address.
+#[inline]
+fn pte_to_paddr(pte: u64) -> usize {
+    (pte & ADDRESS_MASK) as usize
+}
+
+/// Construct a non-leaf intermediate PTE pointing to a child page table.
+#[inline]
+fn make_table_entry(paddr: usize) -> u64 {
+    (paddr as u64 & ADDRESS_MASK) | PTE_PRESENT | PTE_WRITABLE | PTE_USER
+}
+
+/// Construct a leaf PTE mapping a 4 KiB physical page with the given flags.
+///
+/// Sets Present, Accessed, and Dirty bits.
+/// Enforces Writable, User, and No-Execute permissions according to `flags`.
+#[inline]
+fn make_leaf_entry(paddr: usize, flags: MapFlags) -> u64 {
+    let mut pte = (paddr as u64 & ADDRESS_MASK) | PTE_PRESENT | PTE_ACCESSED | PTE_DIRTY;
+    if flags.writable {
+        pte |= PTE_WRITABLE;
+    }
+    if flags.user {
+        pte |= PTE_USER;
+    }
+    if !flags.executable {
+        pte |= PTE_NO_EXECUTE;
+    }
+    pte
+}
+
+/// Allocate a 4 KiB frame for a page table and zero its contents.
+fn allocate_table() -> Result<usize, PageError> {
+    let paddr = bitmap::allocate_frame().ok_or(PageError::OutOfMemory)?;
+    unsafe {
+        core::ptr::write_bytes(paddr as *mut u8, 0, PAGE_SIZE);
+    }
+    Ok(paddr)
+}
+
+/// x86-64 PML4 page table address space.
+#[derive(Debug)]
+pub struct Pml4AddressSpace {
+    root_paddr: usize,
+}
+
+impl Pml4AddressSpace {
+    /// Creates a new PML4 address space by allocating a root Level 4 table and
+    /// synchronizing the upper-half kernel mappings (entries 256..511) from the current CR3.
+    pub fn new() -> Result<Self, PageError> {
+        let root_paddr = allocate_table()?;
+        // SAFETY: called only from kernel context; CR3 holds the kernel PML4.
+        let current_cr3: usize;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
+        }
+        let current_pml4_paddr = (current_cr3 as u64 & ADDRESS_MASK) as usize;
+        if current_pml4_paddr != 0 {
+            let current_pml4 = current_pml4_paddr as *const u64;
+            let new_pml4 = root_paddr as *mut u64;
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    current_pml4.add(256),
+                    new_pml4.add(256),
+                    256,
+                );
+            }
+        }
+        Ok(Self { root_paddr })
+    }
+
+    /// Returns the physical address of the root PML4 table.
+    pub fn root_paddr(&self) -> usize {
+        self.root_paddr
+    }
+}
+
+impl AddressSpace for Pml4AddressSpace {
+    unsafe fn map_page(
+        &mut self,
+        virt_addr: usize,
+        phys_addr: usize,
+        flags: MapFlags,
+    ) -> Result<(), PageError> {
+        if !virt_addr.is_multiple_of(PAGE_SIZE) || !phys_addr.is_multiple_of(PAGE_SIZE) {
+            return Err(PageError::Unaligned);
+        }
+        if !is_canonical(virt_addr) {
+            return Err(PageError::OutOfRange);
+        }
+
+        // Level 4 (PML4) walk
+        let pml4 = self.root_paddr as *mut u64;
+        let l4_idx = pml4_index(virt_addr);
+        let pml4e = unsafe { pml4.add(l4_idx).read() };
+        let pdpt = if (pml4e & PTE_PRESENT) == 0 {
+            let pdpt_paddr = allocate_table()?;
+            unsafe {
+                pml4.add(l4_idx).write(make_table_entry(pdpt_paddr));
+            }
+            pdpt_paddr as *mut u64
+        } else {
+            pte_to_paddr(pml4e) as *mut u64
+        };
+
+        // Level 3 (PDPT) walk
+        let l3_idx = pdpt_index(virt_addr);
+        let pdpte = unsafe { pdpt.add(l3_idx).read() };
+        let pd = if (pdpte & PTE_PRESENT) == 0 {
+            let pd_paddr = allocate_table()?;
+            unsafe {
+                pdpt.add(l3_idx).write(make_table_entry(pd_paddr));
+            }
+            pd_paddr as *mut u64
+        } else if (pdpte & PTE_HUGE) != 0 {
+            // Already mapped as a 1 GiB huge page leaf
+            return Err(PageError::AlreadyMapped);
+        } else {
+            pte_to_paddr(pdpte) as *mut u64
+        };
+
+        // Level 2 (PD) walk
+        let l2_idx = pd_index(virt_addr);
+        let pde = unsafe { pd.add(l2_idx).read() };
+        let pt = if (pde & PTE_PRESENT) == 0 {
+            let pt_paddr = allocate_table()?;
+            unsafe {
+                pd.add(l2_idx).write(make_table_entry(pt_paddr));
+            }
+            pt_paddr as *mut u64
+        } else if (pde & PTE_HUGE) != 0 {
+            // Already mapped as a 2 MiB huge page leaf
+            return Err(PageError::AlreadyMapped);
+        } else {
+            pte_to_paddr(pde) as *mut u64
+        };
+
+        // Level 1 (PT) walk & leaf insertion
+        let l1_idx = pt_index(virt_addr);
+        let pte = unsafe { pt.add(l1_idx).read() };
+        if (pte & PTE_PRESENT) != 0 {
+            return Err(PageError::AlreadyMapped);
+        }
+
+        let leaf_pte = make_leaf_entry(phys_addr, flags);
+        unsafe {
+            pt.add(l1_idx).write(leaf_pte);
+        }
+
+        self.flush_tlb_page(virt_addr);
+        Ok(())
+    }
+
+    unsafe fn unmap_page(&mut self, virt_addr: usize) -> Result<usize, PageError> {
+        if !virt_addr.is_multiple_of(PAGE_SIZE) {
+            return Err(PageError::Unaligned);
+        }
+        if !is_canonical(virt_addr) {
+            return Err(PageError::OutOfRange);
+        }
+
+        // Level 4 (PML4) walk
+        let pml4 = self.root_paddr as *mut u64;
+        let l4_idx = pml4_index(virt_addr);
+        let pml4e = unsafe { pml4.add(l4_idx).read() };
+        if (pml4e & PTE_PRESENT) == 0 {
+            return Err(PageError::NotMapped);
+        }
+        let pdpt = pte_to_paddr(pml4e) as *mut u64;
+
+        // Level 3 (PDPT) walk
+        let l3_idx = pdpt_index(virt_addr);
+        let pdpte = unsafe { pdpt.add(l3_idx).read() };
+        if (pdpte & PTE_PRESENT) == 0 || (pdpte & PTE_HUGE) != 0 {
+            return Err(PageError::NotMapped);
+        }
+        let pd = pte_to_paddr(pdpte) as *mut u64;
+
+        // Level 2 (PD) walk
+        let l2_idx = pd_index(virt_addr);
+        let pde = unsafe { pd.add(l2_idx).read() };
+        if (pde & PTE_PRESENT) == 0 || (pde & PTE_HUGE) != 0 {
+            return Err(PageError::NotMapped);
+        }
+        let pt = pte_to_paddr(pde) as *mut u64;
+
+        // Level 1 (PT) walk
+        let l1_idx = pt_index(virt_addr);
+        let pte = unsafe { pt.add(l1_idx).read() };
+        if (pte & PTE_PRESENT) == 0 {
+            return Err(PageError::NotMapped);
+        }
+
+        let phys_addr = pte_to_paddr(pte);
+        unsafe {
+            pt.add(l1_idx).write(0);
+        }
+
+        self.flush_tlb_page(virt_addr);
+        Ok(phys_addr)
+    }
+
+    unsafe fn protect_page(&mut self, virt_addr: usize, flags: MapFlags) -> Result<(), PageError> {
+        if !virt_addr.is_multiple_of(PAGE_SIZE) {
+            return Err(PageError::Unaligned);
+        }
+        if !is_canonical(virt_addr) {
+            return Err(PageError::OutOfRange);
+        }
+
+        // Level 4 (PML4) walk
+        let pml4 = self.root_paddr as *mut u64;
+        let l4_idx = pml4_index(virt_addr);
+        let pml4e = unsafe { pml4.add(l4_idx).read() };
+        if (pml4e & PTE_PRESENT) == 0 {
+            return Err(PageError::NotMapped);
+        }
+        let pdpt = pte_to_paddr(pml4e) as *mut u64;
+
+        // Level 3 (PDPT) walk
+        let l3_idx = pdpt_index(virt_addr);
+        let pdpte = unsafe { pdpt.add(l3_idx).read() };
+        if (pdpte & PTE_PRESENT) == 0 || (pdpte & PTE_HUGE) != 0 {
+            return Err(PageError::NotMapped);
+        }
+        let pd = pte_to_paddr(pdpte) as *mut u64;
+
+        // Level 2 (PD) walk
+        let l2_idx = pd_index(virt_addr);
+        let pde = unsafe { pd.add(l2_idx).read() };
+        if (pde & PTE_PRESENT) == 0 || (pde & PTE_HUGE) != 0 {
+            return Err(PageError::NotMapped);
+        }
+        let pt = pte_to_paddr(pde) as *mut u64;
+
+        // Level 1 (PT) walk
+        let l1_idx = pt_index(virt_addr);
+        let pte = unsafe { pt.add(l1_idx).read() };
+        if (pte & PTE_PRESENT) == 0 {
+            return Err(PageError::NotMapped);
+        }
+
+        let phys_addr = pte_to_paddr(pte);
+        let new_pte = make_leaf_entry(phys_addr, flags);
+        unsafe {
+            pt.add(l1_idx).write(new_pte);
+        }
+
+        self.flush_tlb_page(virt_addr);
+        Ok(())
+    }
+
+    fn query(&self, virt_addr: usize) -> Option<(usize, MapFlags)> {
+        if !is_canonical(virt_addr) {
+            return None;
+        }
+
+        // Level 4 (PML4) walk
+        let pml4 = self.root_paddr as *const u64;
+        let l4_idx = pml4_index(virt_addr);
+        let pml4e = unsafe { pml4.add(l4_idx).read() };
+        if (pml4e & PTE_PRESENT) == 0 {
+            return None;
+        }
+        let pdpt = pte_to_paddr(pml4e) as *const u64;
+
+        // Level 3 (PDPT) walk
+        let l3_idx = pdpt_index(virt_addr);
+        let pdpte = unsafe { pdpt.add(l3_idx).read() };
+        if (pdpte & PTE_PRESENT) == 0 {
+            return None;
+        }
+        if (pdpte & PTE_HUGE) != 0 {
+            // 1 GiB huge page leaf: bits 29..0 from virt_addr
+            let paddr = (pte_to_paddr(pdpte) & !0x3fff_ffff) | (virt_addr & 0x3fff_ffff);
+            let flags = MapFlags {
+                readable: (pdpte & PTE_PRESENT) != 0,
+                writable: (pdpte & PTE_WRITABLE) != 0,
+                executable: (pdpte & PTE_NO_EXECUTE) == 0,
+                user: (pdpte & PTE_USER) != 0,
+            };
+            return Some((paddr, flags));
+        }
+        let pd = pte_to_paddr(pdpte) as *const u64;
+
+        // Level 2 (PD) walk
+        let l2_idx = pd_index(virt_addr);
+        let pde = unsafe { pd.add(l2_idx).read() };
+        if (pde & PTE_PRESENT) == 0 {
+            return None;
+        }
+        if (pde & PTE_HUGE) != 0 {
+            // 2 MiB huge page leaf: bits 20..0 from virt_addr
+            let paddr = (pte_to_paddr(pde) & !0x1f_ffff) | (virt_addr & 0x1f_ffff);
+            let flags = MapFlags {
+                readable: (pde & PTE_PRESENT) != 0,
+                writable: (pde & PTE_WRITABLE) != 0,
+                executable: (pde & PTE_NO_EXECUTE) == 0,
+                user: (pde & PTE_USER) != 0,
+            };
+            return Some((paddr, flags));
+        }
+        let pt = pte_to_paddr(pde) as *const u64;
+
+        // Level 1 (PT) walk
+        let l1_idx = pt_index(virt_addr);
+        let pte = unsafe { pt.add(l1_idx).read() };
+        if (pte & PTE_PRESENT) == 0 {
+            return None;
+        }
+
+        // 4 KiB leaf page: bits 11..0 from virt_addr
+        let paddr = pte_to_paddr(pte) | (virt_addr & 0xfff);
+        let flags = MapFlags {
+            readable: (pte & PTE_PRESENT) != 0,
+            writable: (pte & PTE_WRITABLE) != 0,
+            executable: (pte & PTE_NO_EXECUTE) == 0,
+            user: (pte & PTE_USER) != 0,
+        };
+        Some((paddr, flags))
+    }
+
+    unsafe fn activate(&self) {
+        core::arch::asm!(
+            "mov cr3, {}",
+            in(reg) self.root_paddr,
+            options(nostack)
+        );
+    }
+
+    unsafe fn flush_tlb_page(&self, virt_addr: usize) {
+        core::arch::asm!(
+            "invlpg [{}]",
+            in(reg) virt_addr,
+            options(nostack)
+        );
+    }
+
+    unsafe fn flush_tlb_all(&self) {
+        core::arch::asm!(
+            "mov rax, cr3",
+            "mov cr3, rax",
+            out("rax") _,
+            options(nostack)
+        );
+    }
+}
+
+impl Drop for Pml4AddressSpace {
+    fn drop(&mut self) {
+        if self.root_paddr == 0 {
+            return;
+        }
+
+        let pml4 = self.root_paddr as *mut u64;
+        // CRITICAL: ONLY traverse entries 0..255 (user space)!
+        // Never traverse or free entries 256..511 (shared kernel tables).
+        for i4 in 0..256 {
+            let pml4e = unsafe { pml4.add(i4).read() };
+            if (pml4e & PTE_PRESENT) != 0 {
+                let pdpt_paddr = pte_to_paddr(pml4e);
+                let pdpt = pdpt_paddr as *mut u64;
+                for i3 in 0..ENTRIES_PER_TABLE {
+                    let pdpte = unsafe { pdpt.add(i3).read() };
+                    if (pdpte & PTE_PRESENT) != 0 && (pdpte & PTE_HUGE) == 0 {
+                        let pd_paddr = pte_to_paddr(pdpte);
+                        let pd = pd_paddr as *mut u64;
+                        for i2 in 0..ENTRIES_PER_TABLE {
+                            let pde = unsafe { pd.add(i2).read() };
+                            if (pde & PTE_PRESENT) != 0 && (pde & PTE_HUGE) == 0 {
+                                let pt_paddr = pte_to_paddr(pde);
+                                let _ = bitmap::free_frame(pt_paddr);
+                            }
+                        }
+                        let _ = bitmap::free_frame(pd_paddr);
+                    }
+                }
+                let _ = bitmap::free_frame(pdpt_paddr);
+            }
+        }
+        let _ = bitmap::free_frame(self.root_paddr);
+        self.root_paddr = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_canonical_addresses() {
+        // User space canonical bounds
+        assert!(is_canonical(0x0000_0000_0000_0000));
+        assert!(is_canonical(0x0000_7FFF_FFFF_FFFF));
+
+        // Kernel space canonical bounds
+        assert!(is_canonical(0xFFFF_8000_0000_0000));
+        assert!(is_canonical(0xFFFF_FFFF_FFFF_FFFF));
+
+        // Non-canonical gap
+        assert!(!is_canonical(0x0000_8000_0000_0000));
+        assert!(!is_canonical(0xFFFF_7FFF_FFFF_FFFF));
+        assert!(!is_canonical(0x0000_8000_0000_0001));
+    }
+
+    #[test]
+    fn test_4level_indices() {
+        let va_user_start = 0x0000_0000_0000_0000;
+        assert_eq!(pml4_index(va_user_start), 0);
+        assert_eq!(pdpt_index(va_user_start), 0);
+        assert_eq!(pd_index(va_user_start), 0);
+        assert_eq!(pt_index(va_user_start), 0);
+        assert_eq!(page_offset(va_user_start), 0);
+
+        let va_user_end = 0x0000_7FFF_FFFF_F123;
+        assert_eq!(pml4_index(va_user_end), 255);
+        assert_eq!(pdpt_index(va_user_end), 511);
+        assert_eq!(pd_index(va_user_end), 511);
+        assert_eq!(pt_index(va_user_end), 511);
+        assert_eq!(page_offset(va_user_end), 0x123);
+
+        let va_kernel_start = 0xFFFF_8000_0000_0000;
+        assert_eq!(pml4_index(va_kernel_start), 256);
+        assert_eq!(pdpt_index(va_kernel_start), 0);
+        assert_eq!(pd_index(va_kernel_start), 0);
+        assert_eq!(pt_index(va_kernel_start), 0);
+        assert_eq!(page_offset(va_kernel_start), 0);
+
+        let va_kernel_end = 0xFFFF_FFFF_FFFF_FFFF;
+        assert_eq!(pml4_index(va_kernel_end), 511);
+        assert_eq!(pdpt_index(va_kernel_end), 511);
+        assert_eq!(pd_index(va_kernel_end), 511);
+        assert_eq!(pt_index(va_kernel_end), 511);
+        assert_eq!(page_offset(va_kernel_end), 0xFFF);
+    }
+
+    #[test]
+    fn test_pte_flags_encoding() {
+        let phys = 0x0000_0000_1234_5000;
+        let flags = MapFlags {
+            readable: true,
+            writable: true,
+            executable: false,
+            user: true,
+        };
+        let pte = make_leaf_entry(phys, flags);
+        assert_ne!(pte & PTE_PRESENT, 0);
+        assert_ne!(pte & PTE_WRITABLE, 0);
+        assert_ne!(pte & PTE_USER, 0);
+        assert_ne!(pte & PTE_NO_EXECUTE, 0);
+        assert_ne!(pte & PTE_ACCESSED, 0);
+        assert_ne!(pte & PTE_DIRTY, 0);
+        assert_eq!(pte_to_paddr(pte), phys);
+
+        let rx_flags = MapFlags {
+            readable: true,
+            writable: false,
+            executable: true,
+            user: false,
+        };
+        let rx_pte = make_leaf_entry(phys, rx_flags);
+        assert_ne!(rx_pte & PTE_PRESENT, 0);
+        assert_eq!(rx_pte & PTE_WRITABLE, 0);
+        assert_eq!(rx_pte & PTE_USER, 0);
+        assert_eq!(rx_pte & PTE_NO_EXECUTE, 0);
+        assert_eq!(pte_to_paddr(rx_pte), phys);
+    }
+}

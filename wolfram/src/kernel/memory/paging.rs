@@ -50,7 +50,12 @@ pub enum PageError {
     OutOfRange,
     /// The mapping already exists (no implicit overwrite).
     AlreadyMapped,
+    /// Virtual address is not mapped.
+    NotMapped,
 }
+
+#[allow(unused_imports)]
+pub use crate::arch::ArchAddressSpace;
 
 /// The paging HAL. Implemented once per architecture.
 ///
@@ -74,6 +79,34 @@ pub trait AddressSpace {
     /// - `virt_addr` must be 4 KiB aligned.
     /// - Returns `Ok(phys_addr)` of the now-unmapped frame.
     unsafe fn unmap_page(&mut self, virt_addr: usize) -> Result<usize, PageError>;
+
+    /// Change protection flags for the page at `virt_addr`.
+    ///
+    /// - `virt_addr` must be 4 KiB aligned.
+    /// - Returns `Err(NotMapped)` if the page is not mapped.
+    unsafe fn protect_page(&mut self, virt_addr: usize, flags: MapFlags) -> Result<(), PageError>;
+
+    /// Change protection flags for contiguous pages starting at `virt_addr`.
+    unsafe fn protect(
+        &mut self,
+        virt_addr: usize,
+        page_count: usize,
+        flags: MapFlags,
+    ) -> Result<(), PageError> {
+        const PAGE_SIZE: usize = 4096;
+        for i in 0..page_count {
+            self.protect_page(virt_addr + i * PAGE_SIZE, flags)?;
+        }
+        Ok(())
+    }
+
+    /// Query the physical mapping and flags for a virtual address.
+    ///
+    /// Returns `Some((phys_addr, flags))` if mapped, or `None` if not mapped.
+    fn query(&self, virt_addr: usize) -> Option<(usize, MapFlags)>;
+
+    /// Switch the active hardware page table to this address space.
+    unsafe fn activate(&self);
 
     /// Map contiguous frames from `frames` starting at `virt_addr`.
     ///
@@ -107,6 +140,21 @@ pub trait AddressSpace {
             self.unmap_page(virt_addr + i * PAGE_SIZE)?;
         }
         Ok(())
+    }
+
+    /// Convenience wrapper for `map_vmo`.
+    unsafe fn map(
+        &mut self,
+        virt_addr: usize,
+        frames: &VmoFrames,
+        flags: MapFlags,
+    ) -> Result<(), PageError> {
+        self.map_vmo(virt_addr, frames, flags)
+    }
+
+    /// Convenience wrapper for `unmap_vmo`.
+    unsafe fn unmap(&mut self, virt_addr: usize, page_count: usize) -> Result<(), PageError> {
+        self.unmap_vmo(virt_addr, page_count)
     }
 
     /// Flush the TLB for a single page. Must be called after any map/unmap.
