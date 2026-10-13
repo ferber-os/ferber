@@ -1,4 +1,4 @@
-<h1 align="center">Wolfram</h1>
+<img width="421" height="460" alt="image" src="https://github.com/user-attachments/assets/475f2a90-de93-480d-8570-ce4b9baa3667" /><h1 align="center">Wolfram</h1>
 
 <p align="center">
   <em>A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch.</em>
@@ -149,12 +149,13 @@ First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
 Current milestone: **Uranium-238-v0.1.7** concludes Phase 2 (Kernel Core) at 100%
-roadmap completion across both RISC-V 64 and x86-64.
+roadmap completion across both RISC-V 64 and x86-64. 
 
 ---
 
 ## Roadmap
-See [ROADMAP.md](ROADMAP.md).
+See [ROADMAP.md](ROADMAP.md)
+
 ---
 
 ## Building the RISC-V reference port
