@@ -63,6 +63,11 @@ impl HandleTable {
         }
         Err(CapError::InvalidHandle)
     }
+
+    /// Return the number of live handles in the table.
+    pub fn count(&self) -> usize {
+        self.count as usize
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

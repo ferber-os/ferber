@@ -166,8 +166,8 @@ test machine reach a diagnosed, intentional panic without a silent reset.
 - [x] Virtual Memory Objects (VMO subsystem)
 - [x] Paging HAL & Address spaces (Sv39 + PML4)
 - [x] Capability primitives & handle tables
-- [ ] Process & thread model (no fork)
-- [ ] Job tree & capability enforcement
+- [x] Process & thread model (no fork)
+- [x] Job tree & capability enforcement
 - [ ] Async channels
 - [ ] FastCall IPC
 

@@ -258,6 +258,62 @@ fn kernel_start(
     kprintln!("[cap]   capability system: initialized global node allocator pool");
     kprintln!("[cap]   handle table & rights subsystem ready for Phase 2");
 
+    kprintln!("[task]  running Job, Process, and Thread subsystem tests...");
+    {
+        use crate::kernel::task::job::{Job, JobState};
+        use crate::kernel::task::process::ProcessState;
+        use crate::kernel::task::thread::ThreadState;
+        use crate::kernel::scheduler;
+
+        scheduler::init();
+
+        // 1. Root job creation & child job hierarchy
+        let root_job = Job::create_root();
+        assert_eq!(root_job.lock().name(), "root");
+        assert_eq!(root_job.lock().state(), JobState::Active);
+
+        let system_job = root_job.lock()
+            .create_child_job("system", 64 * 1024 * 1024)
+            .expect("failed to create child job");
+        assert_eq!(system_job.lock().name(), "system");
+        assert_eq!(root_job.lock().children_count(), 1);
+        kprintln!("[task]    [1/5] root job initialization & hierarchy management: ok");
+
+        // 2. Process creation inside job & empty handle table contract (no ambient authority)
+        let proc = system_job.lock()
+            .create_process("init_proc")
+            .expect("failed to create process in job");
+        assert_eq!(proc.lock().name(), "init_proc");
+        assert_eq!(proc.lock().state(), ProcessState::Created);
+        assert_eq!(proc.lock().handle_table().lock().count(), 0);
+        assert_eq!(system_job.lock().process_count(), 1);
+        kprintln!("[task]    [2/5] process creation in job & empty handle table contract: ok");
+
+        // 3. Thread creation with isolated dual-stack context
+        let thread = proc.lock()
+            .create_thread(0x1000, 4096)
+            .expect("failed to create thread in process");
+        assert_eq!(thread.lock().name(), "init_proc/thread_0");
+        assert_eq!(thread.lock().state(), ThreadState::Ready);
+        assert_eq!(proc.lock().thread_count(), 1);
+        kprintln!("[task]    [3/5] thread creation with isolated dual-stack context: ok");
+
+        // 4. Scheduler ready queue & dispatch staging
+        scheduler::spawn(thread.clone());
+        assert_eq!(scheduler::ready_count(), 1);
+        scheduler::sched_yield();
+        kprintln!("[task]    [4/5] scheduler ready queue & dispatch staging: ok");
+
+        // 5. Recursive job subtree kill & zero-orphan cascade teardown
+        root_job.lock().kill();
+        assert_eq!(root_job.lock().state(), JobState::Killed);
+        assert_eq!(system_job.lock().state(), JobState::Killed);
+        assert_eq!(proc.lock().state(), ProcessState::Dead);
+        assert_eq!(thread.lock().state(), ThreadState::Dead);
+        kprintln!("[task]    [5/5] recursive job subtree kill & zero-orphan cascade teardown: ok");
+    }
+    kprintln!("[task]  process model: ok");
+
     kprintln!();
     kprintln!("Phase 1 boot checks complete.");
     kprintln!("Phase 2 kernel core checks complete.");
