@@ -1,4 +1,4 @@
-# Wolfram OS Roadmap
+# 🗺️ Wolfram OS Roadmap
 
 Wolfram is built from first principles around zero ambient authority: programs earn every resource they touch. Development is structured in sequential phases, maintaining strict 1:1 architectural parity across RISC-V 64 (`riscv64gc-unknown-none-elf`) and x86-64 (`x86_64-unknown-none` / UEFI).
 
