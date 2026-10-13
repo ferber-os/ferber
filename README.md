@@ -157,18 +157,7 @@ roadmap completion across both RISC-V 64 and x86-64.
 
 Wolfram's development is organized into sequential phases. Phase 1 (Reliable Boots) and Phase 2 (Kernel Core) are complete across both RISC-V 64 and x86-64.
 
-See the comprehensive [ROADMAP.md](ROADMAP.md) for detailed subsystem checklists, milestone criteria, and future specifications.
-
-- **[Phase 1 — Reliable Boots (Complete)](ROADMAP.md#phase-1--reliable-boots-complete):** QEMU RISC-V, QEMU x86-64 UEFI, and MSI B650M-A PRO WIFI bare-metal validation (`v0.1.0` – `v0.1.1`).
-- **[Phase 2 — Kernel Core (Complete)](ROADMAP.md#phase-2--kernel-core-complete):** Buddy allocator, VMO subsystem, Sv39/PML4 paging HAL, capability trees, container hierarchy, async channels, and FastCall IPC (`v0.1.2` – `v0.1.7`).
-- **[Phase 3 — Userspace (Active)](ROADMAP.md#phase-3--userspace-active-next-phase):** Ring 3 / U-mode privilege switching, syscall ABI, init process, userspace ELF loader, musl libc port, and VFS service.
-- **[Phase 4 — Drivers](ROADMAP.md#phase-4--drivers):** Userspace driver framework, MMIO Physical VMOs, VirtIO network and block drivers, initramfs.
-- **[Phase 5 — `fer` Complete](ROADMAP.md#phase-5--fer-complete):** Unified system management CLI for capabilities, packages, jobs, memory, and IPC.
-- **[Phase 6 — Daily Driver & Beyond](ROADMAP.md#phase-6--daily-driver--beyond):** Self-hosting Rust toolchain, preemptive SMP, native filesystems, and graphical compositor.
-
-**Daily driver milestone: somewhere past Phase 5.**
-It will take years. That's fine.
-
+See [ROADMAP.md](ROADMAP.md)
 ---
 
 ## Building the RISC-V reference port
