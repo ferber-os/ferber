@@ -1,6 +1,20 @@
-# Wolfram
+<h1 align="center">Wolfram</h1>
 
-> A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch.
+<p align="center">
+  <em>A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch.</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/notvcto/wolfram-os/actions/workflows/ci.yml"><img src="https://github.com/notvcto/wolfram-os/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/notvcto/wolfram-os/releases"><img src="https://img.shields.io/github/v/release/notvcto/wolfram-os?color=blue" alt="Release"></a>
+  <a href="https://github.com/notvcto/wolfram-os/stargazers"><img src="https://img.shields.io/github/stars/notvcto/wolfram-os?style=social" alt="Stars"></a>
+  <a href="https://github.com/notvcto/wolfram-os/network/members"><img src="https://img.shields.io/github/forks/notvcto/wolfram-os?style=social" alt="Forks"></a>
+  <a href="https://github.com/notvcto/wolfram-os/issues"><img src="https://img.shields.io/github/issues/notvcto/wolfram-os" alt="Issues"></a>
+  <a href="https://github.com/notvcto/wolfram-os/pulls"><img src="https://img.shields.io/github/issues-pr/notvcto/wolfram-os" alt="Pull Requests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--2.0--only-blue" alt="License"></a>
+</p>
+
+<br>
 
 Wolfram is a microkernel operating system written in Rust. RISC-V 64 is its
 current QEMU reference port; x86-64 UEFI is the next physical-hardware target.
@@ -244,6 +258,14 @@ Both should be precise, honest, and free of unnecessary complexity.
 
 If you find a security issue in the capability model specifically, that's important —
 open an issue marked `[SECURITY]` and be detailed.
+
+<br>
+
+<p align="center">
+  <a href="https://github.com/notvcto/wolfram-os/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=notvcto/wolfram-os" alt="Contributors" />
+  </a>
+</p>
 
 ---
 
