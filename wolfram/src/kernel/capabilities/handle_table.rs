@@ -68,6 +68,21 @@ impl HandleTable {
     pub fn count(&self) -> usize {
         self.count as usize
     }
+
+    /// Extract a capability node for transfer out of this process.
+    /// Fails if the handle is invalid, revoked, or lacks TRANSFER rights.
+    pub fn transfer_send(&mut self, handle: u32) -> Result<core::ptr::NonNull<super::CapNode>, CapError> {
+        let node = self.lookup(handle)?;
+        if !node.rights().contains(super::Rights::TRANSFER) {
+            return Err(CapError::InsufficientRights);
+        }
+        self.remove(handle)
+    }
+
+    /// Insert a transferred capability node into this process's handle table.
+    pub fn transfer_recv(&mut self, node: core::ptr::NonNull<super::CapNode>) -> Result<u32, CapError> {
+        self.insert(node)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -168,7 +168,7 @@ test machine reach a diagnosed, intentional panic without a silent reset.
 - [x] Capability primitives & handle tables
 - [x] Process & thread model (no fork)
 - [x] Job tree & capability enforcement
-- [ ] Async channels
+- [x] Async channels
 - [ ] FastCall IPC
 
 **Phase 3 — Userspace**

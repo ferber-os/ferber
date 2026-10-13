@@ -314,6 +314,85 @@ fn kernel_start(
     }
     kprintln!("[task]  process model: ok");
 
+    kprintln!("[ipc]   running Async Channels subsystem tests...");
+    {
+        use crate::kernel::ipc::channel::{
+            Channel, ChannelMessage, ChannelError,
+            SIGNAL_READABLE, SIGNAL_WRITABLE, SIGNAL_PEER_CLOSED,
+        };
+        use crate::kernel::capabilities::{CapNode, Rights, ObjectType};
+        use crate::kernel::task::job::Job;
+        use alloc::vec;
+        use alloc::vec::Vec;
+        use core::ptr::NonNull;
+
+        // 1. Paired endpoint creation & bidirectional messaging
+        let (ep_a, ep_b) = Channel::create();
+        assert_eq!(ep_a.lock().signals() & SIGNAL_WRITABLE, SIGNAL_WRITABLE);
+        assert_eq!(ep_b.lock().signals() & SIGNAL_WRITABLE, SIGNAL_WRITABLE);
+        assert_eq!(ep_a.lock().signals() & SIGNAL_READABLE, 0);
+
+        let msg1 = ChannelMessage::new(vec![1, 2, 3, 4], Vec::new());
+        ep_a.lock().send(msg1).expect("failed to send message on ep_a");
+        assert_eq!(ep_b.lock().signals() & SIGNAL_READABLE, SIGNAL_READABLE);
+
+        let recv_b = ep_b.lock().recv().expect("failed to recv on ep_b");
+        assert_eq!(recv_b.bytes.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(ep_b.lock().signals() & SIGNAL_READABLE, 0);
+        kprintln!("[ipc]     [1/3] paired endpoint creation & bidirectional messaging: ok");
+
+        // 2. Capability handle move semantics (sender loses handle, receiver gains handle)
+        let root_job = Job::create_root();
+        let proc_a = root_job.lock().create_process("proc_a").expect("create proc_a");
+        let proc_b = root_job.lock().create_process("proc_b").expect("create proc_b");
+
+        // Create a dummy capability node
+        let dummy_node = unsafe {
+            let n = alloc::boxed::Box::leak(alloc::boxed::Box::new(CapNode::new(
+                100,
+                Rights::READ | Rights::WRITE | Rights::TRANSFER,
+                NonNull::dangling(),
+                ObjectType::Vmo,
+                None,
+            )));
+            NonNull::new_unchecked(n as *mut CapNode)
+        };
+
+        // Insert into proc_a's handle table
+        let h_a = proc_a.lock().handle_table().lock().insert(dummy_node).expect("insert in proc_a");
+        assert_eq!(proc_a.lock().handle_table().lock().count(), 1);
+
+        // Process A transfers handle via channel
+        let transferred_node = proc_a.lock().handle_table().lock()
+            .transfer_send(h_a)
+            .expect("transfer_send from proc_a");
+        // Sender lost the handle immediately!
+        assert_eq!(proc_a.lock().handle_table().lock().count(), 0);
+        assert!(proc_a.lock().handle_table().lock().lookup(h_a).is_err());
+
+        // Send message carrying the capability node
+        let cap_msg = ChannelMessage::new(vec![0xAA], vec![transferred_node]);
+        ep_a.lock().send(cap_msg).expect("send cap_msg");
+
+        // Process B receives message and inserts capability into its handle table
+        let mut recv_msg = ep_b.lock().recv().expect("recv cap_msg");
+        let recv_node = recv_msg.handles.pop().expect("pop handle");
+        let h_b = proc_b.lock().handle_table().lock()
+            .transfer_recv(recv_node)
+            .expect("transfer_recv into proc_b");
+        assert_eq!(proc_b.lock().handle_table().lock().count(), 1);
+        assert!(proc_b.lock().handle_table().lock().lookup(h_b).is_ok());
+        kprintln!("[ipc]     [2/3] capability handle move semantics (sender loses handle): ok");
+
+        // 3. Queue bounds enforcement & peer closure signaling
+        drop(ep_b);
+        assert_eq!(ep_a.lock().signals() & SIGNAL_PEER_CLOSED, SIGNAL_PEER_CLOSED);
+        let send_err = ep_a.lock().send(ChannelMessage::new(vec![9], Vec::new()));
+        assert_eq!(send_err.err(), Some(ChannelError::PeerClosed));
+        kprintln!("[ipc]     [3/3] queue bounds enforcement & peer closure signaling: ok");
+    }
+    kprintln!("[ipc]   async channels subsystem: ok");
+
     kprintln!();
     kprintln!("Phase 1 boot checks complete.");
     kprintln!("Phase 2 kernel core checks complete.");

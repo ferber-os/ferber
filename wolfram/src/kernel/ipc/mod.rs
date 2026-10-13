@@ -5,5 +5,11 @@
 pub mod channel;
 pub mod fastcall;
 
+#[allow(unused_imports)]
+pub use channel::{
+    Channel, ChannelEndpoint, ChannelError, ChannelMessage, SIGNAL_PEER_CLOSED, SIGNAL_READABLE,
+    SIGNAL_WRITABLE,
+};
+
 #[allow(dead_code)]
 pub fn init() {}
