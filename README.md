@@ -155,57 +155,16 @@ roadmap completion across both RISC-V 64 and x86-64.
 
 ## Roadmap
 
-**Phase 1 — Reliable boots (complete)**
+Wolfram's development is organized into sequential phases. Phase 1 (Reliable Boots) and Phase 2 (Kernel Core) are complete across both RISC-V 64 and x86-64.
 
-RISC-V 64 QEMU reference:
-- [x] OpenSBI handoff and early serial output in QEMU
-- [x] Device-tree physical memory detection and bitmap allocator
-- [x] Exercise trap handling and park secondary harts before the boot stack
-- [x] Repeatable QEMU smoke check at 128 and 256 MiB with four harts
+See the comprehensive [ROADMAP.md](ROADMAP.md) for detailed subsystem checklists, milestone criteria, and future specifications.
 
-x86-64 UEFI PC target:
-- [x] Common boot information and architecture boundary
-- [x] UEFI loader and framebuffer diagnostics in QEMU/OVMF
-- [x] Firmware memory map handoff and boot allocator probe in QEMU/OVMF
-- [x] Expected `spawn init` panic in debug and release QEMU/OVMF builds
-- [x] Exercise unexpected x86 exceptions and verify their diagnostics
-- [x] Repeatable x86 QEMU smoke check for debug, release, and exception builds
-- [x] USB boot, memory allocation, and the expected diagnosed panic on the MSI
-  B650M-A PRO WIFI
-
-See the [Phase 1 boot plan](docs/boot-plan.md) for sequence and acceptance
-criteria. Phase 1 boot acceptance is complete: both QEMU ports and the MSI
-test machine reach a diagnosed, intentional panic without a silent reset.
-
-**Phase 2 — Kernel Core (complete)**
-- [x] Physical memory allocator (bitmap + buddy heap)
-- [x] Virtual Memory Objects (VMO subsystem)
-- [x] Paging HAL & Address spaces (Sv39 + PML4)
-- [x] Capability primitives & handle tables
-- [x] Process & thread model (no fork)
-- [x] Job tree & capability enforcement
-- [x] Async channels
-- [x] FastCall IPC
-
-**Phase 3 — Userspace**
-- [ ] Init process
-- [ ] Basic shell
-- [ ] `fer` CLI skeleton
-- [ ] musl libc port
-- [ ] VFS server
-
-**Phase 4 — Drivers**
-- [ ] Driver framework
-- [ ] NIC driver (virtio in QEMU)
-- [ ] Block device driver
-- [ ] Basic filesystem (read-only initramfs)
-
-**Phase 5 — `fer` Complete**
-- [ ] `fer pkg` — package management
-- [ ] `fer drv` — driver management
-- [ ] `fer cap` — capability inspection
-- [ ] `fer mem` — memory inspection
-- [ ] `fer ipc` — IPC monitoring
+- **[Phase 1 — Reliable Boots (Complete)](ROADMAP.md#phase-1--reliable-boots-complete):** QEMU RISC-V, QEMU x86-64 UEFI, and MSI B650M-A PRO WIFI bare-metal validation (`v0.1.0` – `v0.1.1`).
+- **[Phase 2 — Kernel Core (Complete)](ROADMAP.md#phase-2--kernel-core-complete):** Buddy allocator, VMO subsystem, Sv39/PML4 paging HAL, capability trees, container hierarchy, async channels, and FastCall IPC (`v0.1.2` – `v0.1.7`).
+- **[Phase 3 — Userspace (Active)](ROADMAP.md#phase-3--userspace-active-next-phase):** Ring 3 / U-mode privilege switching, syscall ABI, init process, userspace ELF loader, musl libc port, and VFS service.
+- **[Phase 4 — Drivers](ROADMAP.md#phase-4--drivers):** Userspace driver framework, MMIO Physical VMOs, VirtIO network and block drivers, initramfs.
+- **[Phase 5 — `fer` Complete](ROADMAP.md#phase-5--fer-complete):** Unified system management CLI for capabilities, packages, jobs, memory, and IPC.
+- **[Phase 6 — Daily Driver & Beyond](ROADMAP.md#phase-6--daily-driver--beyond):** Self-hosting Rust toolchain, preemptive SMP, native filesystems, and graphical compositor.
 
 **Daily driver milestone: somewhere past Phase 5.**
 It will take years. That's fine.

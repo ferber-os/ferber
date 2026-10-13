@@ -1,0 +1,233 @@
+# Wolfram OS Roadmap
+
+Wolfram is built from first principles around zero ambient authority: programs earn every resource they touch. Development is structured in sequential phases, maintaining strict 1:1 architectural parity across RISC-V 64 (`riscv64gc-unknown-none-elf`) and x86-64 (`x86_64-unknown-none` / UEFI).
+
+---
+
+## Phase 1 — Reliable Boots (Complete)
+
+Phase 1 establishes repeatable, diagnosed boots across emulated and bare-metal targets. The acceptance criterion is reaching an intentional, diagnosed panic without silent firmware resets.
+
+### RISC-V 64 QEMU Reference Port
+- [x] OpenSBI supervisor handoff at `0x80200000`
+- [x] Early 16550 UART serial driver for boot diagnostics
+- [x] Flattened Device Tree (FDT) parsing for RAM discovery
+- [x] Early physical bitmap frame allocator (`bitmap.rs`)
+- [x] Supervisor trap vector setup (`trap.S`, `trap.rs`)
+- [x] Secondary hart parking prior to boot stack initialization
+- [x] Multi-hart smoke verification at 128 MiB and 256 MiB (`scripts/riscv-smoke.sh`)
+
+### x86-64 UEFI Reference Port
+- [x] Common architecture-neutral boot information protocol (`BootInfo` struct)
+- [x] Standalone UEFI bootloader crate (`boot/uefi`)
+- [x] UEFI memory map extraction and physical frame reservation
+- [x] GOP framebuffer discovery and kernel console rendering
+- [x] Identity paging setup and long-mode handoff with EFER.NXE and CR0.WP
+- [x] Freestanding position-independent kernel ELF (`ET_DYN`, zero `NEEDED`, `R_X86_64_RELATIVE` only)
+- [x] Pre-boot ELF inspection and validation script (`scripts/x86-preview.sh`)
+- [x] IDT setup and unexpected exception vectoring (tested via deliberate `#UD` vector 6 probe)
+- [x] Automated QEMU/OVMF smoke testing across debug, release, and exception builds (`scripts/x86-smoke.sh`)
+- [x] Automated bootable FAT32 ISO image construction (`xorriso`, `dosfstools`, `mtools`)
+- [x] Bare-metal validation on real hardware (Kingston USB flash on MSI B650M-A PRO WIFI, 4096 MiB RAM)
+
+*Release Milestone: `Uranium-238-v0.1.0` and `Uranium-238-v0.1.1`.*
+
+---
+
+## Phase 2 — Kernel Core (Complete)
+
+Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-enforced virtual memory, capability derivation, execution containers, context switching, and IPC primitives.
+
+### Memory & Allocation Subsystems
+- [x] Dynamic buddy allocator (`heap.rs`, orders 0..=7: 32 B to 4096 B blocks)
+- [x] Contiguous frame allocator bypass for multi-page requests exceeding 4096 B
+- [x] Upper-bound memory ceiling (`MAX_ALLOC_SIZE = 128 MiB`) with OOM protection
+- [x] Virtual Memory Objects (`vmo.rs`):
+  - [x] Dynamic contiguous physical page backing
+  - [x] Slice read/write operations with checked arithmetic bounds enforcement
+  - [x] Capability rights enforcement (`MAP`, `READ`, `WRITE`, `EXECUTE`)
+  - [x] Physical MMIO VMOs for hardware device mapping
+
+### Paging Hardware Abstraction Layer (`AddressSpace`)
+- [x] Common hardware-agnostic `AddressSpace` trait (`paging.rs`)
+- [x] Strict 1:1 feature parity between RISC-V 64 and x86-64
+- [x] **RISC-V 64 Sv39 (`arch/riscv64/paging.rs`)**:
+  - [x] 3-level radix page table walk (`VPN[2..0]`)
+  - [x] Canonical 39-bit virtual address sign-extension check
+  - [x] PTE bitfield encoding (`V, R, W, X, U, G, A, D`) with $W \implies R$ rule compliance
+  - [x] 44-bit physical page number positioning (bits 53..10)
+  - [x] Dynamic intermediate table frame allocation and zeroing
+  - [x] `satp` CSR activation (`MODE=8`) with single-page and global `sfence.vma` TLB shootdowns
+  - [x] Leak-free recursive `Drop` table deallocation
+- [x] **x86-64 PML4 (`arch/x86_64/paging.rs`)**:
+  - [x] 4-level page table walk (`PML4 -> PDPT -> PD -> PT`)
+  - [x] Canonical 48-bit address validation guarding against non-canonical gap `#GP(0)`
+  - [x] Intermediate table permission propagation (`PTE_PRESENT | PTE_WRITABLE | PTE_USER`)
+  - [x] Upper-half kernel space synchronization (entries 256..511 cloned from boot CR3)
+  - [x] User-only recursive teardown in `Drop` (strictly freeing entries 0..255, preserving shared kernel tables)
+  - [x] CR3 activation with single-page `invlpg` and full shootdown via CR3 reload
+- [x] Superpage translation resolution (1 GiB and 2 MiB leaves)
+
+### Capability Primitives & Handle Tables
+- [x] 10 core capability rights bitflags (`Rights: u32`)
+- [x] Capability nodes (`CapNode`) with wait-free atomic revocation (`valid: AtomicBool`)
+- [x] Type-annotated compile-time handle wrappers (`Handle<T, R>`) using zero-sized marker types
+- [x] Attenuation invariants: child nodes strictly inherit a subset of parent rights
+- [x] Per-process handle tables (`HandleTable`):
+  - [x] Zero ambient authority: processes are born with empty handle tables (0 handles)
+  - [x] O(1) indexed lookup with liveness and revocation validation
+- [x] Capability linear move semantics:
+  - [x] `transfer_send`: validates `Rights::TRANSFER` and excises handle from sender immediately upon dispatch
+  - [x] `transfer_recv`: installs capability node into recipient handle table
+  - [x] Automatic revocation: `Drop for ChannelMessage` revokes unreceived in-flight capability nodes
+
+### Task Container Model & Scheduling
+- [x] Zero-dependency atomic spinlock (`SpinLock<T>`) with Acquire/Release memory ordering
+- [x] Hierarchical Job Tree (`job.rs`):
+  - [x] Singleton root job (`Job::create_root()`)
+  - [x] Acyclic job hierarchy with weak parent references
+  - [x] Memory quota accounting (`memory_limit`, `memory_used`)
+  - [x] Recursive subtree destruction (`Job::kill()`): synchronous cascade teardown guaranteeing **zero orphan processes**
+- [x] Process Containers (`process.rs`):
+  - [x] Isolated `ArchAddressSpace` bound at creation
+  - [x] Empty `HandleTable` initialization
+  - [x] Thread container tracking and death propagation
+- [x] Thread Model (`thread.rs`):
+  - [x] Dual-stack execution model: dedicated kernel stack VMO and user stack VMO
+  - [x] Thread states (`Ready`, `Running`, `Blocked`, `Dead`)
+- [x] Hardware Context Switching:
+  - [x] RISC-V 64: 112-byte `CpuContext` (`ra, sp, s0..s11`) assembly save/restore in `context.S`
+  - [x] x86-64: 56-byte `CpuContext` (`rsp, rbp, rbx, r12..r15`) assembly save/restore in `context.S` with mandatory `cld` Direction Flag sanitization before `ret`
+- [x] Early Cooperative Scheduler (`scheduler/`):
+  - [x] Global ready queue backed by O(1) `VecDeque`
+  - [x] Lock inversion hygiene: scheduler lock dropped prior to thread mutation
+  - [x] `spawn`, `ready_count`, and `sched_yield`
+
+### Inter-Process Communication (IPC)
+- [x] **Asynchronous Channels (`channel.rs`)**:
+  - [x] Paired bidirectional endpoints (`ChannelEndpoint`) with mutual weak references
+  - [x] Bounded message queues (default max depth: 64 messages)
+  - [x] Message size limits (64 KiB maximum payload)
+  - [x] Handle migration limits (64 handles per message)
+  - [x] Send backpressure enforcement (`QueueFull` error)
+  - [x] Signal state bitmask tracking (`SIGNAL_READABLE`, `SIGNAL_WRITABLE`, `SIGNAL_PEER_CLOSED`)
+  - [x] Peer termination notification on endpoint drop
+- [x] **FastCall Synchronous IPC (`fastcall.rs`)**:
+  - [x] Low-latency register-only IPC (~50-150 cycles) bypassing the scheduler runqueue
+  - [x] Thread donation execution model: caller blocks and donates remaining time-slice directly to target
+  - [x] Register calling convention: 5 arguments (`FastCallArgs`: `arg0..arg4`), 2 returns (`FastCallRet`: `ret0..ret1`)
+  - [x] Zero memory allocation and zero cache line churn
+
+*Release Milestones: `Uranium-238-v0.1.2` through `Uranium-238-v0.1.7`.*
+
+---
+
+## Phase 3 — Userspace (Active Next Phase)
+
+Phase 3 transitions execution from kernel-only testing into unprivileged userspace, implementing the system call boundary, userspace privilege switching, the initial user process, and foundational runtime services.
+
+### Privilege Boundary & System Call ABI
+- [ ] Userspace privilege level switching:
+  - [ ] RISC-V 64: User mode (U-mode) entry via `sret`, configuring `sstatus.SPP = 0`, `sstatus.SPIE = 1`, and `sepc`
+  - [ ] RISC-V 64: Safe kernel stack swap on trap entry via `csrrw sp, sscratch, sp`
+  - [ ] x86-64: Ring 3 user mode entry via `sysretq` / `iretq`
+  - [ ] x86-64: GDT configuration for Ring 3 code/data segments (`USER_CS`, `USER_DS`)
+  - [ ] x86-64: TSS configuration with `rsp0` kernel stack pointer
+  - [ ] x86-64: `MSR_LSTAR` and `MSR_STAR` setup for `syscall` instruction vectoring
+  - [ ] x86-64: GS base swap on trap entry via `swapgs`
+- [ ] System call dispatch table:
+  - [ ] Capability operations: `sys_cap_attenuate`, `sys_cap_revoke`, `sys_cap_inspect`
+  - [ ] Handle operations: `sys_handle_close`, `sys_handle_duplicate`
+  - [ ] Channel IPC: `sys_chan_create`, `sys_chan_send`, `sys_chan_recv`
+  - [ ] Channel wait-queue integration: blocking `sys_chan_recv` with thread parking on `ChannelEndpoint.wait_queue`
+  - [ ] FastCall IPC: `sys_fastcall` register transfer
+  - [ ] VMO operations: `sys_vmo_create`, `sys_vmo_read`, `sys_vmo_write`, `sys_vmo_map`, `sys_vmo_unmap`
+  - [ ] Task operations: `sys_process_create`, `sys_thread_create`, `sys_thread_exit`, `sys_sched_yield`
+- [ ] User memory safety validation:
+  - [ ] Canonical user virtual address verification on pointer arguments
+  - [ ] Safe `copy_from_user` and `copy_to_user` primitives preventing kernel memory escalation
+
+### Userspace Binary Loading & Execution
+- [ ] Userspace ELF loader (`elf_loader.rs`):
+  - [ ] 64-bit ELF executable parsing (`ELF64_HDR`, `Phdr`)
+  - [ ] VMO allocation for ELF segments (`LOAD` headers)
+  - [ ] Memory mapping with strict permissions: `PT_LOAD` `.text` mapped R-X, `.rodata` mapped R--, `.data`/`.bss` mapped RW-
+  - [ ] Stack VMO allocation and user stack initialization with auxiliary vector (`auxv`), arguments (`argc`/`argv`), and environment
+- [ ] Init Process (`init`):
+  - [ ] Root userspace process spawned under root `Job`
+  - [ ] Injected initial bootstrap channel handle pointing to kernel control service
+  - [ ] Spawns root namespace and system servers
+
+### C Runtime & Foundations
+- [ ] `musl` libc port:
+  - [ ] Wolfram architecture target definitions for `musl`
+  - [ ] System call stub mapping POSIX calls (`read`, `write`, `mmap`, `exit`) to Wolfram capability IPC
+  - [ ] Dynamic allocator integration (`malloc` / `free` backed by `sys_vmo_create` / `sys_vmo_map`)
+- [ ] Virtual Filesystem (VFS) Service:
+  - [ ] Standalone userspace microkernel server
+  - [ ] Files and directories represented strictly as capability handles
+  - [ ] Mount point namespace isolation per process container
+
+### User Shell & Command-Line Skeleton
+- [ ] Basic interactive shell running over serial console
+- [ ] `fer` CLI skeleton:
+  - [ ] Basic command parser and argument dispatch
+  - [ ] Channel IPC communication with init and kernel inspection interfaces
+
+---
+
+## Phase 4 — Drivers
+
+Phase 4 moves device drivers into userspace microkernel services with fine-grained capability isolation.
+
+### Userspace Driver Architecture
+- [ ] Driver framework protocol:
+  - [ ] Userspace driver process container isolation (no kernel-mode driver code)
+  - [ ] Hardware MMIO access granted strictly through `Physical VMO` capability handles
+  - [ ] Direct Memory Access (DMA) buffer management backed by contiguous pinned VMOs
+  - [ ] Hardware interrupt delivery via FastCall signal notifications
+- [ ] Hardware timer interrupts & preemption:
+  - [ ] RISC-V: SBI timer extension (`sbi_set_timer`) and supervisor timer interrupts (`STIP`)
+  - [ ] x86-64: APIC timer setup and periodic/deadline interrupt handling
+  - [ ] Preemptive thread scheduling slice ticks
+
+### Device Drivers
+- [ ] Serial console driver (16550 UART / ARM PL011 / x86 COM ports)
+- [ ] VirtIO network interface driver (`virtio-net` in QEMU):
+  - [ ] Virtqueue descriptor ring management
+  - [ ] Packet transmit and receive buffers backed by pinned VMOs
+- [ ] VirtIO block device driver (`virtio-blk` in QEMU):
+  - [ ] Block read/write request processing
+- [ ] Initial ramdisk (`initramfs`):
+  - [ ] Read-only ramdisk image bundled at boot
+  - [ ] Serves userspace binaries (`init`, `sh`, `fer`) to the VFS server
+
+---
+
+## Phase 5 — `fer` Complete
+
+Phase 5 completes the unified Wolfram management tool (`fer`), providing end-to-end operational visibility and administrative control over capabilities, processes, memory, and devices.
+
+- [ ] `fer pkg`: Capability-verified package and service management
+- [ ] `fer drv`: Driver lifecycle, device attachment, and bus inspection
+- [ ] `fer cap`: Capability graph visualizer, lineage audits, attenuation verification, and instant revocation
+- [ ] `fer mem`: VMO utilization, address space breakdown, and physical frame accounting
+- [ ] `fer ipc`: Channel queue depth, throughput metrics, and wait queue inspection
+- [ ] `fer jobs`: Hierarchical job tree visualization and subtree resource utilization
+
+---
+
+## Phase 6 — Daily Driver & Beyond
+
+The long-term roadmap toward running Wolfram as a daily operating system.
+
+- [ ] Self-hosting Rust toolchain compiling the Wolfram kernel on Wolfram OS
+- [ ] Preemptive multi-core SMP scheduling with per-CPU runqueues and work stealing
+- [ ] Native NVMe block driver and persistent capability-native filesystem
+- [ ] Native Ethernet / Wi-Fi network stack (TCP/UDP/IP)
+- [ ] Userspace graphical compositor running over GOP framebuffer VMO
+- [ ] Hardware IOMMU protection for zero-trust userspace DMA isolation
+
+---
+
+*Daily driver milestone: somewhere past Phase 5. It will take years. That's fine.*
