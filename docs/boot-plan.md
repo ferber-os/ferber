@@ -104,5 +104,8 @@ The UEFI loader can read the USB stick for Phase 1; using that stick after boot
 requires drivers and explicit capabilities. Hardware-assisted DMA isolation
 also needs separate work before userspace drivers can safely control devices.
 
-The Uranium-238 release marks the Phase 1 boot milestone. Capability enforcement,
+The Uranium-238-v0.1.0 release marks the Phase 1 boot milestone. Capability enforcement,
 userspace isolation, and the rest of the kernel roadmap remain future work.
+*(Note: As of Uranium-238-v0.1.7, Phase 2 Kernel Core milestones—capability enforcement,
+paging HAL address spaces, container hierarchy, and IPC—have been completed across both
+RISC-V 64 and x86-64).*

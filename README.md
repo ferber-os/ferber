@@ -134,6 +134,8 @@ Wolfram uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
+Current milestone: **Uranium-238-v0.1.7** concludes Phase 2 (Kernel Core) at 100%
+roadmap completion across both RISC-V 64 and x86-64.
 
 ---
 
@@ -161,7 +163,7 @@ See the [Phase 1 boot plan](docs/boot-plan.md) for sequence and acceptance
 criteria. Phase 1 boot acceptance is complete: both QEMU ports and the MSI
 test machine reach a diagnosed, intentional panic without a silent reset.
 
-**Phase 2 — Kernel Core**
+**Phase 2 — Kernel Core (complete)**
 - [x] Physical memory allocator (bitmap + buddy heap)
 - [x] Virtual Memory Objects (VMO subsystem)
 - [x] Paging HAL & Address spaces (Sv39 + PML4)

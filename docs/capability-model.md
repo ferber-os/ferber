@@ -111,8 +111,9 @@ The capability model is enforced at runtime by the kernel.
 It is also enforced at compile time by the Rust type system.
 
 ```rust
-pub struct Handle<T: KernelObject, R: Rights> {
+pub struct Handle<T: KernelObject, R: RightMarker> {
     raw: u32,
+    node: NonNull<CapNode>,
     _type: PhantomData<T>,
     _rights: PhantomData<R>,
 }
@@ -135,6 +136,15 @@ Two layers of enforcement, one of them free.
 
 ---
 
+## Capability Transfer & Move Semantics
+
+Capabilities move across processes with strict linear ownership semantics:
+- **`transfer_send(handle)`**: Requires `Rights::TRANSFER`. Atomically removes the handle from the sender's handle table upon dispatch, guaranteeing that the sender cannot retain access while transferring.
+- **`transfer_recv(node)`**: Inserts the transferred capability node into the receiver's handle table.
+- **Leak-Free Drop Revocation**: If a message carrying in-flight capability nodes is dropped before delivery (e.g. queue full, receiver terminated, channel destroyed), `Drop for ChannelMessage` automatically calls `node.revoke()`, immediately invalidating the unreceived capability so no dangling authority survives.
+
+---
+
 ## Revocation
 
 The hard problem of capability systems: once you give someone a handle,
@@ -144,7 +154,7 @@ Wolfram uses indirect capability nodes. Processes don't hold handles
 to objects directly — they hold handles to capability nodes that point
 to objects. To revoke, the kernel invalidates the node. Every handle
 pointing through it immediately loses access. The holder's next syscall
-using that handle returns `Error::CapabilityRevoked`.
+using that handle returns `CapError::Revoked`.
 
 ```
 process A holds: Handle → CapNode(7) → VMO(0xdeadbeef)
