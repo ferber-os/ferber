@@ -1,3 +1,4 @@
+<h1 align="center">Wolfram</h1>
 <p align="center">
   <em>A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch.</em>
 </p>
