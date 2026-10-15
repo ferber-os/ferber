@@ -4,6 +4,7 @@
 pub mod bitmap;
 pub mod heap;
 pub mod paging;
+pub mod user_mem;
 pub mod vmo;
 
 #[allow(unused_imports)]

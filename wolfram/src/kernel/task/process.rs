@@ -91,7 +91,6 @@ impl Process {
             return Err(TaskError::ProcessDead);
         }
         let kstack = Vmo::create_contiguous(kstack_size)
-            .or_else(|_| Vmo::create(kstack_size))
             .map_err(|_| TaskError::OutOfMemory)?;
         let kstack_base = kstack.frames().get(0).ok_or(TaskError::OutOfMemory)?;
         let kstack_top = kstack_base + kstack_size;

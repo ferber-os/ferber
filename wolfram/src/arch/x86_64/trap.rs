@@ -46,10 +46,42 @@ impl IdtEntry {
     }
 }
 
-// Long-mode code and data selectors. A TSS is added with userspace later.
-// Set the accessed bit up front: loading a segment otherwise makes the CPU
-// write into this read-only descriptor table under CR0.WP.
-static GDT: [u64; 3] = [0, 0x00af_9b00_0000_ffff, 0x00cf_9300_0000_ffff];
+#[repr(C, packed)]
+struct Tss {
+    reserved0: u32,
+    rsp: [u64; 3],
+    reserved1: u64,
+    ist: [u64; 7],
+    reserved2: u64,
+    reserved3: u16,
+    iomap: u16,
+}
+static mut TSS: Tss = Tss {
+    reserved0: 0,
+    rsp: [0; 3],
+    reserved1: 0,
+    ist: [0; 7],
+    reserved2: 0,
+    reserved3: 0,
+    iomap: core::mem::size_of::<Tss>() as u16,
+};
+const _: () = assert!(core::mem::size_of::<Tss>() == 104);
+// LTR writes the busy bit, so the descriptor table must be writable.
+static mut GDT: [u64; 7] = [
+    0,
+    0x00af_9b00_0000_ffff,
+    0x00cf_9300_0000_ffff,
+    0x00cf_f300_0000_ffff,
+    0x00af_fb00_0000_ffff,
+    0,
+    0,
+];
+
+pub unsafe fn set_kernel_stack(stack: usize) {
+    core::ptr::addr_of_mut!(TSS.rsp)
+        .cast::<u64>()
+        .write_unaligned(stack as u64);
+}
 static mut IDT: [IdtEntry; 256] = [IdtEntry::EMPTY; 256];
 
 extern "C" {
@@ -58,9 +90,14 @@ extern "C" {
 }
 
 pub fn init() {
+    let base = (&raw const TSS) as u64;
+    unsafe {
+        GDT[5] = 103 | ((base & 0xff_ffff) << 16) | (0x89 << 40) | (((base >> 24) & 0xff) << 56);
+        GDT[6] = base >> 32;
+    }
     let gdt = TablePointer {
-        limit: (core::mem::size_of_val(&GDT) - 1) as u16,
-        base: GDT.as_ptr() as u64,
+        limit: (core::mem::size_of::<[u64; 7]>() - 1) as u16,
+        base: (&raw const GDT) as u64,
     };
     // SAFETY: one bootstrap processor executes this while interrupts are off.
     unsafe {
@@ -77,6 +114,8 @@ pub fn init() {
             "mov ss, ax",
             out("rax") _,
         );
+
+        asm!("mov ax, 0x28", "ltr ax", out("ax") _, options(nostack));
 
         let idt = &raw mut IDT;
         let default = IdtEntry::new(x86_unexpected_interrupt as *const () as usize);
@@ -107,6 +146,14 @@ struct TrapFrame {
 extern "C" fn x86_trap_handler(frame: *const TrapFrame) -> ! {
     // SAFETY: assembly passes a pointer to the hardware frame on this stack.
     let frame = unsafe { &*frame };
+    if frame.vector == 14 && frame.cs & 3 == 3 {
+        assert_eq!(frame.error & 0xf, 0x5, "unexpected user page-fault access");
+        let address: usize;
+        unsafe {
+            asm!("mov {}, cr2", out(reg) address, options(nomem, nostack));
+        }
+        crate::kernel::syscall::user_fault(frame.rip as usize, address, 14);
+    }
     panic!(
         "x86 exception vector={} error={:#x} rip={:#x} cs={:#x} rflags={:#x}",
         frame.vector, frame.error, frame.rip, frame.cs, frame.rflags

@@ -127,25 +127,35 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
 Phase 3 transitions execution from kernel-only testing into unprivileged userspace, implementing the system call boundary, userspace privilege switching, the initial user process, and foundational runtime services.
 
 ### Privilege Boundary & System Call ABI
-- [ ] Userspace privilege level switching:
-  - [ ] RISC-V 64: User mode (U-mode) entry via `sret`, configuring `sstatus.SPP = 0`, `sstatus.SPIE = 1`, and `sepc`
-  - [ ] RISC-V 64: Safe kernel stack swap on trap entry via `csrrw sp, sscratch, sp`
-  - [ ] x86-64: Ring 3 user mode entry via `sysretq` / `iretq`
-  - [ ] x86-64: GDT configuration for Ring 3 code/data segments (`USER_CS`, `USER_DS`)
-  - [ ] x86-64: TSS configuration with `rsp0` kernel stack pointer
-  - [ ] x86-64: `MSR_LSTAR` and `MSR_STAR` setup for `syscall` instruction vectoring
-  - [ ] x86-64: GS base swap on trap entry via `swapgs`
+- [x] Userspace privilege level switching:
+  - [x] RISC-V 64: User mode (U-mode) entry via `sret`, configuring `sstatus.SPP = 0`, `sstatus.SPIE = 1`, and `sepc`
+  - [x] RISC-V 64: Kernel stack swap via `sscratch`, saved user registers, and nested supervisor trap preservation
+  - [x] x86-64: Ring 3 entry and syscall return via `iretq`
+  - [x] x86-64: GDT configuration for Ring 3 code/data segments (`USER_CS`, `USER_DS`)
+  - [x] x86-64: TSS configuration with `rsp0` kernel stack pointer
+  - [x] x86-64: `MSR_LSTAR`, `MSR_STAR`, `MSR_FMASK`, and EFER.SCE setup for `syscall`
+  - [x] x86-64: Trusted syscall stack selected through `swapgs` before using user-controlled RSP
+- [x] Resident user probes on both architectures: returning yield/unknown syscalls, register/stack checks, exit, and a separate supervisor-memory fault test
 - [ ] System call dispatch table:
+  - [x] Bootstrap dispatcher: Wolfram numbers, six argument registers, and `-38` for unknown numbers in the armed probe
+  - [x] Bootstrap task operations: immediate-return yield hint (`0`) and thread exit (`1`) followed by halt
   - [ ] Capability operations: `sys_cap_attenuate`, `sys_cap_revoke`, `sys_cap_inspect`
   - [ ] Handle operations: `sys_handle_close`, `sys_handle_duplicate`
   - [ ] Channel IPC: `sys_chan_create`, `sys_chan_send`, `sys_chan_recv`
   - [ ] Channel wait-queue integration: blocking `sys_chan_recv` with thread parking on `ChannelEndpoint.wait_queue`
   - [ ] FastCall IPC: `sys_fastcall` register transfer
   - [ ] VMO operations: `sys_vmo_create`, `sys_vmo_read`, `sys_vmo_write`, `sys_vmo_map`, `sys_vmo_unmap`
-  - [ ] Task operations: `sys_process_create`, `sys_thread_create`, `sys_thread_exit`, `sys_sched_yield`
-- [ ] User memory safety validation:
-  - [ ] Canonical user virtual address verification on pointer arguments
-  - [ ] Safe `copy_from_user` and `copy_to_user` primitives preventing kernel memory escalation
+  - [ ] Task creation: `sys_process_create`, `sys_thread_create`
+  - [ ] Scheduled yield and complete thread/process exit reclamation
+- [x] Resident user memory safety validation:
+  - [x] Canonical user ranges, checked arithmetic, and effective user/read/write page permissions
+  - [x] `copy_from_user` / `copy_to_user`: whole-range preflight and physical-alias copies under an unsafe stable-mapping/nonaliasing caller contract
+- [ ] Concurrent unmapping and recoverable user-copy faults
+
+*M1 (`Uranium-238-v0.2.0`) retains one bootstrap process and its VMO backing until
+halt. Secondary harts stay parked; interrupts, FP/vector user state, and
+preemptive scheduling are outside this milestone. Linux-style registers use
+custom Wolfram syscall numbers and do not provide musl compatibility.*
 
 ### Userspace Binary Loading & Execution
 - [ ] Userspace ELF loader (`elf_loader.rs`):

@@ -148,8 +148,9 @@ Wolfram uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.1.7** concludes Phase 2 (Kernel Core) at 100%
-roadmap completion across both RISC-V 64 and x86-64. 
+Current milestone: **Uranium-238-v0.2.0** implements Phase 3 M1: user-mode
+entry, returning syscalls, and supervisor-memory isolation on both RISC-V 64
+and x86-64. Phase 2 concluded with `v0.1.7`.
 
 ---
 
@@ -173,21 +174,40 @@ make run     # boots in QEMU
 make debug   # boots with GDB server on :1234
 ```
 
-Right now `make run` boots in QEMU, prints to serial, and reaches the expected
-`spawn init` panic.
+`make run` executes the in-kernel checks, enters a resident user-mode probe,
+returns through yield and unknown syscalls, and exits through the kernel. A
+successful normal boot prints
+`[WOLFRAM_TEST] privilege_switch_roundtrip: PASS` and halts until QEMU is stopped.
+The separate `user-isolation-probe` feature attempts a supervisor-memory read
+and expects a diagnosed user protection fault followed by
+`[WOLFRAM_TEST] privilege_isolation: PASS`.
 
 The boot allocator reads RAM from the firmware device tree and manages the bank
 containing the kernel (up to 4 GiB). It keeps the kernel image, device tree, and
 firmware-declared reserved ranges unavailable for allocation. Init is planned
 for Phase 3.
 
-The x86-64 kernel and UEFI loader reach the expected panic in QEMU/OVMF with
-debug and release kernel builds. `make x86-smoke` also checks a deliberate
-invalid-opcode exception and its panic diagnostics. `scripts/x86-preview.sh`
+The x86-64 kernel and UEFI loader exercise the same user-mode contract in
+QEMU/OVMF. `bash scripts/riscv-smoke.sh` and `make x86-smoke` check normal and isolation
+boots in debug and release builds. The x86 suite also checks a deliberate
+invalid-opcode exception and its expected panic diagnostics. `scripts/x86-preview.sh`
 builds the actual bare-metal kernel and checks the ELF that the loader expects;
 see the [UEFI loader notes](boot/uefi/README.md) for build and packaging steps.
-The MSI B650M-A PRO WIFI has booted this path from USB, initialized the
-physical allocator, and reached the expected diagnosed panic.
+The MSI B650M-A PRO WIFI previously booted the Phase 1 path from USB,
+initialized the physical allocator, and reached its expected diagnosed panic.
+That hardware result does not validate the new privilege boundary.
+
+The bootstrap ABI uses Linux-style argument registers with Wolfram syscall
+numbers: `0` is an immediate-return yield hint, `1` exits the bootstrap thread,
+and unknown numbers return `-38`. This is not musl compatibility. The probe
+process starts with zero handles. Code and both stacks are VMO-backed, and
+resident user-copy helpers preflight page permissions before copying through
+supervisor physical aliases. See [the memory model](docs/memory.md) for their
+caller contract and temporary bootstrap mappings.
+
+M1 runs one active CPU with integer-only resident probes. Interrupt-driven
+scheduling, init/ELF loading, concurrent user tasks, and complete exit
+reclamation remain future work.
 
 ---
 

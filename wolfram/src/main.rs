@@ -4,7 +4,7 @@
 //! was the bootloader's problem. Everything after this is ours.
 //!
 //! Phase 1 status: complete.
-//! Current phase: Phase 2 (Kernel Core).
+//! Current phase: Phase 3 (Privilege Boundary).
 
 #![no_std]
 #![no_main]
@@ -258,9 +258,10 @@ fn kernel_start(
     kprintln!("[cap]   capability system: initialized global node allocator pool");
     kprintln!("[cap]   handle table & rights subsystem ready for Phase 2");
 
+    let root_job = kernel::task::Job::create_root();
     kprintln!("[task]  running Job, Process, and Thread subsystem tests...");
     {
-        use crate::kernel::task::job::{Job, JobState};
+        use crate::kernel::task::job::JobState;
         use crate::kernel::task::process::ProcessState;
         use crate::kernel::task::thread::ThreadState;
         use crate::kernel::scheduler;
@@ -268,7 +269,6 @@ fn kernel_start(
         scheduler::init();
 
         // 1. Root job creation & child job hierarchy
-        let root_job = Job::create_root();
         assert_eq!(root_job.lock().name(), "root");
         assert_eq!(root_job.lock().state(), JobState::Active);
 
@@ -305,8 +305,8 @@ fn kernel_start(
         kprintln!("[task]    [4/5] scheduler ready queue & dispatch staging: ok");
 
         // 5. Recursive job subtree kill & zero-orphan cascade teardown
-        root_job.lock().kill();
-        assert_eq!(root_job.lock().state(), JobState::Killed);
+        system_job.lock().kill();
+        assert_eq!(root_job.lock().state(), JobState::Active);
         assert_eq!(system_job.lock().state(), JobState::Killed);
         assert_eq!(proc.lock().state(), ProcessState::Dead);
         assert_eq!(thread.lock().state(), ThreadState::Dead);
@@ -322,7 +322,6 @@ fn kernel_start(
         };
         use crate::kernel::ipc::fastcall::{fastcall, FastCallArgs};
         use crate::kernel::capabilities::{CapNode, Rights, ObjectType};
-        use crate::kernel::task::job::Job;
         use alloc::vec;
         use alloc::vec::Vec;
         use core::ptr::NonNull;
@@ -343,7 +342,6 @@ fn kernel_start(
         kprintln!("[ipc]     [1/4] paired endpoint creation & bidirectional messaging: ok");
 
         // 2. Capability handle move semantics (sender loses handle, receiver gains handle)
-        let root_job = Job::create_root();
         let proc_a = root_job.lock().create_process("proc_a").expect("create proc_a");
         let proc_b = root_job.lock().create_process("proc_b").expect("create proc_b");
 
@@ -407,21 +405,20 @@ fn kernel_start(
     kprintln!("Phase 1 boot checks complete.");
     kprintln!("Phase 2 kernel core checks complete.");
 
-    #[cfg(all(target_arch = "x86_64", feature = "x86-exception-probe"))]
-    {
+    kernel::memory::user_mem::self_test();
+    #[cfg(target_arch = "x86_64")]
+    arch::paging::self_test();
+    kprintln!("[mem]   resident user copies and permissions: ok");
+
+    #[cfg(target_arch = "x86_64")]
+    if cfg!(feature = "x86-exception-probe") {
         kprintln!("probing x86 invalid-opcode exception...");
         // SAFETY: this opt-in QEMU build deliberately enters vector 6 to
         // exercise the installed IDT and its panic diagnostics.
         unsafe { core::arch::asm!("ud2", options(noreturn)) }
     }
 
-    #[cfg(not(all(target_arch = "x86_64", feature = "x86-exception-probe")))]
-    {
-        kprintln!("spawning init...");
-        kprintln!();
-
-        todo!("spawn init — Phase 3")
-    }
+    kernel::syscall::run(root_job, memory)
 }
 
 #[panic_handler]

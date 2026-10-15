@@ -102,7 +102,8 @@ pub trait AddressSpace {
 
     /// Query the physical mapping and flags for a virtual address.
     ///
-    /// Returns `Some((phys_addr, flags))` if mapped, or `None` if not mapped.
+    /// Returns the physical byte address (including the page offset) and effective
+    /// permissions across every walk level, or `None` if not mapped.
     fn query(&self, virt_addr: usize) -> Option<(usize, MapFlags)>;
 
     /// Switch the active hardware page table to this address space.

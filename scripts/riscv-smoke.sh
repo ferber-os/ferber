@@ -1,38 +1,52 @@
-#!/bin/sh
-# Boot the RISC-V kernel with two RAM sizes and multiple harts. The kernel's
-# Phase 1 panic spins forever, so timeout's exit status 124 is expected.
-set -eu
+#!/usr/bin/env bash
+# Exercise returning user syscalls and rejected supervisor reads on both profiles.
+set -euo pipefail
 
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-(cd "$repo_dir/wolfram" && cargo build --quiet)
-kernel="$repo_dir/wolfram/target/riscv64gc-unknown-none-elf/debug/wolfram"
-log=$(mktemp)
-trap 'rm -f "$log"' EXIT HUP INT TERM
-
-for size in 128 256; do
-    status=0
-    timeout 8s qemu-system-riscv64 \
-        -machine virt -smp 4 -display none -bios default \
-        -serial "file:$log" \
-        -kernel "$kernel" -m "${size}M" >/dev/null 2>&1 || status=$?
-
-    if [ "$status" -ne 124 ]; then
-        cat "$log"
-        echo "QEMU exited unexpectedly for ${size} MiB (status $status)" >&2
-        exit 1
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$repo_dir/scripts/smoke-log.sh"
+trial_dir=$(mktemp -d /tmp/wolfram-riscv-smoke.XXXXXX)
+smoke_passed=0
+cleanup() {
+    if [[ "$smoke_passed" -eq 1 ]]; then
+        rm -rf -- "$trial_dir"
+    else
+        echo "smoke logs retained in $trial_dir" >&2
     fi
+}
+trap cleanup EXIT
 
+run_case() {
+    local profile=$1 scenario=$2 size=$3 harts=$4 ram_end
+    local log="$trial_dir/$profile-$scenario-${size}M-${harts}h.log"
+    local qemu_log="$trial_dir/$profile-$scenario-${size}M-${harts}h-qemu.log"
+    local cargo_args=(--target riscv64gc-unknown-none-elf)
+    [[ "$profile" != release ]] || cargo_args+=(--release)
+    [[ "$scenario" != isolation ]] || cargo_args+=(--features user-isolation-probe)
+    (cd "$repo_dir/wolfram" && cargo build --quiet "${cargo_args[@]}")
+    local kernel="$repo_dir/wolfram/target/riscv64gc-unknown-none-elf/$profile/wolfram"
+    local status=0
+    timeout 8s qemu-system-riscv64 \
+        -machine virt -smp "$harts" -display none -bios default \
+        -serial "file:$log" -kernel "$kernel" -m "${size}M" \
+        >"$qemu_log" 2>&1 || status=$?
     case "$size" in
         128) ram_end=0x88000000 ;;
         256) ram_end=0x90000000 ;;
     esac
-    if ! grep -Eq "\\[mem\\]   RAM: 0x80000000\\.\\.${ram_end}, [1-9][0-9]* free pages" "$log" \
+    if [[ "$status" -ne 124 ]] \
+        || ! grep -Eq "\\[mem\\]   RAM: 0x80000000\\.\\.${ram_end}, [1-9][0-9]* free pages" "$log" \
         || ! grep -Fq '[mem]   physical allocator: ok' "$log" \
-        || ! grep -Fq 'where:       src/main.rs:' "$log" \
-        || ! grep -Fq 'it begins.' "$log"; then
-        cat "$log"
-        echo "RISC-V smoke output missing for ${size} MiB" >&2
+        || ! smoke_log_ok "$log" "$scenario"; then
+        cat "$log" "$qemu_log" >&2
+        echo "RISC-V smoke failed: $profile $scenario, ${size} MiB, $harts harts (status $status)" >&2
         exit 1
     fi
-    echo "RISC-V smoke passed: ${size} MiB, 4 harts, expected Phase 1 panic"
+    echo "RISC-V smoke passed: $profile $scenario, ${size} MiB, $harts harts"
+}
+
+for profile in debug release; do
+    run_case "$profile" normal 128 1
+    run_case "$profile" normal 256 4
+    run_case "$profile" isolation 128 1
 done
+smoke_passed=1

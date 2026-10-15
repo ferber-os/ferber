@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Exercise the UEFI handoff, normal Phase 1 panic, and x86 exception path.
+# Exercise UEFI handoff, returning user syscalls, isolation, and fatal exceptions.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$repo_root/scripts/smoke-log.sh"
 ovmf_code=${OVMF_CODE:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}
 ovmf_vars=${OVMF_VARS:-/usr/share/edk2/x64/OVMF_VARS.4m.fd}
 
@@ -40,6 +41,9 @@ run_case() {
     if [[ "$profile" == release ]]; then
         cargo_args+=(--release)
     fi
+    if [[ "$scenario" == isolation ]]; then
+        cargo_args+=(--features user-isolation-probe)
+    fi
     if [[ "$scenario" == exception ]]; then
         cargo_args=(--features x86-exception-probe --release)
     fi
@@ -67,23 +71,24 @@ run_case() {
         exit 1
     fi
     if ! rg -Fq '[mem]   physical allocator: ok' "$log" \
-        || ! rg -Fq 'Phase 1 boot checks complete.' "$log" \
-        || ! rg -Fq 'W O L F R A M   K E R N E L   P A N I C' "$log"; then
+        || ! rg -Fq 'Phase 1 boot checks complete.' "$log"; then
         cat "$log" >&2
         echo "missing kernel boot diagnostics ($profile $scenario)" >&2
         exit 1
     fi
     if [[ "$scenario" == exception ]]; then
-        if ! rg -Fq 'probing x86 invalid-opcode exception...' "$log" \
+        if ! rg -Fq 'W O L F R A M   K E R N E L   P A N I C' "$log" \
+            || rg -q 'FAIL|\[WOLFRAM_TEST\] privilege_' "$log" \
+            || ! rg -Fq 'probing x86 invalid-opcode exception...' "$log" \
             || ! rg -Fq 'detail: x86 exception vector=6 error=0x0 rip=' "$log" \
             || ! rg -Fq 'where:       src/arch/x86_64/trap.rs:' "$log"; then
             cat "$log" >&2
             echo "missing x86 exception diagnostics" >&2
             exit 1
         fi
-    elif ! rg -Fq 'detail: not yet implemented: spawn init' "$log"; then
+    elif ! smoke_log_ok "$log" "$scenario"; then
         cat "$log" >&2
-        echo "missing expected spawn-init panic" >&2
+        echo "missing successful user-mode probe ($profile $scenario)" >&2
         exit 1
     fi
     echo "x86 QEMU smoke passed: $profile $scenario, ${ram} MiB"
@@ -92,4 +97,6 @@ run_case() {
 run_case debug normal 512
 run_case release normal 1024
 run_case release exception 512
+run_case debug isolation 512
+run_case release isolation 512
 smoke_passed=1

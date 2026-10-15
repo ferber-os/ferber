@@ -224,6 +224,14 @@ pub fn init_from_boot_info(info: &BootInfo) -> MemoryStats {
     })
 }
 
+/// Snapshot allocation accounting without changing the allocator.
+pub fn stats() -> MemoryStats {
+    ALLOCATOR.with(|state| {
+        assert!(state.initialized, "physical allocator used before init");
+        state.stats()
+    })
+}
+
 /// Returns the physical address of a free 4 KiB frame.
 pub fn allocate_frame() -> Option<usize> {
     ALLOCATOR.with(|state| {

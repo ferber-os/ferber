@@ -3,17 +3,24 @@
     .align 2
 
 kernel_trap_entry:
-    # Phase 1 takes traps only from S-mode. Before entering U-mode, switch
-    # from the user stack to a per-hart kernel stack using sscratch.
-    # TrapFrame has 32 eight-byte fields and remains 16-byte aligned.
-    addi sp, sp, -32*8
-
+    csrrw sp, sscratch, sp
+    bnez sp, .Luser_stack
+    csrrw sp, sscratch, sp
+    addi sp, sp, -272
+    sd t0, 4*8(sp)
+    addi t0, sp, 272
+    sd t0, 1*8(sp)
+    j .Lsave
+.Luser_stack:
+    addi sp, sp, -272
+    sd t0, 4*8(sp)
+    csrr t0, sscratch
+    sd t0, 1*8(sp)
+.Lsave:
+    csrw sscratch, zero
     sd ra,  0*8(sp)
     sd gp,  2*8(sp)
     sd tp,  3*8(sp)
-    sd t0,  4*8(sp)
-    addi t0, sp, 32*8
-    sd t0,  1*8(sp)  # interrupted stack pointer
     sd t1,  5*8(sp)
     sd t2,  6*8(sp)
     sd s0,  7*8(sp)
@@ -43,13 +50,25 @@ kernel_trap_entry:
 
     csrr t0, sepc
     sd t0, 31*8(sp)
-
+    csrr t0, sstatus
+    sd t0, 32*8(sp)
+    andi t0, t0, 256
+    bnez t0, .Lkernel_registers
+    ld gp, 272(sp)
+    ld tp, 280(sp)
+.Lkernel_registers:
     mv a0, sp
     call kernel_trap_handler
 
     ld t0, 31*8(sp)
     csrw sepc, t0
-
+    ld t0, 32*8(sp)
+    csrw sstatus, t0
+    andi t0, t0, 256
+    bnez t0, .Lrestore
+    addi t0, sp, 272
+    csrw sscratch, t0
+.Lrestore:
     ld ra,  0*8(sp)
     ld gp,  2*8(sp)
     ld tp,  3*8(sp)

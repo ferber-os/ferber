@@ -4,7 +4,7 @@ use core::arch::global_asm;
 
 global_asm!(include_str!("trap.S"));
 
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct TrapFrame {
     pub ra: usize,
     pub sp: usize,
@@ -38,9 +38,14 @@ pub struct TrapFrame {
     pub t5: usize,
     pub t6: usize,
     pub sepc: usize,
+    pub sstatus: usize,
 }
 
-const _: () = assert!(core::mem::size_of::<TrapFrame>() == 32 * 8);
+const _: () = {
+    assert!(core::mem::size_of::<TrapFrame>() == 272);
+    assert!(core::mem::offset_of!(TrapFrame, sepc) == 248);
+    assert!(core::mem::offset_of!(TrapFrame, sstatus) == 256);
+};
 
 #[no_mangle]
 extern "C" fn kernel_trap_handler(frame: &mut TrapFrame) {
@@ -60,12 +65,30 @@ extern "C" fn kernel_trap_handler(frame: &mut TrapFrame) {
         panic!("unhandled interrupt: cause={} sepc={:#x}", code, frame.sepc);
     } else {
         match code {
-            3 if frame.sepc == kernel_trap_probe_breakpoint as *const () as usize => {
+            3 if frame.sstatus & (1 << 8) != 0
+                && frame.sepc == kernel_trap_probe_breakpoint as *const () as usize =>
+            {
                 frame.a0 += 1;
                 frame.sepc += 4;
             }
-            8 | 9 => {
+            8 if frame.sstatus & (1 << 8) == 0 => {
+                use core::sync::atomic::{AtomicBool, Ordering};
+                static NESTED_PROBED: AtomicBool = AtomicBool::new(false);
+                if !NESTED_PROBED.swap(true, Ordering::Relaxed) {
+                    assert_eq!(
+                        unsafe { kernel_trap_probe() },
+                        1,
+                        "nested supervisor trap failed"
+                    );
+                }
+                frame.a0 = crate::kernel::syscall::dispatch(
+                    frame.a7,
+                    [frame.a0, frame.a1, frame.a2, frame.a3, frame.a4, frame.a5],
+                ) as usize;
                 frame.sepc += 4;
+            }
+            0..=15 if frame.sstatus & (1 << 8) == 0 => {
+                crate::kernel::syscall::user_fault(frame.sepc, stval, code);
             }
             _ => {
                 panic!(
@@ -88,6 +111,7 @@ pub fn init() {
     }
     unsafe {
         core::arch::asm!(
+            "csrw sscratch, zero",
             "csrw stvec, {}",
             in(reg) kernel_trap_entry as *const () as usize,
         );

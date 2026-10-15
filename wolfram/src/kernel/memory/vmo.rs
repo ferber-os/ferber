@@ -82,7 +82,11 @@ impl Vmo {
 
         for _ in 0..num_pages {
             match bitmap::allocate_frame() {
-                Some(frame) => frames.push(frame),
+                Some(frame) => {
+                    // Clear the complete frame, including bytes beyond the VMO's logical end.
+                    unsafe { ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE) };
+                    frames.push(frame);
+                }
                 None => {
                     for frame in frames {
                         let _ = bitmap::free_frame(frame);
@@ -107,6 +111,7 @@ impl Vmo {
 
         let num_pages = size.div_ceil(PAGE_SIZE);
         let base = bitmap::allocate_frames(num_pages).ok_or(VmoError::OutOfMemory)?;
+        unsafe { ptr::write_bytes(base as *mut u8, 0, num_pages * PAGE_SIZE) };
 
         let mut frames = Vec::with_capacity(num_pages);
         for i in 0..num_pages {

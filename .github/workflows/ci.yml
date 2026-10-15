@@ -21,10 +21,10 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: riscv64gc-unknown-none-elf,x86_64-unknown-none,x86_64-unknown-uefi
-          components: rust-src,llvm-tools-preview
+          components: rust-src,llvm-tools-preview,clippy
 
       - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-misc
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-misc qemu-system-x86 ovmf ripgrep
 
       - name: Build (RISC-V)
         working-directory: wolfram
@@ -42,8 +42,32 @@ jobs:
         working-directory: wolfram
         run: cargo clippy --target x86_64-unknown-none -- -D warnings
 
+      - name: Clippy (UEFI loader)
+        working-directory: boot/uefi
+        run: cargo +nightly clippy --release --target x86_64-unknown-uefi -- -D warnings
+
+      - name: Clippy (user probes)
+        working-directory: wolfram
+        run: |
+          cargo clippy --target riscv64gc-unknown-none-elf --features user-isolation-probe -- -D warnings
+          cargo clippy --target x86_64-unknown-none --features qemu-debug-port,user-isolation-probe -- -D warnings
+          cargo clippy --target x86_64-unknown-none --features x86-exception-probe -- -D warnings
+
+      - name: Check smoke scripts
+        run: |
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh; do
+            bash -n "$script"
+          done
+          bash scripts/smoke-log.sh --self-test
+
       - name: Smoke test (RISC-V)
         run: bash scripts/riscv-smoke.sh
+
+      - name: Smoke test (x86-64 UEFI)
+        env:
+          OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+          OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+        run: bash scripts/x86-smoke.sh
 
   release:
     name: Release
@@ -107,4 +131,5 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: docs/releases/${{ github.ref_name }}.md
+          prerelease: true
           files: wolfram.iso

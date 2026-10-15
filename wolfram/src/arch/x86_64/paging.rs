@@ -139,32 +139,121 @@ pub struct Pml4AddressSpace {
     root_paddr: usize,
 }
 
-impl Pml4AddressSpace {
-    /// Creates a new PML4 address space by allocating a root Level 4 table and
-    /// synchronizing the upper-half kernel mappings (entries 256..511) from the current CR3.
-    pub fn new() -> Result<Self, PageError> {
-        let root_paddr = allocate_table()?;
-        // SAFETY: called only from kernel context; CR3 holds the kernel PML4.
-        let current_cr3: usize;
-        unsafe {
-            core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
+static BOOT_ROOT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Capture the loader-owned tables before a process root can become active.
+pub fn init() {
+    let root: usize;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) root, options(nomem, nostack));
+    }
+    BOOT_ROOT
+        .compare_exchange(
+            0,
+            root & ADDRESS_MASK as usize,
+            core::sync::atomic::Ordering::SeqCst,
+            core::sync::atomic::Ordering::SeqCst,
+        )
+        .expect("boot CR3 initialized twice");
+}
+
+unsafe fn free_table(table: usize, level: usize, count: usize) {
+    for i in 0..count {
+        let entry = (table as *const u64).add(i).read();
+        if level > 1 && entry & PTE_PRESENT != 0 && entry & PTE_HUGE == 0 {
+            free_table(pte_to_paddr(entry), level - 1, 512);
         }
-        let current_pml4_paddr = (current_cr3 as u64 & ADDRESS_MASK) as usize;
-        if current_pml4_paddr != 0 {
-            let current_pml4 = current_pml4_paddr as *const u64;
-            let new_pml4 = root_paddr as *mut u64;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    current_pml4.add(256),
-                    new_pml4.add(256),
-                    256,
-                );
+    }
+    bitmap::free_frame(table).expect("owned page table frame");
+}
+
+unsafe fn clone_table(source: usize, level: usize) -> Result<usize, PageError> {
+    let target = allocate_table()?;
+    for i in 0..512 {
+        let entry = (source as *const u64).add(i).read();
+        let cloned = if entry & PTE_PRESENT != 0 && level > 1 && entry & PTE_HUGE == 0 {
+            match clone_table(pte_to_paddr(entry), level - 1) {
+                Ok(child) => (entry & !ADDRESS_MASK) | child as u64,
+                Err(error) => {
+                    free_table(target, level, 512);
+                    return Err(error);
+                }
+            }
+        } else {
+            entry
+        };
+        (target as *mut u64).add(i).write(cloned);
+    }
+    Ok(target)
+}
+
+// Preserve sibling restrictions before opening an ancestor for a user mapping.
+unsafe fn open_table(slot: *mut u64, flags: MapFlags) {
+    let mut entry = slot.read();
+    let relax_user = flags.user && entry & PTE_USER == 0;
+    let relax_write = flags.writable && entry & PTE_WRITABLE == 0;
+    let relax_execute = flags.executable && entry & PTE_NO_EXECUTE != 0;
+    if relax_user || relax_write || relax_execute {
+        let child = pte_to_paddr(entry) as *mut u64;
+        for i in 0..512 {
+            let mut value = child.add(i).read();
+            if value & PTE_PRESENT == 0 {
+                continue;
+            }
+            if relax_user {
+                value &= !PTE_USER;
+            }
+            if relax_write {
+                value &= !PTE_WRITABLE;
+            }
+            if relax_execute {
+                value |= PTE_NO_EXECUTE;
+            }
+            child.add(i).write(value);
+        }
+        if relax_user {
+            entry |= PTE_USER;
+        }
+        if relax_write {
+            entry |= PTE_WRITABLE;
+        }
+        if relax_execute {
+            entry &= !PTE_NO_EXECUTE;
+        }
+        slot.write(entry);
+    }
+}
+
+impl Pml4AddressSpace {
+    pub fn new() -> Result<Self, PageError> {
+        let source = BOOT_ROOT.load(core::sync::atomic::Ordering::SeqCst);
+        assert_ne!(
+            source, 0,
+            "boot CR3 must be captured before process creation"
+        );
+        let result = Self {
+            root_paddr: allocate_table()?,
+        };
+        // shortcut: privately clone boot identity tables until the kernel has a permanent higher-half mapping.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (source as *const u64).add(256),
+                (result.root_paddr as *mut u64).add(256),
+                256,
+            );
+            for i in 0..256 {
+                let entry = (source as *const u64).add(i).read();
+                if entry & PTE_PRESENT != 0 {
+                    let child = clone_table(pte_to_paddr(entry), 3)?;
+                    (result.root_paddr as *mut u64)
+                        .add(i)
+                        .write((entry & !ADDRESS_MASK) | child as u64);
+                }
             }
         }
-        Ok(Self { root_paddr })
+        Ok(result)
     }
 
-    /// Returns the physical address of the root PML4 table.
     pub fn root_paddr(&self) -> usize {
         self.root_paddr
     }
@@ -180,10 +269,13 @@ impl AddressSpace for Pml4AddressSpace {
         if !virt_addr.is_multiple_of(PAGE_SIZE) || !phys_addr.is_multiple_of(PAGE_SIZE) {
             return Err(PageError::Unaligned);
         }
-        if !is_canonical(virt_addr) {
+        if !is_canonical(virt_addr) || pml4_index(virt_addr) >= 256 {
             return Err(PageError::OutOfRange);
         }
 
+        if !flags.readable {
+            return Err(PageError::OutOfRange);
+        }
         // Level 4 (PML4) walk
         let pml4 = self.root_paddr as *mut u64;
         let l4_idx = pml4_index(virt_addr);
@@ -195,6 +287,9 @@ impl AddressSpace for Pml4AddressSpace {
             }
             pdpt_paddr as *mut u64
         } else {
+            unsafe {
+                open_table(pml4.add(l4_idx), flags);
+            }
             pte_to_paddr(pml4e) as *mut u64
         };
 
@@ -211,6 +306,9 @@ impl AddressSpace for Pml4AddressSpace {
             // Already mapped as a 1 GiB huge page leaf
             return Err(PageError::AlreadyMapped);
         } else {
+            unsafe {
+                open_table(pdpt.add(l3_idx), flags);
+            }
             pte_to_paddr(pdpte) as *mut u64
         };
 
@@ -227,6 +325,9 @@ impl AddressSpace for Pml4AddressSpace {
             // Already mapped as a 2 MiB huge page leaf
             return Err(PageError::AlreadyMapped);
         } else {
+            unsafe {
+                open_table(pd.add(l2_idx), flags);
+            }
             pte_to_paddr(pde) as *mut u64
         };
 
@@ -250,7 +351,7 @@ impl AddressSpace for Pml4AddressSpace {
         if !virt_addr.is_multiple_of(PAGE_SIZE) {
             return Err(PageError::Unaligned);
         }
-        if !is_canonical(virt_addr) {
+        if !is_canonical(virt_addr) || pml4_index(virt_addr) >= 256 {
             return Err(PageError::OutOfRange);
         }
 
@@ -299,10 +400,13 @@ impl AddressSpace for Pml4AddressSpace {
         if !virt_addr.is_multiple_of(PAGE_SIZE) {
             return Err(PageError::Unaligned);
         }
-        if !is_canonical(virt_addr) {
+        if !is_canonical(virt_addr) || pml4_index(virt_addr) >= 256 {
             return Err(PageError::OutOfRange);
         }
 
+        if !flags.readable {
+            return Err(PageError::OutOfRange);
+        }
         // Level 4 (PML4) walk
         let pml4 = self.root_paddr as *mut u64;
         let l4_idx = pml4_index(virt_addr);
@@ -335,6 +439,11 @@ impl AddressSpace for Pml4AddressSpace {
             return Err(PageError::NotMapped);
         }
 
+        unsafe {
+            open_table(pml4.add(l4_idx), flags);
+            open_table(pdpt.add(l3_idx), flags);
+            open_table(pd.add(l2_idx), flags);
+        }
         let phys_addr = pte_to_paddr(pte);
         let new_pte = make_leaf_entry(phys_addr, flags);
         unsafe {
@@ -349,70 +458,34 @@ impl AddressSpace for Pml4AddressSpace {
         if !is_canonical(virt_addr) {
             return None;
         }
-
-        // Level 4 (PML4) walk
-        let pml4 = self.root_paddr as *const u64;
-        let l4_idx = pml4_index(virt_addr);
-        let pml4e = unsafe { pml4.add(l4_idx).read() };
-        if (pml4e & PTE_PRESENT) == 0 {
-            return None;
-        }
-        let pdpt = pte_to_paddr(pml4e) as *const u64;
-
-        // Level 3 (PDPT) walk
-        let l3_idx = pdpt_index(virt_addr);
-        let pdpte = unsafe { pdpt.add(l3_idx).read() };
-        if (pdpte & PTE_PRESENT) == 0 {
-            return None;
-        }
-        if (pdpte & PTE_HUGE) != 0 {
-            // 1 GiB huge page leaf: bits 29..0 from virt_addr
-            let paddr = (pte_to_paddr(pdpte) & !0x3fff_ffff) | (virt_addr & 0x3fff_ffff);
-            let flags = MapFlags {
-                readable: (pdpte & PTE_PRESENT) != 0,
-                writable: (pdpte & PTE_WRITABLE) != 0,
-                executable: (pdpte & PTE_NO_EXECUTE) == 0,
-                user: (pdpte & PTE_USER) != 0,
-            };
-            return Some((paddr, flags));
-        }
-        let pd = pte_to_paddr(pdpte) as *const u64;
-
-        // Level 2 (PD) walk
-        let l2_idx = pd_index(virt_addr);
-        let pde = unsafe { pd.add(l2_idx).read() };
-        if (pde & PTE_PRESENT) == 0 {
-            return None;
-        }
-        if (pde & PTE_HUGE) != 0 {
-            // 2 MiB huge page leaf: bits 20..0 from virt_addr
-            let paddr = (pte_to_paddr(pde) & !0x1f_ffff) | (virt_addr & 0x1f_ffff);
-            let flags = MapFlags {
-                readable: (pde & PTE_PRESENT) != 0,
-                writable: (pde & PTE_WRITABLE) != 0,
-                executable: (pde & PTE_NO_EXECUTE) == 0,
-                user: (pde & PTE_USER) != 0,
-            };
-            return Some((paddr, flags));
-        }
-        let pt = pte_to_paddr(pde) as *const u64;
-
-        // Level 1 (PT) walk
-        let l1_idx = pt_index(virt_addr);
-        let pte = unsafe { pt.add(l1_idx).read() };
-        if (pte & PTE_PRESENT) == 0 {
-            return None;
-        }
-
-        // 4 KiB leaf page: bits 11..0 from virt_addr
-        let paddr = pte_to_paddr(pte) | (virt_addr & 0xfff);
-        let flags = MapFlags {
-            readable: (pte & PTE_PRESENT) != 0,
-            writable: (pte & PTE_WRITABLE) != 0,
-            executable: (pte & PTE_NO_EXECUTE) == 0,
-            user: (pte & PTE_USER) != 0,
+        let indices = [
+            pml4_index(virt_addr),
+            pdpt_index(virt_addr),
+            pd_index(virt_addr),
+            pt_index(virt_addr),
+        ];
+        let mut table = self.root_paddr;
+        let mut flags = MapFlags {
+            readable: true,
+            writable: true,
+            executable: true,
+            user: true,
         };
-        Some((paddr, flags))
+        for (depth, index) in indices.into_iter().enumerate() {
+            let entry = unsafe { (table as *const u64).add(index).read() };
+            if entry & PTE_PRESENT == 0 {
+                return None;
+            }
+            flags.writable &= entry & PTE_WRITABLE != 0;
+            flags.user &= entry & PTE_USER != 0;
+            flags.executable &= entry & PTE_NO_EXECUTE == 0;
+            if depth == 3 || ((depth == 1 || depth == 2) && entry & PTE_HUGE != 0) {
+                let mask = (1usize << (12 + (3 - depth) * 9)) - 1;
+                return Some(((pte_to_paddr(entry) & !mask) | (virt_addr & mask), flags));
+            }
+            table = pte_to_paddr(entry);
+        }
+        None
     }
 
     unsafe fn activate(&self) {
@@ -443,39 +516,68 @@ impl AddressSpace for Pml4AddressSpace {
 
 impl Drop for Pml4AddressSpace {
     fn drop(&mut self) {
-        if self.root_paddr == 0 {
-            return;
+        // Only lower tables are owned; upper tables and every mapped leaf belong elsewhere.
+        unsafe {
+            free_table(self.root_paddr, 4, 256);
         }
-
-        let pml4 = self.root_paddr as *mut u64;
-        // CRITICAL: ONLY traverse entries 0..255 (user space)!
-        // Never traverse or free entries 256..511 (shared kernel tables).
-        for i4 in 0..256 {
-            let pml4e = unsafe { pml4.add(i4).read() };
-            if (pml4e & PTE_PRESENT) != 0 {
-                let pdpt_paddr = pte_to_paddr(pml4e);
-                let pdpt = pdpt_paddr as *mut u64;
-                for i3 in 0..ENTRIES_PER_TABLE {
-                    let pdpte = unsafe { pdpt.add(i3).read() };
-                    if (pdpte & PTE_PRESENT) != 0 && (pdpte & PTE_HUGE) == 0 {
-                        let pd_paddr = pte_to_paddr(pdpte);
-                        let pd = pd_paddr as *mut u64;
-                        for i2 in 0..ENTRIES_PER_TABLE {
-                            let pde = unsafe { pd.add(i2).read() };
-                            if (pde & PTE_PRESENT) != 0 && (pde & PTE_HUGE) == 0 {
-                                let pt_paddr = pte_to_paddr(pde);
-                                let _ = bitmap::free_frame(pt_paddr);
-                            }
-                        }
-                        let _ = bitmap::free_frame(pd_paddr);
-                    }
-                }
-                let _ = bitmap::free_frame(pdpt_paddr);
-            }
-        }
-        let _ = bitmap::free_frame(self.root_paddr);
-        self.root_paddr = 0;
     }
+}
+
+/// Boot assertions for inherited permissions, huge leaves, and private table ownership.
+pub fn self_test() {
+    let before = bitmap::stats().free_pages;
+    {
+        let mut space = Pml4AddressSpace::new().expect("paging test root");
+        let base = 0x0000_0030_0000_0000;
+        unsafe {
+            space.map_page(base, 0x1000, MapFlags::user_rw()).unwrap();
+            space
+                .map_page(base + 4096, 0x2000, MapFlags::user_rx())
+                .unwrap();
+            let root_slot = (space.root_paddr as *mut u64).add(pml4_index(base));
+            let pdpt = pte_to_paddr(root_slot.read()) as *mut u64;
+            let parent = pdpt.add(pdpt_index(base));
+            let original = parent.read();
+            parent.write((original & !(PTE_USER | PTE_WRITABLE)) | PTE_NO_EXECUTE);
+            let restricted = space.query(base + 17).unwrap();
+            assert_eq!(restricted.0, 0x1011);
+            assert!(!restricted.1.user && !restricted.1.writable && !restricted.1.executable);
+            // Opening a parent for one leaf must preserve sibling restrictions.
+            space.protect_page(base, MapFlags::user_rw()).unwrap();
+            assert_eq!(space.query(base).unwrap().1, MapFlags::user_rw());
+            let sibling = space.query(base + 4096).unwrap().1;
+            assert!(!sibling.user && !sibling.writable && !sibling.executable);
+
+            let pd = pte_to_paddr(parent.read()) as *mut u64;
+            pd.add(1)
+                .write(0x20_0000 | PTE_PRESENT | PTE_USER | PTE_WRITABLE | PTE_HUGE);
+            assert_eq!(space.query(base + 0x20_0123).unwrap().0, 0x20_0123);
+            parent.write(parent.read() & !PTE_WRITABLE);
+            assert!(!space.query(base + 0x20_0123).unwrap().1.writable);
+
+            pdpt.add(pdpt_index(base) + 1)
+                .write(0x4000_0000 | PTE_PRESENT | PTE_USER | PTE_WRITABLE | PTE_HUGE);
+            assert_eq!(space.query(base + 0x4000_0123).unwrap().0, 0x4000_0123);
+            root_slot.write(root_slot.read() & !PTE_USER);
+            assert!(!space.query(base + 0x4000_0123).unwrap().1.user);
+            assert_eq!(
+                space.map_page(0xffff_8000_0000_0000, 0x3000, MapFlags::user_rw()),
+                Err(PageError::OutOfRange)
+            );
+            let source = BOOT_ROOT.load(core::sync::atomic::Ordering::SeqCst) as *const u64;
+            let source_pdpt = pte_to_paddr(source.add(pml4_index(base)).read()) as *const u64;
+            assert_eq!(
+                source_pdpt.add(pdpt_index(base)).read() & PTE_PRESENT,
+                0,
+                "private mapping modified boot root"
+            );
+        }
+    }
+    assert_eq!(
+        bitmap::stats().free_pages,
+        before,
+        "paging self-test leaked tables"
+    );
 }
 
 #[cfg(test)]
