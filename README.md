@@ -224,11 +224,19 @@ reclamation remain future work.
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first.
-Read [docs/architecture.md](docs/architecture.md) second.
-Read [docs/capability-model.md](docs/capability-model.md) third.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the project’s contribution standards. If your work changes kernel architecture, read [docs/architecture.md](docs/architecture.md) and [docs/capability-model.md](docs/capability-model.md) before proposing a design.
 
-Then find something in the roadmap that isn't checked off and start there.
+### Not sure where to start?
+
+Your first contribution does not need to touch the kernel.
+
+- **New to systems programming:** documentation, tests, CI and tooling, or diagnostics.
+- **Comfortable with Rust:** bounded kernel tasks, syscall plumbing, validation, and tests.
+- **Comfortable with low-level systems or architecture code:** paging, syscall paths, scheduler, drivers, and RISC-V/x86-64 parity.
+- **Security-focused:** capability-model review, unsafe invariants, threat modeling, or fuzzing.
+- **Non-code:** translations, documentation, testing, UX, or Easter eggs and voice text where appropriate.
+
+The roadmap describes project direction. Not every unchecked item is a good first issue. Prefer issues labeled `good first issue`, `help wanted`, or an equivalent contributor-friendly label. If you do not see a scoped issue, ask before taking on a large change.
 
 The kernel is written in Rust. The docs are written in English.
 Both should be precise, honest, and free of unnecessary complexity.

@@ -1,19 +1,15 @@
 # Contributing to Wolfram
 
-Welcome. You're here because you want to help build a kernel.
-That's either very exciting or a sign of questionable judgment.
-Probably both.
+Wolfram is a kernel project. Your first contribution does not need to touch the kernel. Documentation, tests, CI and tooling, diagnostics, and localization all have useful entry points.
 
 ---
 
 ## Before You Write Code
 
-Read these in order:
+Start with this guide. Read the architecture documents when the change calls for them:
 
-1. [docs/architecture.md](docs/architecture.md) — the full architecture, all six decisions
-2. [docs/capability-model.md](docs/capability-model.md) — the capability model in depth
-3. [docs/ipc.md](docs/ipc.md) — IPC primitives, when to use each
-4. [docs/memory.md](docs/memory.md) — VMO model, no anonymous memory, why
+- For kernel architecture work, read [docs/architecture.md](docs/architecture.md) and [docs/capability-model.md](docs/capability-model.md) before proposing a design.
+- For IPC or memory changes, also read [docs/ipc.md](docs/ipc.md) or [docs/memory.md](docs/memory.md), respectively.
 
 If something in the docs is wrong or unclear, that's a contribution too.
 Open a PR. Docs are code.
@@ -22,13 +18,23 @@ Open a PR. Docs are code.
 
 ## What To Work On
 
-Check the roadmap in README.md. If something isn't checked off, it needs doing.
-If you don't know where to start, `Phase 2` items are the most approachable.
-Help us build out the core kernel functionality like the capability system and IPC.
+Choose a task that fits your experience:
+
+- **New to systems programming:** documentation, tests, CI and tooling, or diagnostics.
+- **Comfortable with Rust:** bounded kernel tasks, syscall plumbing, validation, and tests.
+- **Comfortable with low-level systems or architecture code:** paging, syscall paths, scheduler, drivers, and RISC-V/x86-64 parity.
+- **Security-focused:** capability-model review, unsafe invariants, threat modeling, or fuzzing.
+- **Non-code:** translations, documentation, testing, UX, or Easter eggs and voice text where appropriate.
+
+The [roadmap](ROADMAP.md) describes project direction, not a queue of starter tasks. Not every unchecked item is a good first issue. Prefer issues labeled `good first issue`, `help wanted`, or an equivalent contributor-friendly label. If none are available, open an issue to ask which bounded task needs help. Do not assume an unclaimed architecture item is ready to pick up.
 
 For larger contributions, open an issue first and describe what you're doing.
 Not because we'll say no. Because coordination prevents two people building
 the same thing in parallel with incompatible designs.
+
+### Non-code Contributions
+
+Translations and localization are welcome, along with documentation, testing, UX, diagnostics, and Easter eggs or voice text where appropriate. Open an issue first for a new translation so the language and scope are clear.
 
 ---
 
