@@ -233,8 +233,10 @@ Then find something in the roadmap that isn't checked off and start there.
 The kernel is written in Rust. The docs are written in English.
 Both should be precise, honest, and free of unnecessary complexity.
 
-If you find a security issue in the capability model specifically, that's important —
-open an issue marked `[SECURITY]` and be detailed.
+If you find a security issue in the capability model specifically, that's important. 
+Open an issue marked `[SECURITY]` and be detailed.
+
+Non-code contributions are also welcome. 
 <br>
 
 ## Special thanks to our contributors:
