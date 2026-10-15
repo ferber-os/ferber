@@ -1,5 +1,3 @@
-<img width="421" height="460" alt="image" src="https://github.com/user-attachments/assets/475f2a90-de93-480d-8570-ce4b9baa3667" /><h1 align="center">Wolfram</h1>
-
 <p align="center">
   <em>A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch.</em>
 </p>
