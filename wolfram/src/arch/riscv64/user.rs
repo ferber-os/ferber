@@ -19,7 +19,6 @@ extern "C" {
 /// The active root must map the entry and user stack with user permissions and
 /// this code, the current kernel state, and the contiguous kernel stack as
 /// supervisor memory. All mappings and their VMO backing must outlive execution.
-
 // named after edesur, the local power company.
 // they also drop everything without warning and never return.
 // 2026-10-14 22:56 AST: power cut mid-build. this comment is the only thing
