@@ -180,6 +180,11 @@ successful normal boot prints
 The separate `user-isolation-probe` feature attempts a supervisor-memory read
 and expects a diagnosed user protection fault followed by
 `[WOLFRAM_TEST] privilege_isolation: PASS`.
+The separate `user-write-probe` and `user-execute-probe` features require a
+user protection fault when writing RX code or entering an NX code page,
+respectively. Their markers are `privilege_write_rx: PASS` and
+`privilege_execute_nx: PASS`, with the same `[WOLFRAM_TEST]` prefix. Run each
+fault probe separately.
 
 The boot allocator reads RAM from the firmware device tree and manages the bank
 containing the kernel (up to 4 GiB). It keeps the kernel image, device tree, and
@@ -187,9 +192,16 @@ firmware-declared reserved ranges unavailable for allocation. Init is planned
 for Phase 3.
 
 The x86-64 kernel and UEFI loader exercise the same user-mode contract in
-QEMU/OVMF. `bash scripts/riscv-smoke.sh` and `make x86-smoke` check normal and isolation
-boots in debug and release builds. The x86 suite also checks a deliberate
-invalid-opcode exception and its expected panic diagnostics. `scripts/x86-preview.sh`
+QEMU/OVMF. `bash scripts/riscv-smoke.sh` and `make x86-smoke` check normal,
+supervisor-read, RX-write, and NX-execute boots in debug and release builds.
+The x86 roundtrip also checks hostile user direction flags, kernel entry
+flags, and sanitized return flags with preserved arithmetic flags. The x86
+suite retains its deliberate invalid-opcode exception check.
+`bash scripts/x86-iso-smoke.sh` additionally boots a release-profile ISO
+through OVMF's CD-ROM path using the shared release packaging script. Its
+kernel enables only `qemu-debug-port` diagnostics for automated log capture;
+it is not byte-identical to the published kernel. CI runs all three suites.
+`scripts/x86-preview.sh`
 builds the actual bare-metal kernel and checks the ELF that the loader expects;
 see the [UEFI loader notes](boot/uefi/README.md) for build and packaging steps.
 The MSI B650M-A PRO WIFI previously booted the Phase 1 path from USB,

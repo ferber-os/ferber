@@ -135,7 +135,7 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
   - [x] x86-64: TSS configuration with `rsp0` kernel stack pointer
   - [x] x86-64: `MSR_LSTAR`, `MSR_STAR`, `MSR_FMASK`, and EFER.SCE setup for `syscall`
   - [x] x86-64: Trusted syscall stack selected through `swapgs` before using user-controlled RSP
-- [x] Resident user probes on both architectures: returning yield/unknown syscalls, register/stack checks, exit, and a separate supervisor-memory fault test
+- [x] Resident user probes on both architectures: returning yield/unknown syscalls, register/stack checks, exit, and separate supervisor-read, RX-write, and NX-execute fault tests
 - [ ] System call dispatch table:
   - [x] Bootstrap dispatcher: Wolfram numbers, six argument registers, and `-38` for unknown numbers in the armed probe
   - [x] Bootstrap task operations: immediate-return yield hint (`0`) and thread exit (`1`) followed by halt

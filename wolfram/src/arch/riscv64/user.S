@@ -281,10 +281,18 @@ riscv_user_probe_end:
     .align 2
     .globl riscv_isolation_probe_start
 riscv_isolation_probe_start:
+    .if {write_probe}
+    li t0, {user_pc}
+    .else
     li t0, 0x80200000
+    .endif
     .globl riscv_isolation_fault
 riscv_isolation_fault:
+    .if {write_probe}
+    sd t1, 0(t0)
+    .else
     ld t1, 0(t0)
+    .endif
     li a0, 1
     li a7, 1
     ecall

@@ -9,7 +9,9 @@ pub mod serial;
 pub mod trap;
 mod user;
 
-pub use user::{drop_to_user, isolation_fault_offset, isolation_probe, user_probe};
+pub use user::{
+    drop_to_user, isolation_address, isolation_fault_offset, isolation_probe, user_probe,
+};
 
 #[allow(unused_imports)]
 pub use context::{switch_context, CpuContext};

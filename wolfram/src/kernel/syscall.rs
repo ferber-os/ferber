@@ -12,7 +12,10 @@ use crate::kernel::task::{Job, Process, ProcessState, Thread, ThreadState};
 use crate::kprintln;
 use alloc::sync::Arc;
 
-const USER_PC: usize = 0x0000_0010_0000_0000;
+#[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
+compile_error!("user-write-probe and user-execute-probe must run separately");
+
+pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
 const USER_STACK: usize = 0x0000_0020_0000_0000;
 const STACK_SIZE: usize = 16384;
 const ARG_CANARIES: [usize; 6] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
@@ -66,8 +69,13 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     #[cfg(target_arch = "riscv64")]
     let supervisor = unsafe { arch::prepare_user_space(space, memory.start, memory.end) };
     unsafe {
+        let code_flags = if cfg!(feature = "user-execute-probe") {
+            MapFlags::user_ro()
+        } else {
+            MapFlags::user_rx()
+        };
         space
-            .map_vmo(USER_PC, code.frames(), MapFlags::user_rx())
+            .map_vmo(USER_PC, code.frames(), code_flags)
             .expect("map user code");
         let task = thread.lock();
         space
@@ -174,21 +182,39 @@ pub fn user_fault(pc: usize, addr: usize, cause: usize) -> ! {
         task.isolation,
         "unexpected user fault pc={pc:#x} address={addr:#x}"
     );
-    assert_eq!(pc, USER_PC + arch::isolation_fault_offset());
+    let offset = if cfg!(feature = "user-execute-probe") {
+        0
+    } else {
+        arch::isolation_fault_offset()
+    };
+    assert_eq!(pc, USER_PC + offset);
+    assert_eq!(addr, arch::isolation_address());
     #[cfg(target_arch = "riscv64")]
     {
-        assert_eq!(addr, 0x80200000);
-        assert_eq!(cause, 13);
+        let expected = if cfg!(feature = "user-write-probe") {
+            15
+        } else if cfg!(feature = "user-execute-probe") {
+            12
+        } else {
+            13
+        };
+        assert_eq!(cause, expected);
     }
     #[cfg(target_arch = "x86_64")]
     {
-        assert_eq!(addr, arch::isolation_address());
         assert_eq!(cause, 14);
     }
     assert_eq!(task.process.lock().handle_table().lock().count(), 0);
     task.thread.lock().set_state(ThreadState::Dead);
     drop(bootstrap);
-    kprintln!("[WOLFRAM_TEST] privilege_isolation: PASS");
+    let marker = if cfg!(feature = "user-write-probe") {
+        "privilege_write_rx"
+    } else if cfg!(feature = "user-execute-probe") {
+        "privilege_execute_nx"
+    } else {
+        "privilege_isolation"
+    };
+    kprintln!("[WOLFRAM_TEST] {}: PASS", marker);
     halt()
 }
 

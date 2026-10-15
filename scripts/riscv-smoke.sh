@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise returning user syscalls and rejected supervisor reads on both profiles.
+# Exercise returning user syscalls and hardware permission faults on both profiles.
 set -euo pipefail
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -21,7 +21,11 @@ run_case() {
     local qemu_log="$trial_dir/$profile-$scenario-${size}M-${harts}h-qemu.log"
     local cargo_args=(--target riscv64gc-unknown-none-elf)
     [[ "$profile" != release ]] || cargo_args+=(--release)
-    [[ "$scenario" != isolation ]] || cargo_args+=(--features user-isolation-probe)
+    case "$scenario" in
+        isolation) cargo_args+=(--features user-isolation-probe) ;;
+        write-rx) cargo_args+=(--features user-write-probe) ;;
+        execute-nx) cargo_args+=(--features user-execute-probe) ;;
+    esac
     (cd "$repo_dir/wolfram" && cargo build --quiet "${cargo_args[@]}")
     local kernel="$repo_dir/wolfram/target/riscv64gc-unknown-none-elf/$profile/wolfram"
     local status=0
@@ -48,5 +52,7 @@ for profile in debug release; do
     run_case "$profile" normal 128 1
     run_case "$profile" normal 256 4
     run_case "$profile" isolation 128 1
+    run_case "$profile" write-rx 128 1
+    run_case "$profile" execute-nx 128 1
 done
 smoke_passed=1

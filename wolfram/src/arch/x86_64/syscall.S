@@ -22,6 +22,8 @@ x86_syscall_entry:
     push r13
     push r14
     push r15
+    pushfq
+    pop rsi
     cld
     mov rdi, rsp
     call x86_syscall_handler
@@ -101,6 +103,17 @@ x86_enter_user:
     jne 9f
 .endm
 
+.macro PROBE_SYSCALL
+    # Set DF and every arithmetic flag; capture returned flags before comparisons.
+    push 0xcd7
+    popfq
+    syscall
+    pushfq
+    pop rcx
+    cmp rcx, 0x8d7
+    jne 9f
+.endm
+
 .global x86_user_probe_start
 .global x86_user_probe_end
 x86_user_probe_start:
@@ -156,17 +169,17 @@ x86_user_probe_start:
     mov r8d, 0x55
     mov r9d, 0x66
     xor eax, eax
-    syscall
+    PROBE_SYSCALL
     test rax, rax
     jnz 9f
     CHECK_USER
     xor eax, eax
-    syscall
+    PROBE_SYSCALL
     test rax, rax
     jnz 9f
     CHECK_USER
     mov eax, 99
-    syscall
+    PROBE_SYSCALL
     cmp rax, -38
     jne 9f
     CHECK_USER
@@ -195,12 +208,20 @@ x86_user_probe_end:
 x86_isolation_start:
     mov rax, [rip + x86_isolation_target]
 x86_isolation_fault:
+    .if {write_probe}
+    mov [rax], rax
+    .else
     mov rax, [rax]
+    .endif
     mov edi, 1
     mov eax, 1
     syscall
     ud2
 .balign 8
 x86_isolation_target:
+    .if {write_probe}
+    .quad {user_pc}
+    .else
     .quad x86_enter_user
+    .endif
 x86_isolation_end:

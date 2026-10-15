@@ -34,13 +34,15 @@ framebuffer. Kernel segments receive per-page writable and executable
 permissions. The kernel must validate the handoff and must never call UEFI
 boot services afterward.
 
-The release kernel and loader have reached the expected `spawn init` panic in
-QEMU/OVMF. The debug kernel has passed the same boot check. The MSI
-B650M-A PRO WIFI has also booted the loader and kernel from USB, initialized
-the physical allocator, and reached the expected diagnosed panic.
+Debug and release kernels now complete returning userspace syscall probes in
+QEMU/OVMF. Separate probes verify supervisor-read, RX-write, and NX-execute
+protection faults. The earlier MSI B650M-A PRO WIFI USB boot initialized the
+physical allocator and reached the Phase 1 diagnosed panic; it does not
+validate the userspace boundary.
 
 Run `make x86-smoke` from the repository root to repeat the debug and release
-boot checks and an opt-in invalid-opcode exception probe. The smoke script
+userspace roundtrip and protection checks, plus an invalid-opcode exception
+probe. The smoke script
 builds its kernels in a temporary target directory, so its deliberate fault
 image cannot replace the ordinary kernel intended for a USB stick.
 
@@ -51,3 +53,9 @@ the UEFI loader and `WOLFRAM.ELF`; placing the ELF only in the ISO filesystem
 would not work because the loader reads from its own FAT filesystem. Boot it
 with QEMU/OVMF using `-cdrom wolfram.iso -boot order=d`. The ISO tests the CD
 boot path; the MSI USB test still uses a FAT32 partition with the two files.
+
+Run `bash scripts/x86-iso-smoke.sh` to build and boot a temporary ISO
+automatically. It uses `scripts/build-iso.sh`, the same packager as
+`make x86-iso` and the release workflow, and requires the normal userspace
+PASS marker. The test kernel adds `qemu-debug-port` diagnostics for log
+capture. Set `OVMF_CODE` and `OVMF_VARS` to override the firmware paths.

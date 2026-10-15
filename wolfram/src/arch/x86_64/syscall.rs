@@ -2,7 +2,11 @@
 
 use core::arch::{asm, global_asm};
 
-global_asm!(include_str!("syscall.S"));
+global_asm!(
+    include_str!("syscall.S"),
+    write_probe = const cfg!(feature = "user-write-probe") as usize,
+    user_pc = const crate::kernel::syscall::USER_PC,
+);
 
 #[repr(C)]
 pub struct SyscallFrame {
@@ -85,7 +89,15 @@ unsafe extern "C" {
 }
 
 #[no_mangle]
-extern "C" fn x86_syscall_handler(frame: &mut SyscallFrame) {
+extern "C" fn x86_syscall_handler(frame: &mut SyscallFrame, entry_flags: u64) {
+    assert_eq!(
+        entry_flags & ((1 << 9) | (1 << 10) | (1 << 8) | (1 << 14) | (1 << 18)),
+        0,
+        "unsafe syscall entry flags"
+    );
+    if cfg!(feature = "qemu-debug-port") && matches!(frame.rax, 0 | 99) {
+        assert_eq!(frame.rflags, 0xcd7, "user flags probe was not armed");
+    }
     assert!(
         frame.cs == 0x23 && frame.ss == 0x1b,
         "invalid user selectors"
@@ -149,5 +161,12 @@ pub fn isolation_fault_offset() -> usize {
     (&raw const x86_isolation_fault as usize) - (&raw const x86_isolation_start as usize)
 }
 pub fn isolation_address() -> usize {
-    x86_enter_user as *const () as usize
+    if cfg!(any(
+        feature = "user-write-probe",
+        feature = "user-execute-probe"
+    )) {
+        crate::kernel::syscall::USER_PC
+    } else {
+        x86_enter_user as *const () as usize
+    }
 }

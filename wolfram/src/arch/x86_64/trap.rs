@@ -147,7 +147,14 @@ extern "C" fn x86_trap_handler(frame: *const TrapFrame) -> ! {
     // SAFETY: assembly passes a pointer to the hardware frame on this stack.
     let frame = unsafe { &*frame };
     if frame.vector == 14 && frame.cs & 3 == 3 {
-        assert_eq!(frame.error & 0xf, 0x5, "unexpected user page-fault access");
+        let expected = if cfg!(feature = "user-write-probe") {
+            0x7
+        } else if cfg!(feature = "user-execute-probe") {
+            0x15
+        } else {
+            0x5
+        };
+        assert_eq!(frame.error & 0x1f, expected, "unexpected user page-fault access");
         let address: usize;
         unsafe {
             asm!("mov {}, cr2", out(reg) address, options(nomem, nostack));

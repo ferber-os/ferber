@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise UEFI handoff, returning user syscalls, isolation, and fatal exceptions.
+# Exercise UEFI handoff, returning syscalls, permission faults, and fatal exceptions.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -41,9 +41,11 @@ run_case() {
     if [[ "$profile" == release ]]; then
         cargo_args+=(--release)
     fi
-    if [[ "$scenario" == isolation ]]; then
-        cargo_args+=(--features user-isolation-probe)
-    fi
+    case "$scenario" in
+        isolation) cargo_args+=(--features user-isolation-probe) ;;
+        write-rx) cargo_args+=(--features user-write-probe) ;;
+        execute-nx) cargo_args+=(--features user-execute-probe) ;;
+    esac
     if [[ "$scenario" == exception ]]; then
         cargo_args=(--features x86-exception-probe --release)
     fi
@@ -99,4 +101,8 @@ run_case release normal 1024
 run_case release exception 512
 run_case debug isolation 512
 run_case release isolation 512
+run_case debug write-rx 512
+run_case release write-rx 512
+run_case debug execute-nx 512
+run_case release execute-nx 512
 smoke_passed=1

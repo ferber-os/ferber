@@ -31,7 +31,9 @@ x86-smoke:
 	scripts/x86-smoke.sh
 
 x86-iso:
-	scripts/x86-iso.sh
+	scripts/x86-preview.sh --release
+	cd boot/uefi && cargo +nightly build --release --target x86_64-unknown-uefi
+	bash scripts/build-iso.sh wolfram/target/x86_64-unknown-none/release/wolfram boot/uefi/target/x86_64-unknown-uefi/release/wolfram-uefi-loader.efi wolfram.iso
 
 clean:
 	cd wolfram && cargo clean

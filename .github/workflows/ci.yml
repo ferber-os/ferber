@@ -24,7 +24,7 @@ jobs:
           components: rust-src,llvm-tools-preview,clippy
 
       - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-misc qemu-system-x86 ovmf ripgrep
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-misc qemu-system-x86 ovmf ripgrep xorriso dosfstools mtools
 
       - name: Build (RISC-V)
         working-directory: wolfram
@@ -49,13 +49,15 @@ jobs:
       - name: Clippy (user probes)
         working-directory: wolfram
         run: |
-          cargo clippy --target riscv64gc-unknown-none-elf --features user-isolation-probe -- -D warnings
-          cargo clippy --target x86_64-unknown-none --features qemu-debug-port,user-isolation-probe -- -D warnings
+          for feature in user-isolation-probe user-write-probe user-execute-probe; do
+            cargo clippy --target riscv64gc-unknown-none-elf --features "$feature" -- -D warnings
+            cargo clippy --target x86_64-unknown-none --features "qemu-debug-port,$feature" -- -D warnings
+          done
           cargo clippy --target x86_64-unknown-none --features x86-exception-probe -- -D warnings
 
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
@@ -68,6 +70,12 @@ jobs:
           OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
           OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
         run: bash scripts/x86-smoke.sh
+
+      - name: Smoke test (x86-64 release ISO)
+        env:
+          OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+          OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+        run: bash scripts/x86-iso-smoke.sh
 
   release:
     name: Release
@@ -96,34 +104,10 @@ jobs:
 
       - name: Build UEFI ISO
         run: |
-          set -euo pipefail
-
-          KERNEL=wolfram/target/x86_64-unknown-none/release/wolfram
-          LOADER=boot/uefi/target/x86_64-unknown-uefi/release/wolfram-uefi-loader.efi
-
-          # Size FAT32 image to payload + 10 MiB headroom (FAT32 minimum: 33 MiB)
-          payload_kb=$(du -sk "$KERNEL" "$LOADER" | awk '{s+=$1} END {print s}')
-          img_kb=$(( (payload_kb + 10240 + 511) / 512 * 512 ))
-          [ "$img_kb" -lt 33792 ] && img_kb=33792
-
-          iso_work=$(mktemp -d)
-          trap 'rm -rf -- "$iso_work"' EXIT
-
-          efi_img="$iso_work/efiboot.img"
-          truncate -s "${img_kb}k" "$efi_img"
-          mkfs.vfat -F 32 -n WOLFRAM "$efi_img" >/dev/null
-          mmd -i "$efi_img" ::/EFI ::/EFI/BOOT
-          mcopy -i "$efi_img" "$LOADER" ::/EFI/BOOT/BOOTX64.EFI
-          mcopy -i "$efi_img" "$KERNEL" ::/WOLFRAM.ELF
-
-          mkdir -p "$iso_work/iso/EFI/BOOT"
-          cp "$efi_img" "$iso_work/iso/EFI/BOOT/efiboot.img"
-
-          xorriso -as mkisofs -R -J -V WOLFRAM \
-            -e EFI/BOOT/efiboot.img -no-emul-boot \
-            -o wolfram.iso "$iso_work/iso"
-
-          echo "ISO: $(du -sh wolfram.iso | cut -f1)"
+          bash scripts/build-iso.sh \
+            wolfram/target/x86_64-unknown-none/release/wolfram \
+            boot/uefi/target/x86_64-unknown-uefi/release/wolfram-uefi-loader.efi \
+            wolfram.iso
 
       - name: Publish release
         uses: softprops/action-gh-release@v3

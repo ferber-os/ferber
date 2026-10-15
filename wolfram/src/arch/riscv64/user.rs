@@ -2,7 +2,11 @@
 
 use core::arch::global_asm;
 
-global_asm!(include_str!("user.S"));
+global_asm!(
+    include_str!("user.S"),
+    write_probe = const cfg!(feature = "user-write-probe") as usize,
+    user_pc = const crate::kernel::syscall::USER_PC,
+);
 
 extern "C" {
     fn riscv_drop_to_user(user_pc: usize, user_sp: usize, kernel_sp: usize) -> !;
@@ -50,5 +54,13 @@ pub fn isolation_fault_offset() -> usize {
     unsafe {
         (&riscv_isolation_fault as *const u8 as usize)
             - (&riscv_isolation_probe_start as *const u8 as usize)
+    }
+}
+
+pub fn isolation_address() -> usize {
+    if cfg!(any(feature = "user-write-probe", feature = "user-execute-probe")) {
+        crate::kernel::syscall::USER_PC
+    } else {
+        0x80200000
     }
 }
