@@ -1,20 +1,25 @@
 # Uranium-238 v0.2.0
 
-*Phase 3 M1 crosses the privilege boundary on RISC-V 64 and x86-64. Resident user probes return through syscalls, exit through the kernel, and separately prove that supervisor-only memory remains inaccessible.*
+*Phase 3 M1 crosses the privilege boundary on RISC-V 64 and x86-64. Resident user probes return through syscalls, preserve their execution state, and test supervisor isolation, writable-code protection, and non-executable pages.*
 
 ## User mode returns through a defined boundary
 
 RISC-V enters U-mode with `sret`, switches to a retained kernel-stack VMO on
 traps, and preserves user registers and nested supervisor state. x86-64 enters
-Ring 3 through `iretq`; GDT/TSS state and `swapgs` select a trusted kernel stack
-before the syscall entry touches user-controlled RSP. Both paths sanitize
+Ring 3 through `iretq`; GDT/TSS state and `swapgs` select a trusted kernel
+stack before syscall entry touches user-controlled RSP. Both paths sanitize
 initial user state and keep delegated interrupts disabled during M1.
 
 The bootstrap ABI uses Linux-style registers with custom Wolfram numbers:
 `0` yields immediately with result zero, `1` marks the bootstrap thread Dead
-and halts, and the probe's unknown number returns `-38`. Each process starts
-with an empty handle table. This ABI does not provide musl compatibility,
-scheduling between user tasks, or complete exit reclamation.
+and halts, and an unknown syscall returns `-38`. The x86 probe also enters
+syscalls with the direction flag set and verifies that kernel entry clears
+unsafe flags while syscall return sanitizes user flags and preserves
+arithmetic flags.
+
+Each process starts with an empty handle table. This bootstrap ABI does not
+provide musl compatibility, scheduling between user tasks, or complete exit
+reclamation.
 
 ## Supervisor mappings survive address-space activation
 
@@ -24,6 +29,9 @@ once, privately clones its lower-half table pages, and shares upper-half
 kernel entries. Existing supervisor leaves retain their effective permissions
 when new user mappings open ancestor entries. These bootstrap layouts remain
 temporary until the permanent kernel mapping is introduced.
+
+The physical allocator currently manages up to 4096 MiB of RAM. Supporting
+system memory beyond that limit remains future work.
 
 Allocated VMOs clear complete frames before exposure. Physical/MMIO VMOs
 preserve existing memory. Kernel stacks require contiguous VMOs, and retained
@@ -41,31 +49,39 @@ The unsafe caller contract requires stable mappings/backing, accessible RAM
 aliases, and nonoverlapping kernel buffers. Concurrent unmapping, demand
 paging, and recoverable copy faults remain future work.
 
-## Boot evidence separates roundtrips from isolation faults
+## Fault probes check the permissions hardware enforces
 
-Normal boots require the exact marker
+The normal probe requires
 `[WOLFRAM_TEST] privilege_switch_roundtrip: PASS` after returning syscalls,
 argument/register/stack checks, successful exit, and zero-handle validation.
-The separate `user-isolation-probe` build requires
-`[WOLFRAM_TEST] privilege_isolation: PASS` after validating a user protection
-fault's origin, instruction, and address. The deliberate x86 invalid-opcode
-build retains its expected exception/panic diagnostics.
+Three separate builds test user reads from supervisor memory, writes to RX
+code, and instruction fetches from an NX page. Each requires its own PASS
+marker only after validating the fault origin, instruction, address, and
+architecture-specific access type. The deliberate x86 invalid-opcode build
+retains its expected exception and panic diagnostics.
 
-The release preparation updates both the kernel and UEFI loader to `0.2.0`.
-Clippy passes with `-D warnings` for both kernel targets, their probe
-configurations, and the UEFI loader. The release UEFI build, debug/release
-freestanding x86 ELF checks, shell syntax checks, and log-parser self-checks
-also pass.
+The release preparation updates both the kernel and UEFI loader to 0.2.0.
+Clippy passes with `-D warnings` for both kernel targets, all three permission
+probe configurations, the x86 exception configuration, and the UEFI loader.
+Release UEFI and freestanding x86 ELF checks, shell syntax checks, and
+smoke-log parser checks also pass.
 
-All 11 QEMU smoke cases pass. The six RISC-V cases cover normal debug/release
-boots at 128 MiB/1 hart and 256 MiB/4 harts, plus debug/release isolation at
-128 MiB/1 hart. The five x86 cases cover debug normal at 512 MiB, release
-normal at 1024 MiB, release invalid-opcode at 512 MiB, and debug/release
-isolation at 512 MiB. The Ubuntu CI workflow itself has not been run as part
-of this local validation.
+All 20 local QEMU boots pass: 10 RISC-V cases, nine x86 UEFI directory boots,
+and one x86 UEFI CD-ROM ISO boot using the release packaging script. The
+RISC-V cases cover debug/release normal boots at 128 MiB/one hart and 256
+MiB/four harts, plus debug/release supervisor-read, RX-write, and NX-execute
+fault probes at 128 MiB/one hart. The x86 directory boots cover debug/release
+normal, isolation, RX-write, and NX-execute probes, plus the release
+invalid-opcode case. The ISO boot reaches the normal userspace roundtrip
+marker. Its test kernel enables `qemu-debug-port` for log capture and is not
+byte-identical to the release kernel. The GitHub Actions workflow was updated
+to run these checks; this local validation does not claim a hosted CI run.
 
-No physical-hardware run is claimed for this milestone. M1 runs one active
-CPU with integer-only resident probes. Timer interrupts, preemptive/SMP
-scheduling, FP/vector user state, init, ELF loading, and musl remain outside
-this release's boundary. The earlier MSI B650M-A PRO WIFI boot evidence
-belongs to Phase 1.
+A physical x86-64 boot has now reached the normal userspace syscall roundtrip
+PASS marker. The machine reported 4096 MiB of managed RAM, and all displayed
+allocator, memory, paging, capability, task, and IPC boot checks passed.
+The screenshot does not show the separate RX-write or NX-execute probes.
+
+M1 runs one active CPU with integer-only resident probes. Timer interrupts,
+preemptive/SMP scheduling, FP/vector user state, `init`, ELF loading, and musl
+remain outside this release's boundary.
