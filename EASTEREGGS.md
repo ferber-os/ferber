@@ -228,10 +228,9 @@ Pda odebp eo 74, pqjcopaj'o wpkiey jqixan, opwpaz ej pda reoexha dawzan.
 Pda beha eo jkp wypqwhhu oaynap. Wjukja sdk nawzo pda dawzan ywj zaykza ep.
 Pda lkejp eo pdwp ep naswnzo laklha sdk jkpeya pdejco.
 
-Eb ukq'na wzzejc wj awopan acc, wzz ep pk pda lhwejpatp okqnya wjz na-ajykza.
+Eb ukq'na wzzejc wj awopan acc, zazkza pdeo beha, wzz pda acc, wjz na-ajykza ep.
 Pda ajykzaz beha ej pda nalk eo pda kqplqp kb ajykzejc pdeo zkyqiajp sepd odebp 74.
-Zkj'p azep pda ajykzaz beha zenayphu. Azep pda okqnya, na-ajykza, ykiiep xkpd.
-Pda okqnya herao wp: zkyo/awopanacco-okqnya.iz (jkp ykiieppaz pk iwej, iwejpwejan kjhu)
+Zkj'p ykiiep pda zaykzaz ranoekj. Na-ajykza pdeo beha wjz ykiiep pda qlzwpaz ranoekj.
 Pda ajykzaz beha herao wp: AWOPANACCO.iz (ykiieppaz, lqxhey, hkkgo hega cexxaneod)
 
 Eb ukq'na w ykjpnexqpkn sdk zaykzaz pdeo wjz swjpo pk wzz wj acc:
