@@ -18,8 +18,9 @@
 
 #![allow(dead_code)]
 
-use crate::kernel::memory::bitmap;
+use crate::boot_info::{BootInfo, BOOT_INFO_VA, BOOT_REGIONS_VA, MMIO_BASE};
 use crate::kernel::memory::paging::{AddressSpace, MapFlags, PageError};
+use crate::kernel::memory::{bitmap, phys_map};
 
 /// 4 KiB page size.
 pub const PAGE_SIZE: usize = 4096;
@@ -128,9 +129,13 @@ fn make_leaf_entry(paddr: usize, flags: MapFlags) -> u64 {
 fn allocate_table() -> Result<usize, PageError> {
     let paddr = bitmap::allocate_frame().ok_or(PageError::OutOfMemory)?;
     unsafe {
-        core::ptr::write_bytes(paddr as *mut u8, 0, PAGE_SIZE);
+        core::ptr::write_bytes(table_ptr(paddr).cast::<u8>(), 0, PAGE_SIZE);
     }
     Ok(paddr)
+}
+
+fn table_ptr(physical: usize) -> *mut u64 {
+    phys_map::phys_to_virt(physical).expect("page table outside RAM aliases") as *mut u64
 }
 
 /// x86-64 PML4 page table address space.
@@ -157,34 +162,208 @@ pub fn init() {
         .expect("boot CR3 initialized twice");
 }
 
+const SCRATCH_TABLE: usize = crate::boot_info::BOOT_DATA_BASE as usize + 0x20_0000;
+const SCRATCH: usize = crate::boot_info::BOOT_DATA_BASE as usize + 0x40_0000;
+
+unsafe fn scratch(physical: usize) -> *mut u64 {
+    (SCRATCH_TABLE as *mut u64)
+        .write_volatile(physical as u64 | PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXECUTE);
+    core::arch::asm!("invlpg [{}]", in(reg) SCRATCH, options(nostack));
+    SCRATCH as *mut u64
+}
+
+/// Populate packed aliases without dereferencing a physical address directly.
+/// Each scratch pointer is used immediately, before mapping another page.
+pub fn bootstrap_aliases(_info: &BootInfo) -> Result<(), PageError> {
+    let root = BOOT_ROOT.load(core::sync::atomic::Ordering::SeqCst);
+    assert_ne!(root, 0, "loader root not captured");
+    let extended = core::arch::x86_64::__cpuid(0x8000_0000).eax;
+    let physical_bits = if extended >= 0x8000_0008 {
+        core::arch::x86_64::__cpuid(0x8000_0008).eax & 255
+    } else {
+        36
+    };
+    for extent in phys_map::extents() {
+        if extent.end as u64 > (1u64 << physical_bits.min(52)) {
+            return Err(PageError::OutOfRange);
+        }
+        let mut pa = extent.start;
+        let mut va = extent.virtual_start;
+        while pa < extent.end {
+            let huge =
+                (pa | va).is_multiple_of(2 * 1024 * 1024) && extent.end - pa >= 2 * 1024 * 1024;
+            let indices = [pml4_index(va), pdpt_index(va), pd_index(va), pt_index(va)];
+            let depth = if huge { 2 } else { 3 };
+            let mut table = root;
+            unsafe {
+                for index in &indices[..depth] {
+                    let mut entry = scratch(table).add(*index).read_volatile();
+                    if entry == 0 {
+                        let child =
+                            phys_map::bootstrap_allocate_page().ok_or(PageError::OutOfMemory)?;
+                        core::ptr::write_bytes(scratch(child).cast::<u8>(), 0, PAGE_SIZE);
+                        entry = child as u64 | PTE_PRESENT | PTE_WRITABLE;
+                        scratch(table).add(*index).write_volatile(entry);
+                    }
+                    assert_eq!(
+                        entry & PTE_HUGE,
+                        0,
+                        "bootstrap alias collides with huge leaf"
+                    );
+                    table = pte_to_paddr(entry);
+                }
+                let slot = scratch(table).add(indices[depth]);
+                assert_eq!(slot.read_volatile(), 0, "bootstrap alias overlap");
+                slot.write_volatile(
+                    pa as u64
+                        | PTE_PRESENT
+                        | PTE_WRITABLE
+                        | PTE_NO_EXECUTE
+                        | if huge { PTE_HUGE } else { 0 },
+                );
+            }
+            let step = if huge { 2 * 1024 * 1024 } else { PAGE_SIZE };
+            pa += step;
+            va += step;
+        }
+    }
+    unsafe {
+        core::arch::asm!("mov cr3, {}", in(reg) root, options(nostack));
+    }
+    Ok(())
+}
+
+unsafe extern "C" {
+    static __text_start: u8;
+    static __text_end: u8;
+    static __rodata_start: u8;
+    static __rodata_end: u8;
+}
+
+unsafe fn map_kernel_leaf(
+    root: usize,
+    va: usize,
+    pa: usize,
+    flags: u64,
+    huge: bool,
+) -> Result<(), PageError> {
+    let indices = [pml4_index(va), pdpt_index(va), pd_index(va), pt_index(va)];
+    let depth = if huge { 2 } else { 3 };
+    let mut table = root;
+    for index in &indices[..depth] {
+        let slot = table_ptr(table).add(*index);
+        if slot.read() == 0 {
+            slot.write(allocate_table()? as u64 | PTE_PRESENT | PTE_WRITABLE);
+        }
+        assert_eq!(slot.read() & PTE_HUGE, 0, "overlapping permanent map");
+        table = pte_to_paddr(slot.read());
+    }
+    let slot = table_ptr(table).add(indices[depth]);
+    assert_eq!(slot.read(), 0, "duplicate permanent map");
+    slot.write(pa as u64 | flags | if huge { PTE_HUGE } else { 0 });
+    Ok(())
+}
+
+unsafe fn map_kernel_range(
+    root: usize,
+    mut va: usize,
+    mut pa: usize,
+    len: usize,
+    flags: u64,
+) -> Result<(), PageError> {
+    let end = pa.checked_add(len).ok_or(PageError::OutOfRange)?;
+    while pa < end {
+        let huge = (va | pa).is_multiple_of(2 * 1024 * 1024) && end - pa >= 2 * 1024 * 1024;
+        map_kernel_leaf(root, va, pa, flags, huge)?;
+        let step = if huge { 2 * 1024 * 1024 } else { PAGE_SIZE };
+        pa += step;
+        va += step;
+    }
+    Ok(())
+}
+
+/// Replace the loader's identity map with owned, supervisor-only upper tables.
+/// The entry stack, descriptors, and all code already reside in the high image.
+pub fn finalize(info: &BootInfo) -> Result<(), PageError> {
+    let root = allocate_table()?;
+    let rw = PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXECUTE;
+    unsafe {
+        for extent in phys_map::extents() {
+            map_kernel_range(
+                root,
+                extent.virtual_start,
+                extent.start,
+                extent.end - extent.start,
+                rw,
+            )?;
+        }
+        let text_start = core::ptr::addr_of!(__text_start) as usize;
+        let text_end = core::ptr::addr_of!(__text_end) as usize;
+        let ro_start = core::ptr::addr_of!(__rodata_start) as usize;
+        let ro_end = core::ptr::addr_of!(__rodata_end) as usize;
+        let mut va = info.kernel_virtual_start as usize;
+        let end = va + (info.kernel_end - info.kernel_start) as usize;
+        while va < end {
+            let flags = if (text_start..text_end).contains(&va) {
+                PTE_PRESENT
+            } else if (ro_start..ro_end).contains(&va) {
+                PTE_PRESENT | PTE_NO_EXECUTE
+            } else {
+                rw
+            };
+            map_kernel_leaf(
+                root,
+                va,
+                info.kernel_start as usize + (va - info.kernel_virtual_start as usize),
+                flags,
+                false,
+            )?;
+            va += PAGE_SIZE;
+        }
+        map_kernel_range(
+            root,
+            BOOT_INFO_VA as usize,
+            info.boot_info_physical as usize,
+            PAGE_SIZE,
+            PTE_PRESENT | PTE_NO_EXECUTE,
+        )?;
+        let region_bytes = (info.memory_region_count as usize
+            * core::mem::size_of::<crate::boot_info::MemoryRegion>())
+        .div_ceil(PAGE_SIZE)
+            * PAGE_SIZE;
+        map_kernel_range(
+            root,
+            BOOT_REGIONS_VA as usize,
+            info.memory_regions as usize,
+            region_bytes,
+            PTE_PRESENT | PTE_NO_EXECUTE,
+        )?;
+        if info.framebuffer.size != 0 {
+            let offset = info.framebuffer.base as usize & (PAGE_SIZE - 1);
+            let bytes = (offset + info.framebuffer.size as usize).div_ceil(PAGE_SIZE) * PAGE_SIZE;
+            map_kernel_range(
+                root,
+                MMIO_BASE as usize,
+                info.framebuffer.base as usize - offset,
+                bytes,
+                rw | PTE_PCD,
+            )?;
+        }
+        core::arch::asm!("mov cr3, {}", in(reg) root, options(nostack));
+    }
+    phys_map::activate();
+    BOOT_ROOT.store(root, core::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
 unsafe fn free_table(table: usize, level: usize, count: usize) {
     for i in 0..count {
-        let entry = (table as *const u64).add(i).read();
+        let entry = (table_ptr(table) as *const u64).add(i).read();
         if level > 1 && entry & PTE_PRESENT != 0 && entry & PTE_HUGE == 0 {
             free_table(pte_to_paddr(entry), level - 1, 512);
         }
     }
     bitmap::free_frame(table).expect("owned page table frame");
-}
-
-unsafe fn clone_table(source: usize, level: usize) -> Result<usize, PageError> {
-    let target = allocate_table()?;
-    for i in 0..512 {
-        let entry = (source as *const u64).add(i).read();
-        let cloned = if entry & PTE_PRESENT != 0 && level > 1 && entry & PTE_HUGE == 0 {
-            match clone_table(pte_to_paddr(entry), level - 1) {
-                Ok(child) => (entry & !ADDRESS_MASK) | child as u64,
-                Err(error) => {
-                    free_table(target, level, 512);
-                    return Err(error);
-                }
-            }
-        } else {
-            entry
-        };
-        (target as *mut u64).add(i).write(cloned);
-    }
-    Ok(target)
 }
 
 // Preserve sibling restrictions before opening an ancestor for a user mapping.
@@ -194,7 +373,7 @@ unsafe fn open_table(slot: *mut u64, flags: MapFlags) {
     let relax_write = flags.writable && entry & PTE_WRITABLE == 0;
     let relax_execute = flags.executable && entry & PTE_NO_EXECUTE != 0;
     if relax_user || relax_write || relax_execute {
-        let child = pte_to_paddr(entry) as *mut u64;
+        let child = table_ptr(pte_to_paddr(entry));
         for i in 0..512 {
             let mut value = child.add(i).read();
             if value & PTE_PRESENT == 0 {
@@ -234,22 +413,12 @@ impl Pml4AddressSpace {
         let result = Self {
             root_paddr: allocate_table()?,
         };
-        // shortcut: privately clone boot identity tables until the kernel has a permanent higher-half mapping.
         unsafe {
             core::ptr::copy_nonoverlapping(
-                (source as *const u64).add(256),
-                (result.root_paddr as *mut u64).add(256),
+                table_ptr(source).add(256),
+                table_ptr(result.root_paddr).add(256),
                 256,
             );
-            for i in 0..256 {
-                let entry = (source as *const u64).add(i).read();
-                if entry & PTE_PRESENT != 0 {
-                    let child = clone_table(pte_to_paddr(entry), 3)?;
-                    (result.root_paddr as *mut u64)
-                        .add(i)
-                        .write((entry & !ADDRESS_MASK) | child as u64);
-                }
-            }
         }
         Ok(result)
     }
@@ -277,7 +446,7 @@ impl AddressSpace for Pml4AddressSpace {
             return Err(PageError::OutOfRange);
         }
         // Level 4 (PML4) walk
-        let pml4 = self.root_paddr as *mut u64;
+        let pml4 = table_ptr(self.root_paddr);
         let l4_idx = pml4_index(virt_addr);
         let pml4e = unsafe { pml4.add(l4_idx).read() };
         let pdpt = if (pml4e & PTE_PRESENT) == 0 {
@@ -285,12 +454,12 @@ impl AddressSpace for Pml4AddressSpace {
             unsafe {
                 pml4.add(l4_idx).write(make_table_entry(pdpt_paddr));
             }
-            pdpt_paddr as *mut u64
+            table_ptr(pdpt_paddr)
         } else {
             unsafe {
                 open_table(pml4.add(l4_idx), flags);
             }
-            pte_to_paddr(pml4e) as *mut u64
+            table_ptr(pte_to_paddr(pml4e))
         };
 
         // Level 3 (PDPT) walk
@@ -301,7 +470,7 @@ impl AddressSpace for Pml4AddressSpace {
             unsafe {
                 pdpt.add(l3_idx).write(make_table_entry(pd_paddr));
             }
-            pd_paddr as *mut u64
+            table_ptr(pd_paddr)
         } else if (pdpte & PTE_HUGE) != 0 {
             // Already mapped as a 1 GiB huge page leaf
             return Err(PageError::AlreadyMapped);
@@ -309,7 +478,7 @@ impl AddressSpace for Pml4AddressSpace {
             unsafe {
                 open_table(pdpt.add(l3_idx), flags);
             }
-            pte_to_paddr(pdpte) as *mut u64
+            table_ptr(pte_to_paddr(pdpte))
         };
 
         // Level 2 (PD) walk
@@ -320,7 +489,7 @@ impl AddressSpace for Pml4AddressSpace {
             unsafe {
                 pd.add(l2_idx).write(make_table_entry(pt_paddr));
             }
-            pt_paddr as *mut u64
+            table_ptr(pt_paddr)
         } else if (pde & PTE_HUGE) != 0 {
             // Already mapped as a 2 MiB huge page leaf
             return Err(PageError::AlreadyMapped);
@@ -328,7 +497,7 @@ impl AddressSpace for Pml4AddressSpace {
             unsafe {
                 open_table(pd.add(l2_idx), flags);
             }
-            pte_to_paddr(pde) as *mut u64
+            table_ptr(pte_to_paddr(pde))
         };
 
         // Level 1 (PT) walk & leaf insertion
@@ -356,13 +525,13 @@ impl AddressSpace for Pml4AddressSpace {
         }
 
         // Level 4 (PML4) walk
-        let pml4 = self.root_paddr as *mut u64;
+        let pml4 = table_ptr(self.root_paddr);
         let l4_idx = pml4_index(virt_addr);
         let pml4e = unsafe { pml4.add(l4_idx).read() };
         if (pml4e & PTE_PRESENT) == 0 {
             return Err(PageError::NotMapped);
         }
-        let pdpt = pte_to_paddr(pml4e) as *mut u64;
+        let pdpt = table_ptr(pte_to_paddr(pml4e));
 
         // Level 3 (PDPT) walk
         let l3_idx = pdpt_index(virt_addr);
@@ -370,7 +539,7 @@ impl AddressSpace for Pml4AddressSpace {
         if (pdpte & PTE_PRESENT) == 0 || (pdpte & PTE_HUGE) != 0 {
             return Err(PageError::NotMapped);
         }
-        let pd = pte_to_paddr(pdpte) as *mut u64;
+        let pd = table_ptr(pte_to_paddr(pdpte));
 
         // Level 2 (PD) walk
         let l2_idx = pd_index(virt_addr);
@@ -378,7 +547,7 @@ impl AddressSpace for Pml4AddressSpace {
         if (pde & PTE_PRESENT) == 0 || (pde & PTE_HUGE) != 0 {
             return Err(PageError::NotMapped);
         }
-        let pt = pte_to_paddr(pde) as *mut u64;
+        let pt = table_ptr(pte_to_paddr(pde));
 
         // Level 1 (PT) walk
         let l1_idx = pt_index(virt_addr);
@@ -408,13 +577,13 @@ impl AddressSpace for Pml4AddressSpace {
             return Err(PageError::OutOfRange);
         }
         // Level 4 (PML4) walk
-        let pml4 = self.root_paddr as *mut u64;
+        let pml4 = table_ptr(self.root_paddr);
         let l4_idx = pml4_index(virt_addr);
         let pml4e = unsafe { pml4.add(l4_idx).read() };
         if (pml4e & PTE_PRESENT) == 0 {
             return Err(PageError::NotMapped);
         }
-        let pdpt = pte_to_paddr(pml4e) as *mut u64;
+        let pdpt = table_ptr(pte_to_paddr(pml4e));
 
         // Level 3 (PDPT) walk
         let l3_idx = pdpt_index(virt_addr);
@@ -422,7 +591,7 @@ impl AddressSpace for Pml4AddressSpace {
         if (pdpte & PTE_PRESENT) == 0 || (pdpte & PTE_HUGE) != 0 {
             return Err(PageError::NotMapped);
         }
-        let pd = pte_to_paddr(pdpte) as *mut u64;
+        let pd = table_ptr(pte_to_paddr(pdpte));
 
         // Level 2 (PD) walk
         let l2_idx = pd_index(virt_addr);
@@ -430,7 +599,7 @@ impl AddressSpace for Pml4AddressSpace {
         if (pde & PTE_PRESENT) == 0 || (pde & PTE_HUGE) != 0 {
             return Err(PageError::NotMapped);
         }
-        let pt = pte_to_paddr(pde) as *mut u64;
+        let pt = table_ptr(pte_to_paddr(pde));
 
         // Level 1 (PT) walk
         let l1_idx = pt_index(virt_addr);
@@ -472,7 +641,7 @@ impl AddressSpace for Pml4AddressSpace {
             user: true,
         };
         for (depth, index) in indices.into_iter().enumerate() {
-            let entry = unsafe { (table as *const u64).add(index).read() };
+            let entry = unsafe { (table_ptr(table) as *const u64).add(index).read() };
             if entry & PTE_PRESENT == 0 {
                 return None;
             }
@@ -534,8 +703,8 @@ pub fn self_test() {
             space
                 .map_page(base + 4096, 0x2000, MapFlags::user_rx())
                 .unwrap();
-            let root_slot = (space.root_paddr as *mut u64).add(pml4_index(base));
-            let pdpt = pte_to_paddr(root_slot.read()) as *mut u64;
+            let root_slot = (table_ptr(space.root_paddr)).add(pml4_index(base));
+            let pdpt = table_ptr(pte_to_paddr(root_slot.read()));
             let parent = pdpt.add(pdpt_index(base));
             let original = parent.read();
             parent.write((original & !(PTE_USER | PTE_WRITABLE)) | PTE_NO_EXECUTE);
@@ -548,7 +717,7 @@ pub fn self_test() {
             let sibling = space.query(base + 4096).unwrap().1;
             assert!(!sibling.user && !sibling.writable && !sibling.executable);
 
-            let pd = pte_to_paddr(parent.read()) as *mut u64;
+            let pd = table_ptr(pte_to_paddr(parent.read()));
             pd.add(1)
                 .write(0x20_0000 | PTE_PRESENT | PTE_USER | PTE_WRITABLE | PTE_HUGE);
             assert_eq!(space.query(base + 0x20_0123).unwrap().0, 0x20_0123);
@@ -564,12 +733,11 @@ pub fn self_test() {
                 space.map_page(0xffff_8000_0000_0000, 0x3000, MapFlags::user_rw()),
                 Err(PageError::OutOfRange)
             );
-            let source = BOOT_ROOT.load(core::sync::atomic::Ordering::SeqCst) as *const u64;
-            let source_pdpt = pte_to_paddr(source.add(pml4_index(base)).read()) as *const u64;
+            let source = table_ptr(BOOT_ROOT.load(core::sync::atomic::Ordering::SeqCst));
             assert_eq!(
-                source_pdpt.add(pdpt_index(base)).read() & PTE_PRESENT,
+                source.add(pml4_index(base)).read(),
                 0,
-                "private mapping modified boot root"
+                "private mapping modified permanent root"
             );
         }
     }

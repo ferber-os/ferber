@@ -413,7 +413,7 @@ riscv_user_probe_start:
     inspect_at 0, -14
     inspect_at {user_pc}, -14
     inspect_at ({user_stack} - 4096), -14
-    inspect_at 0x80200000, -14
+    inspect_at 0xffffffff80000000, -14
     inspect_at -4, -14
     // The valid prefix must stay unchanged when the next page is missing.
     li s0, ({user_stack} + {stack_size} - 4)
@@ -538,7 +538,7 @@ riscv_isolation_probe_start:
     .if {write_probe}
     li t0, {user_pc}
     .else
-    li t0, 0x80200000
+    li t0, 0xffffffff80000000
     .endif
     .globl riscv_isolation_fault
 riscv_isolation_fault:

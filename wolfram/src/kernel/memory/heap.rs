@@ -4,16 +4,15 @@
 //! Max buddy size is 4 KiB (1 page). Allocations > 4 KiB are forwarded directly
 //! to the physical bitmap allocator.
 
+use crate::kernel::memory::{bitmap, phys_map};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::kernel::memory::bitmap;
 
 const PAGE_SIZE: usize = 4096;
 const MIN_BLOCK_SIZE: usize = 32;
 const MAX_ORDER: usize = 7; // 4096 = 32 * 2^7
 pub const MAX_ALLOC_SIZE: usize = 128 * 1024 * 1024;
-
 
 struct FreeBlock {
     next: Option<*mut FreeBlock>,
@@ -40,7 +39,11 @@ static HEAP_ALLOCATOR: BuddyAllocator = BuddyAllocator {
 
 impl BuddyAllocator {
     fn with<R>(&self, f: impl FnOnce(&mut BuddyState) -> R) -> R {
-        while self.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while self
+            .lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
         let result = f(unsafe { &mut *self.state.get() });
@@ -72,7 +75,9 @@ unsafe impl GlobalAlloc for BuddyAllocator {
                 return ptr::null_mut();
             }
             let count = size.div_ceil(PAGE_SIZE);
-            return bitmap::allocate_frames(count).map(|addr| addr as *mut u8).unwrap_or(ptr::null_mut());
+            return bitmap::allocate_frames(count)
+                .map(|addr| phys_map::phys_to_virt(addr).expect("heap RAM alias") as *mut u8)
+                .unwrap_or(ptr::null_mut());
         }
 
         let order = size_to_order(size);
@@ -81,45 +86,45 @@ unsafe impl GlobalAlloc for BuddyAllocator {
             for o in order..=MAX_ORDER {
                 if let Some(block) = state.free_lists[o] {
                     state.free_lists[o] = unsafe { (*block).next };
-                    
+
                     // Split down to the required order
                     let mut current_order = o;
                     let current_block = block as usize;
-                    
+
                     while current_order > order {
                         current_order -= 1;
                         let half_size = order_to_size(current_order);
                         let buddy = (current_block + half_size) as *mut FreeBlock;
-                        
+
                         unsafe {
                             (*buddy).next = state.free_lists[current_order];
                         }
                         state.free_lists[current_order] = Some(buddy);
                     }
-                    
+
                     return current_block as *mut u8;
                 }
             }
-            
+
             // Need a new page
             if let Some(frame) = bitmap::allocate_frame() {
                 let mut current_order = MAX_ORDER;
-                let current_block = frame;
-                
+                let current_block = phys_map::phys_to_virt(frame).expect("heap RAM alias");
+
                 while current_order > order {
                     current_order -= 1;
                     let half_size = order_to_size(current_order);
                     let buddy = (current_block + half_size) as *mut FreeBlock;
-                    
+
                     unsafe {
                         (*buddy).next = state.free_lists[current_order];
                     }
                     state.free_lists[current_order] = Some(buddy);
                 }
-                
+
                 return current_block as *mut u8;
             }
-            
+
             ptr::null_mut()
         })
     }
@@ -132,24 +137,28 @@ unsafe impl GlobalAlloc for BuddyAllocator {
         let size = layout.size().max(layout.align());
         if size > PAGE_SIZE {
             let count = size.div_ceil(PAGE_SIZE);
-            bitmap::free_frames(ptr as usize, count).expect("invalid free");
+            bitmap::free_frames(
+                phys_map::virt_to_phys(ptr as usize).expect("heap physical address"),
+                count,
+            )
+            .expect("invalid free");
             return;
         }
 
         let order = size_to_order(size);
-        
+
         self.with(|state| {
             let mut current_block = ptr as usize;
             let mut current_order = order;
-            
+
             while current_order < MAX_ORDER {
                 let buddy = current_block ^ order_to_size(current_order);
-                
+
                 // Search for buddy in current free list
                 let mut prev: Option<*mut FreeBlock> = None;
                 let mut curr = state.free_lists[current_order];
                 let mut found = false;
-                
+
                 while let Some(node) = curr {
                     if node as usize == buddy {
                         // Remove buddy from list
@@ -164,7 +173,7 @@ unsafe impl GlobalAlloc for BuddyAllocator {
                     prev = Some(node);
                     curr = unsafe { (*node).next };
                 }
-                
+
                 if found {
                     // Merge blocks
                     current_block = core::cmp::min(current_block, buddy);
@@ -173,10 +182,13 @@ unsafe impl GlobalAlloc for BuddyAllocator {
                     break;
                 }
             }
-            
+
             if current_order == MAX_ORDER {
                 // Free the entire page back to the physical allocator
-                bitmap::free_frame(current_block).expect("invalid page free");
+                bitmap::free_frame(
+                    phys_map::virt_to_phys(current_block).expect("heap physical address"),
+                )
+                .expect("invalid page free");
             } else {
                 // Add to the appropriate free list
                 let block = current_block as *mut FreeBlock;

@@ -240,18 +240,21 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
             memory_region_size: size_of::<MemoryRegion>() as u32,
             kernel_start: kernel.start,
             kernel_end: kernel.end,
+            kernel_virtual_start: abi::KERNEL_IMAGE_BASE,
+            boot_info_physical: boot_page,
+            memory_regions_virtual: abi::BOOT_REGIONS_VA,
             framebuffer,
         },
     );
 
     BOOT_STAGE.store(10, Ordering::Relaxed);
-    let tables = match exit_with_map(image, services, boot_info, &kernel, &framebuffer) {
+    let tables = match exit_with_map(image, services, boot_info, &kernel) {
         Ok(tables) => tables,
         Err(status) => return status,
     };
     jump_to_kernel(
         kernel.entry,
-        boot_info,
+        abi::BOOT_INFO_VA as *const BootInfo,
         stack + (STACK_PAGES as u64 * PAGE_SIZE),
         tables,
     );
@@ -332,15 +335,18 @@ unsafe fn find_framebuffer(services: *mut BootServices) -> Framebuffer {
         || info.pixels_per_scan_line < info.horizontal_resolution
         || visible_bytes.is_none_or(|bytes| bytes > mode.frame_buffer_size as u64)
         || mode.frame_buffer_base == 0
+        || mode.frame_buffer_size as u64
+            > abi::KERNEL_IMAGE_BASE - abi::MMIO_BASE - (mode.frame_buffer_base & (PAGE_SIZE - 1))
         || mode
             .frame_buffer_base
             .checked_add(mode.frame_buffer_size as u64)
-            .is_none()
+            .is_none_or(|end| end > (1u64 << 52))
     {
         return Framebuffer::default();
     }
     Framebuffer {
         base: mode.frame_buffer_base,
+        virtual_base: abi::MMIO_BASE + (mode.frame_buffer_base & (PAGE_SIZE - 1)),
         size: mode.frame_buffer_size as u64,
         width: info.horizontal_resolution,
         height: info.vertical_resolution,
@@ -354,7 +360,6 @@ unsafe fn exit_with_map(
     services: *mut BootServices,
     info: *mut BootInfo,
     kernel: &KernelImage,
-    framebuffer: &Framebuffer,
 ) -> Result<paging::PageTables, Status> {
     let mut required = 0usize;
     let mut key = 0usize;
@@ -379,7 +384,8 @@ unsafe fn exit_with_map(
     };
     let mut map: *mut u8 = ptr::null_mut();
     let mut regions_address = 0u64;
-    let mut regions_capacity = 0usize;
+    // The ABI accepts at most 4096 regions; keep this alias stable across map retries.
+    let regions_capacity: usize = 4096;
     let mut tables = None;
 
     // All allocations are completed before the final GetMemoryMap/ExitBootServices pair.
@@ -394,15 +400,7 @@ unsafe fn exit_with_map(
         if map.is_null() {
             return Err(uefi::OUT_OF_RESOURCES);
         }
-        let needed_regions = map_capacity / descriptor_size + 1;
-        if needed_regions > regions_capacity {
-            if regions_address != 0 {
-                (*services).free_pages(
-                    regions_address,
-                    pages_for_bytes(regions_capacity * size_of::<MemoryRegion>()),
-                );
-            }
-            regions_capacity = needed_regions;
+        if regions_address == 0 {
             let mut address = 0u64;
             let bytes = match regions_capacity.checked_mul(size_of::<MemoryRegion>()) {
                 Some(value) => value,
@@ -490,7 +488,8 @@ unsafe fn exit_with_map(
                     map_size,
                     descriptor_size,
                     kernel,
-                    framebuffer,
+                    &*info,
+                    regions_capacity * size_of::<MemoryRegion>(),
                 )?);
                 // Page-table allocations changed the map key. Re-read it before exit.
                 continue;

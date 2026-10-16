@@ -12,7 +12,13 @@
 
 #![allow(dead_code)]
 
-use crate::kernel::memory::bitmap;
+use crate::kernel::memory::{bitmap, phys_map};
+use core::sync::atomic::{AtomicUsize, Ordering};
+static KERNEL_ROOT: AtomicUsize = AtomicUsize::new(0);
+
+fn table(paddr: usize) -> *mut u64 {
+    phys_map::phys_to_virt(paddr).expect("page table physical alias") as *mut u64
+}
 use crate::kernel::memory::paging::{AddressSpace, MapFlags, PageError};
 
 /// 4 KiB page size.
@@ -112,7 +118,7 @@ fn make_leaf_pte(paddr: usize, flags: MapFlags) -> u64 {
 fn allocate_table() -> Result<usize, PageError> {
     let paddr = bitmap::allocate_frame().ok_or(PageError::OutOfMemory)?;
     unsafe {
-        core::ptr::write_bytes(paddr as *mut u8, 0, PAGE_SIZE);
+        core::ptr::write_bytes(table(paddr).cast::<u8>(), 0, PAGE_SIZE);
     }
     Ok(paddr)
 }
@@ -127,6 +133,16 @@ impl Sv39AddressSpace {
     /// Creates a new Sv39 address space by allocating a root Level 2 page table.
     pub fn new() -> Result<Self, PageError> {
         let root_paddr = allocate_table()?;
+        let kernel_root = KERNEL_ROOT.load(Ordering::Acquire);
+        if kernel_root != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    table(kernel_root).add(256),
+                    table(root_paddr).add(256),
+                    256,
+                );
+            }
+        }
         Ok(Self { root_paddr })
     }
 
@@ -146,12 +162,17 @@ impl AddressSpace for Sv39AddressSpace {
         if !virt_addr.is_multiple_of(PAGE_SIZE) || !phys_addr.is_multiple_of(PAGE_SIZE) {
             return Err(PageError::Unaligned);
         }
-        if !is_canonical(virt_addr) {
+        if phys_addr >> 56 != 0 {
+            return Err(PageError::OutOfRange);
+        }
+        if !is_canonical(virt_addr)
+            || (vpn2(virt_addr) >= 256 && KERNEL_ROOT.load(Ordering::Acquire) != 0)
+        {
             return Err(PageError::OutOfRange);
         }
 
         // Level 2 walk
-        let l2_table = self.root_paddr as *mut u64;
+        let l2_table = table(self.root_paddr);
         let idx2 = vpn2(virt_addr);
         let pte2 = unsafe { l2_table.add(idx2).read() };
         let l1_table = if (pte2 & PTE_V) == 0 {
@@ -159,12 +180,12 @@ impl AddressSpace for Sv39AddressSpace {
             unsafe {
                 l2_table.add(idx2).write(make_table_pte(l1_paddr));
             }
-            l1_paddr as *mut u64
+            table(l1_paddr)
         } else if (pte2 & (PTE_R | PTE_W | PTE_X)) != 0 {
             // Already mapped as a 1 GiB superpage leaf
             return Err(PageError::AlreadyMapped);
         } else {
-            pte_to_paddr(pte2) as *mut u64
+            table(pte_to_paddr(pte2))
         };
 
         // Level 1 walk
@@ -175,12 +196,12 @@ impl AddressSpace for Sv39AddressSpace {
             unsafe {
                 l1_table.add(idx1).write(make_table_pte(l0_paddr));
             }
-            l0_paddr as *mut u64
+            table(l0_paddr)
         } else if (pte1 & (PTE_R | PTE_W | PTE_X)) != 0 {
             // Already mapped as a 2 MiB superpage leaf
             return Err(PageError::AlreadyMapped);
         } else {
-            pte_to_paddr(pte1) as *mut u64
+            table(pte_to_paddr(pte1))
         };
 
         // Level 0 walk & leaf insertion
@@ -203,18 +224,20 @@ impl AddressSpace for Sv39AddressSpace {
         if !virt_addr.is_multiple_of(PAGE_SIZE) {
             return Err(PageError::Unaligned);
         }
-        if !is_canonical(virt_addr) {
+        if !is_canonical(virt_addr)
+            || (vpn2(virt_addr) >= 256 && KERNEL_ROOT.load(Ordering::Acquire) != 0)
+        {
             return Err(PageError::OutOfRange);
         }
 
         // Level 2 walk
-        let l2_table = self.root_paddr as *mut u64;
+        let l2_table = table(self.root_paddr);
         let idx2 = vpn2(virt_addr);
         let pte2 = unsafe { l2_table.add(idx2).read() };
         if (pte2 & PTE_V) == 0 || (pte2 & (PTE_R | PTE_W | PTE_X)) != 0 {
             return Err(PageError::NotMapped);
         }
-        let l1_table = pte_to_paddr(pte2) as *mut u64;
+        let l1_table = table(pte_to_paddr(pte2));
 
         // Level 1 walk
         let idx1 = vpn1(virt_addr);
@@ -222,7 +245,7 @@ impl AddressSpace for Sv39AddressSpace {
         if (pte1 & PTE_V) == 0 || (pte1 & (PTE_R | PTE_W | PTE_X)) != 0 {
             return Err(PageError::NotMapped);
         }
-        let l0_table = pte_to_paddr(pte1) as *mut u64;
+        let l0_table = table(pte_to_paddr(pte1));
 
         // Level 0 walk
         let idx0 = vpn0(virt_addr);
@@ -244,18 +267,20 @@ impl AddressSpace for Sv39AddressSpace {
         if !virt_addr.is_multiple_of(PAGE_SIZE) {
             return Err(PageError::Unaligned);
         }
-        if !is_canonical(virt_addr) {
+        if !is_canonical(virt_addr)
+            || (vpn2(virt_addr) >= 256 && KERNEL_ROOT.load(Ordering::Acquire) != 0)
+        {
             return Err(PageError::OutOfRange);
         }
 
         // Level 2 walk
-        let l2_table = self.root_paddr as *mut u64;
+        let l2_table = table(self.root_paddr);
         let idx2 = vpn2(virt_addr);
         let pte2 = unsafe { l2_table.add(idx2).read() };
         if (pte2 & PTE_V) == 0 || (pte2 & (PTE_R | PTE_W | PTE_X)) != 0 {
             return Err(PageError::NotMapped);
         }
-        let l1_table = pte_to_paddr(pte2) as *mut u64;
+        let l1_table = table(pte_to_paddr(pte2));
 
         // Level 1 walk
         let idx1 = vpn1(virt_addr);
@@ -263,7 +288,7 @@ impl AddressSpace for Sv39AddressSpace {
         if (pte1 & PTE_V) == 0 || (pte1 & (PTE_R | PTE_W | PTE_X)) != 0 {
             return Err(PageError::NotMapped);
         }
-        let l0_table = pte_to_paddr(pte1) as *mut u64;
+        let l0_table = table(pte_to_paddr(pte1));
 
         // Level 0 walk
         let idx0 = vpn0(virt_addr);
@@ -288,7 +313,7 @@ impl AddressSpace for Sv39AddressSpace {
         }
 
         // Level 2 walk
-        let l2_table = self.root_paddr as *const u64;
+        let l2_table = table(self.root_paddr);
         let idx2 = vpn2(virt_addr);
         let pte2 = unsafe { l2_table.add(idx2).read() };
         if (pte2 & PTE_V) == 0 {
@@ -305,7 +330,7 @@ impl AddressSpace for Sv39AddressSpace {
             };
             return Some((paddr, flags));
         }
-        let l1_table = pte_to_paddr(pte2) as *const u64;
+        let l1_table = table(pte_to_paddr(pte2));
 
         // Level 1 walk
         let idx1 = vpn1(virt_addr);
@@ -324,7 +349,7 @@ impl AddressSpace for Sv39AddressSpace {
             };
             return Some((paddr, flags));
         }
-        let l0_table = pte_to_paddr(pte1) as *const u64;
+        let l0_table = table(pte_to_paddr(pte1));
 
         // Level 0 walk
         let idx0 = vpn0(virt_addr);
@@ -363,10 +388,7 @@ impl AddressSpace for Sv39AddressSpace {
     }
 
     unsafe fn flush_tlb_all(&self) {
-        core::arch::asm!(
-            "sfence.vma zero, zero",
-            options(nostack)
-        );
+        core::arch::asm!("sfence.vma zero, zero", options(nostack));
     }
 }
 
@@ -376,12 +398,12 @@ impl Drop for Sv39AddressSpace {
             return;
         }
 
-        let l2_table = self.root_paddr as *mut u64;
-        for i2 in 0..ENTRIES_PER_TABLE {
+        let l2_table = table(self.root_paddr);
+        for i2 in 0..256 {
             let pte2 = unsafe { l2_table.add(i2).read() };
             if (pte2 & PTE_V) != 0 && (pte2 & (PTE_R | PTE_W | PTE_X)) == 0 {
                 let l1_paddr = pte_to_paddr(pte2);
-                let l1_table = l1_paddr as *mut u64;
+                let l1_table = table(l1_paddr);
                 for i1 in 0..ENTRIES_PER_TABLE {
                     let pte1 = unsafe { l1_table.add(i1).read() };
                     if (pte1 & PTE_V) != 0 && (pte1 & (PTE_R | PTE_W | PTE_X)) == 0 {
@@ -395,4 +417,141 @@ impl Drop for Sv39AddressSpace {
         let _ = bitmap::free_frame(self.root_paddr);
         self.root_paddr = 0;
     }
+}
+
+#[repr(C, align(4096))]
+struct BootstrapTables([[u64; ENTRIES_PER_TABLE]; 248]);
+static mut BOOTSTRAP_TABLES: BootstrapTables = BootstrapTables([[0; ENTRIES_PER_TABLE]; 248]);
+
+pub fn physical_kernel_bounds() -> (usize, usize) {
+    extern "C" {
+        static riscv_kernel_physical_bounds: [usize; 2];
+    }
+    unsafe {
+        (
+            riscv_kernel_physical_bounds[0],
+            riscv_kernel_physical_bounds[1],
+        )
+    }
+}
+
+pub fn runtime_physical_base() -> usize {
+    extern "C" {
+        static riscv_runtime_physical_base: usize;
+    }
+    unsafe { riscv_runtime_physical_base }
+}
+
+/// Install temporary large-page aliases before the allocator can supply tables.
+/// Edge padding is removed when the permanent root replaces this bootstrap root.
+///
+/// # Safety
+/// Invoke once, after physical-map discovery and before accessing allocator metadata.
+pub unsafe fn bootstrap_aliases() {
+    extern "C" {
+        static riscv_boot_root_physical: usize;
+    }
+    let root = riscv_boot_root_physical as *mut u64;
+    let tables = core::ptr::addr_of_mut!(BOOTSTRAP_TABLES).cast::<[u64; ENTRIES_PER_TABLE]>();
+    let physical =
+        tables as usize - crate::boot_info::KERNEL_IMAGE_BASE as usize + runtime_physical_base();
+    for index in 0..248 {
+        root.add(256 + index)
+            .write(make_table_pte(physical + index * PAGE_SIZE));
+    }
+    for extent in phys_map::extents() {
+        assert!(
+            extent.end <= (1usize << 56),
+            "RAM exceeds Sv39 physical address width"
+        );
+        let first = extent.virtual_start & !((1 << 21) - 1);
+        let end =
+            (extent.virtual_start + extent.end - extent.start + (1 << 21) - 1) & !((1 << 21) - 1);
+        let mut physical = extent.start & !((1 << 21) - 1);
+        let mut virtual_address = first;
+        while virtual_address < end {
+            let index = vpn2(virtual_address) - 256;
+            (*tables.add(index))[vpn1(virtual_address)] =
+                make_leaf_pte(physical, MapFlags::kernel_rw());
+            physical += 1 << 21;
+            virtual_address += 1 << 21;
+        }
+    }
+    core::arch::asm!("sfence.vma zero, zero", options(nostack));
+}
+
+impl Sv39AddressSpace {
+    unsafe fn map_large(&mut self, va: usize, pa: usize, flags: MapFlags) -> Result<(), PageError> {
+        let root = table(self.root_paddr);
+        let slot = root.add(vpn2(va));
+        let mut entry = slot.read();
+        if entry & PTE_V == 0 {
+            entry = make_table_pte(allocate_table()?);
+            slot.write(entry);
+        }
+        if entry & (PTE_R | PTE_W | PTE_X) != 0 {
+            return Err(PageError::AlreadyMapped);
+        }
+        let slot = table(pte_to_paddr(entry)).add(vpn1(va));
+        if slot.read() & PTE_V != 0 {
+            return Err(PageError::AlreadyMapped);
+        }
+        slot.write(make_leaf_pte(pa, flags));
+        Ok(())
+    }
+}
+
+/// Replace temporary boot translations with exact permanent supervisor mappings.
+///
+/// # Safety
+/// The allocator and physical aliases must already be initialized. Invoke once.
+pub unsafe fn finalize_kernel_space() {
+    extern "C" {
+        static __kernel_start: u8;
+        static __kernel_end: u8;
+        static __text_end: u8;
+        static __rodata_end: u8;
+    }
+    let mut space = Sv39AddressSpace::new().expect("permanent kernel root");
+    let start = core::ptr::addr_of!(__kernel_start) as usize;
+    let end = core::ptr::addr_of!(__kernel_end) as usize;
+    let text_end = core::ptr::addr_of!(__text_end) as usize;
+    let rodata_end = core::ptr::addr_of!(__rodata_end) as usize;
+    for va in (start..end).step_by(PAGE_SIZE) {
+        let flags = if va < text_end {
+            MapFlags::kernel_rx()
+        } else if va < rodata_end {
+            MapFlags::kernel_ro()
+        } else {
+            MapFlags::kernel_rw()
+        };
+        space
+            .map_page(va, runtime_physical_base() + (va - start), flags)
+            .expect("kernel image mapping");
+    }
+    for extent in phys_map::extents() {
+        let mut pa = extent.start;
+        let mut va = extent.virtual_start;
+        while pa < extent.end {
+            if pa.is_multiple_of(1 << 21)
+                && va.is_multiple_of(1 << 21)
+                && extent.end - pa >= 1 << 21
+            {
+                space
+                    .map_large(va, pa, MapFlags::kernel_rw())
+                    .expect("large RAM alias");
+                pa += 1 << 21;
+                va += 1 << 21;
+            } else {
+                space
+                    .map_page(va, pa, MapFlags::kernel_rw())
+                    .expect("RAM alias");
+                pa += PAGE_SIZE;
+                va += PAGE_SIZE;
+            }
+        }
+    }
+    KERNEL_ROOT.store(space.root_paddr, Ordering::Release);
+    space.activate();
+    core::mem::forget(space);
 }

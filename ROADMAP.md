@@ -127,7 +127,12 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
 Phase 3 transitions execution from kernel-only testing into unprivileged userspace, implementing the system call boundary, userspace privilege switching, the initial user process, and foundational runtime services.
 
 ### Physical Memory Discovery & Allocation
-- [ ] Discover and make allocatable all usable firmware-reported RAM, including discontiguous ranges and memory above 4 GiB, while preserving reserved ranges on RISC-V FDT and x86-64 UEFI.
+- [x] Discover and make allocatable all usable firmware-reported RAM within architecture/alias limits, including discontiguous ranges and memory above 4 GiB, while preserving reserved ranges on RISC-V FDT and x86-64 UEFI.
+- [x] Permanent high-half kernel mappings and packed RAM aliases on both architectures; private user lower halves and shared supervisor upper halves.
+- [x] Debug/release 8 GiB capacity probes retaining over 4 GiB of distinct frames, high-frame access after address-space activation, and transactional allocator accounting checks.
+- [ ] Reclaim UEFI boot-services memory after loader ownership and references end.
+- [ ] Gate the high-frame boot probe on allocatable memory above 4 GiB, independent of total managed RAM.
+- [ ] Define IRQ-safe allocator locking and SMP initialization/publication before enabling allocation from interrupt context or multiple CPUs.
 
 ### Privilege Boundary & System Call ABI
 - [x] Userspace privilege level switching:

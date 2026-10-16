@@ -1,5 +1,10 @@
 # Phase 1 Boot Plan
 
+This records the completed Phase 1 acceptance criteria. Current boot uses
+the version 2 handoff and permanent high-half kernel mappings described in
+[the memory model](memory.md); the original single-bank allocator and
+identity mappings below describe the earlier milestone.
+
 Wolfram needs two boot paths into one kernel core. RISC-V 64 under QEMU/OpenSBI
 is the working reference. x86-64 UEFI is the next hardware target because the
 available test machine is an MSI B650M-A PRO WIFI. The first x86-64 milestone is
@@ -7,7 +12,7 @@ to boot from a USB stick, print diagnostics on that machine, and reach the same
 intentional `spawn init` panic seen on RISC-V. This is an early kernel boot, not
 an interactive or secure userspace system.
 
-The [README roadmap](../README.md#roadmap) tracks completion. This document
+The [roadmap](../ROADMAP.md) tracks completion. This document
 defines the order of work and what counts as evidence for each step.
 
 ## 1. Preserve the RISC-V baseline
@@ -20,8 +25,9 @@ defines the order of work and what counts as evidence for each step.
 - Fix and exercise the RISC-V trap path before calling its boot reliable. Give
   each active hart a separate stack or explicitly park secondary harts.
 
-The current bitmap allocator manages the RAM bank containing the kernel, up to
-4 GiB. It is a boot allocator, not the Phase 2 buddy allocator.
+The Phase 1 bitmap allocator managed the RAM bank containing the kernel, up to
+4 GiB. The current range allocator removes that ceiling; the buddy heap keeps
+its separate 128 MiB single-allocation limit.
 
 ## 2. Define a common handoff to the kernel
 

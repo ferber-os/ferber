@@ -147,11 +147,11 @@ Wolfram uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.2** adds rights-checked capability
-attenuation, descendant revocation, and owned capability-node lifetimes on both
-RISC-V 64 and x86-64. It extends the handle syscalls introduced in `v0.2.1`
-and Phase 3 M1 (`v0.2.0`). All three normal resident markers pass on physical
-x86-64 hardware. Scheduling, ELF loading, and init remain pending.
+Current milestone: **Uranium-238-v0.2.3** adds sparse physical RAM discovery,
+allocation across discontiguous extents, and permanent high-half mappings on
+RISC-V 64 and x86-64. It manages RAM above 4 GiB and has passed the memory and
+userspace boot checks on physical x86-64 hardware with 32 GiB installed.
+Scheduling, ELF loading, and init remain pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---
@@ -179,8 +179,9 @@ make debug   # boots with GDB server on :1234
 `make run` executes the in-kernel checks, enters a resident user-mode probe,
 returns through yield and unknown syscalls, exercises handle operations and
 capability mutation, and exits through the kernel. A successful
-normal boot requires all three markers: `privilege_switch_roundtrip: PASS`,
-`handle_syscalls: PASS`, and `capability_mutation: PASS`, each with the
+normal boot requires `memory_verification: PASS` and all three resident
+markers: `privilege_switch_roundtrip: PASS`, `handle_syscalls: PASS`, and
+`capability_mutation: PASS`, each with the
 `[WOLFRAM_TEST]` prefix. It then halts until QEMU is stopped.
 The separate `user-isolation-probe` feature attempts a supervisor-memory read
 and expects a diagnosed user protection fault followed by
@@ -191,9 +192,15 @@ respectively. Their markers are `privilege_write_rx: PASS` and
 `privilege_execute_nx: PASS`, with the same `[WOLFRAM_TEST]` prefix. Run each
 fault probe separately.
 
-The boot allocator reads RAM from the firmware device tree and manages the bank
-containing the kernel (up to 4 GiB). It keeps the kernel image, device tree, and
-firmware-declared reserved ranges unavailable for allocation. Init is planned
+The physical allocator uses all eligible firmware-reported RAM ranges from
+the RISC-V device tree or x86-64 UEFI map, including discontiguous ranges and
+RAM above 4 GiB. Reserved ranges, the kernel image, boot data, and allocator
+metadata remain unavailable for allocation. Both ports run the kernel in the
+high half with permanent supervisor mappings and packed RAM aliases. Sv39's
+RAM-alias window is 248 GiB; x86-64 uses four-level paging and the CPU's
+physical-address width. Unsupported capacity is rejected rather than
+truncated. The heap still limits one allocation to 128 MiB. See
+[the memory model](docs/memory.md) for exact boundaries. Init remains planned
 for Phase 3.
 
 The x86-64 kernel and UEFI loader exercise the same user-mode contract in
@@ -201,7 +208,9 @@ QEMU/OVMF. `bash scripts/riscv-smoke.sh` and `make x86-smoke` check normal,
 supervisor-read, RX-write, and NX-execute boots in debug and release builds.
 The x86 roundtrip also checks hostile user direction flags, kernel entry
 flags, and sanitized return flags with preserved arithmetic flags. The x86
-suite retains its deliberate invalid-opcode exception check.
+suite retains its deliberate invalid-opcode exception check. Both suites also
+include debug and release 8 GiB capacity probes that retain and release more
+than 4 GiB of distinct frames and exercise an actual frame above 4 GiB.
 `bash scripts/x86-iso-smoke.sh` additionally boots a release-profile ISO
 through OVMF's CD-ROM path using the shared release packaging script. Its
 kernel enables only `qemu-debug-port` diagnostics for automated log capture;
@@ -230,7 +239,7 @@ does not remove existing VMO mappings. Code and both stacks are VMO-backed;
 the RX code VMO spans as many pages as the resident probe needs. Resident
 user-copy helpers preflight page permissions before copying through
 supervisor physical aliases. See [the memory model](docs/memory.md) for their
-caller contract and temporary bootstrap mappings.
+caller contract and permanent kernel mappings.
 
 The current path runs one active CPU with integer-only resident probes. Interrupt-driven
 scheduling, init/ELF loading, concurrent user tasks, and complete exit

@@ -15,10 +15,47 @@ The bitmap allocator owns physical page allocation. The runtime buddy heap
 suballocates blocks from those pages; requests larger than one page use the
 bitmap allocator's contiguous-frame path.
 
+Discovery validates and normalizes the boot map before the allocator uses it:
+usable ranges are merged, rounded inward to complete pages, and reduced by
+outward-rounded reservations. Reservations win overlaps. Holes consume neither
+frames nor bitmap storage. Kernel, firmware, handoff, framebuffer, FDT and
+page-zero reservations remain unavailable. UEFI currently treats only
+`EFI_CONVENTIONAL_MEMORY` as usable; loader, boot-service, runtime, and ACPI
+memory are not reclaimed. Reclaiming boot-services pages is a future memory
+efficiency step and must wait until loader ownership and all references to
+those pages have ended. FDT discovery honors enabled memory nodes and static
+reservations, including `no-map`; unsupported reserved-memory translations
+and unresolved dynamic reservations stop boot explicitly.
+
+Each bitmap block occupies one independently carved page from the validated
+normalized extents. Bootstrap placement therefore depends on correct map
+validation: metadata pages are carved and permanently reserved before those
+extents become generally allocatable. Host tests cover map normalization and
+reservation subtraction; boot accounting checks
+`managed = bootstrap-reserved + allocated + free`; the printed start/end
+envelope is not a capacity measurement. A failed free validates the entire
+range before changing ownership. Contiguous allocations can cross bitmap
+blocks, but cannot cross physical holes. The heap's 128 MiB single-allocation
+limit remains separate from total physical capacity.
+
+The allocator's atomic spinlock serializes bitmap state, but it is not
+interrupt-reentrant. If an interrupt handler tries to allocate while the
+interrupted context holds that lock, the CPU spins on its own lock forever.
+Allocation from interrupt context therefore requires an IRQ-safe locking
+policy first. SMP also requires a reviewed synchronization and initialization
+publication model before multiple CPUs use the allocator; secondary harts
+currently remain parked.
+
 The current kernel-stack implementation requires physically contiguous VMOs.
-It uses the first physical frame plus the VMO size as the stack top, so it
+It uses the first frame's kernel virtual alias plus the VMO size as the stack top, so it
 cannot fall back to scattered pages. User stacks may use scattered VMO frames
 mapped into a contiguous virtual range.
+
+Contiguous physical VMO backing stores a base and page count instead of a
+vector entry per page. Physical VMOs expose frames for explicit mappings;
+direct CPU read/write requires a RAM alias or an explicit device alias.
+The GOP framebuffer has a separate device alias and uses volatile accesses.
+Unknown device ranges do not become ordinary RAM aliases.
 
 ## Paging HAL & Architecture Parity
 
@@ -34,12 +71,12 @@ Hardware page tables are managed through the architecture-agnostic `AddressSpace
   - 4-level page table walk (`PML4 -> PDPT -> PD -> PT`).
   - Canonical 48-bit sign-extension verification (bits 63..48 match bit 47).
   - PTE flags (`P, RW, US, PWT, PCD, A, D, HUGE, G, NX`).
-  - Upper-half kernel space synchronization: PML4 entries 256..511 copied from boot CR3.
+  - Upper-half kernel space synchronization: PML4 entries 256..511 copied from the permanent kernel root.
   - Teardown safety: `Drop` traverses only owned lower-half entries 0..255, preserving shared kernel tables and all leaf backing frames.
   - Queries combine ancestor permissions: USER and RW must hold throughout the walk, while NX at any level disables execution. Huge-page queries preserve byte offsets.
   - CR3 activation with `invlpg` single-page and full CR3 reload TLB flushes.
 
-## The bootstrap address space keeps the kernel reachable
+## Permanent upper mappings keep the kernel reachable
 
 The resident user code VMO starts at `0x0000_0010_0000_0000` and is user RX.
 Its backing rounds the actual probe length up to whole pages; it is not limited
@@ -47,27 +84,53 @@ to a single page. Its 16 KiB stack starts at `0x0000_0020_0000_0000` and is user
 RW/NX. Both addresses are in the positive canonical Sv39 range and work on
 x86-64 as well. The dedicated execute-fault probe maps its code RO/NX instead.
 
-On RISC-V, each bootstrap address space identity-maps the allocator-managed
-RAM bank through a retained physical VMO. Mappings begin supervisor RW/NX;
-page-aligned kernel text becomes supervisor RX and rodata becomes supervisor
-RO/NX. This keeps the kernel, heap, stack, and physical page-table aliases
-reachable after `satp` activation. User mappings remain separate. The kernel
-executes `fence.i` after installing the probe code.
+Both kernels execute at `0xffff_ffff_8000_0000` on high image-backed stacks
+before entering Rust. RISC-V retains a small physical assembly entry at
+`0x80200000`; x86 keeps its PIE/relative-relocation ELF contract while the
+loader writes through physical destinations and calculates high pointer
+values. BootInfo version 2 is 112 bytes and separates physical reservations
+from readable virtual pointers, including the framebuffer alias.
 
-On x86-64, architecture initialization captures the loader-owned boot CR3
-before any process root can become active. Address-space creation privately
-clones its lower-half table pages and shares its upper-half entries. Cloning
-preserves physical leaves, huge pages, permissions, and cache attributes.
-Opening an ancestor for a new user mapping preserves the restrictions on
-existing sibling mappings. The identity-mapped kernel leaves remain
-supervisor-only. Partial construction and teardown free owned table pages
-without freeing the loader's tables or VMO backing.
+Eligible RAM receives packed supervisor RW/NX aliases in
+`[0xffff_ffc0_0000_0000, 0xffff_fffe_0000_0000)` on Sv39 and
+`[0xffff_8000_0000_0000, 0xffff_fffe_0000_0000)` on x86-64. Physical holes
+consume no alias capacity; 2 MiB alignment padding does. These virtual windows
+are hard architectural capacity limits: Sv39 provides 248 GiB, while x86-64 is
+bounded by its window and the CPU's physical-address width. A map that exceeds
+either limit fails boot explicitly instead of truncating or silently omitting
+RAM.
+The last 2 GiB holds the image, with the preceding 6 GiB reserved for boot
+windows and explicit MMIO. Checked translation helpers reject unknown RAM.
 
-Both layouts are bootstrap shortcuts pending permanent kernel virtual
-mappings. The retained bootstrap context owns the root Job, process, thread,
-code, and supervisor backing; the thread owns its kernel and user stack VMOs.
-No owner is dropped while its page tables or stack remain active. Exit marks
-the bootstrap thread Dead and halts; it does not yet reclaim the active task.
+Before the bitmap can touch metadata, RISC-V installs temporary packed
+aliases using image-owned tables. x86 uses a bounded scratch mapping to
+build aliases even for physical RAM outside its temporary identity range.
+Both then construct exact permanent tables and remove temporary identities,
+scratch aliases, and rounded bootstrap mappings before ordinary heap/VMO use.
+The kernel image is excluded from writable RAM aliases: text is RX, rodata
+RO/NX, and data/stacks RW/NX. Reserved and `no-map` memory has no ordinary
+RAM alias. Permanent RAM, image, and retained boot/device mappings have
+compact physical VMO backing.
+
+New process roots have empty lower halves and shared permanent upper halves.
+Map/unmap/protect reject modifications to shared upper entries. Teardown
+frees private user tables and roots while retaining kernel tables and leaf
+backing. The resident task retains its Job, process, thread, code and stack
+VMOs through halt. Exit still marks the bootstrap thread Dead and halts;
+active task reclamation and SMP remain separate work.
+
+`memory_verification: PASS` checks high code/stack permissions, absence of
+the low kernel alias, shared-upper mutation rejection, alias translations
+and accounting. The ordinary high-frame probe is currently gated on total
+managed RAM being at least 4 GiB, then searches for a free frame above 4 GiB.
+A sparse map with less than 4 GiB total can contain such a frame and still
+skip this probe. A more precise gate would test directly for allocatable
+memory above 4 GiB. With 8 GiB, `memory-capacity-probe` retains 1,049,088
+distinct frames together without touching every payload page, releases them,
+and restores accounting. Both smoke suites run the capacity probe in debug
+and release; host memory/FDT tests run with `bash scripts/memory-tests.sh`.
+The current x86-64 release ISO has also passed these checks on physical
+hardware with 32 GiB installed: 8,240,704 managed frames across 23 extents.
 
 ## Resident user copies preflight the whole range
 

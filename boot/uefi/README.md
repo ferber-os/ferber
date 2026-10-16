@@ -4,8 +4,11 @@ This standalone Rust `no_std` UEFI application loads `WOLFRAM.ELF` from the
 same FAT filesystem as the loader. The kernel must be an x86-64 ELF64
 position-independent `ET_DYN` image with only `R_X86_64_RELATIVE` dynamic
 relocations and a SysV entry point accepting `BootInfo *` in `RDI`. The loader
-asks UEFI for a contiguous run of pages, loads and relocates the image there,
-then exits boot services and jumps to the ELF entry on a dedicated stack.
+asks UEFI for a contiguous physical run of pages and loads the image there.
+Relative relocations write to that physical allocation while producing
+addresses at the high virtual image base `0xffff_ffff_8000_0000`. After
+exiting boot services, the loader enters the high ELF entry; the kernel
+selects its high image-backed stack before Rust executes.
 
 Build with the pinned nightly toolchain after installing both x86 targets:
 
@@ -24,25 +27,37 @@ boot/uefi/package.sh /path/to/wolfram-kernel-elf /path/to/fat-root
 The result contains `EFI/BOOT/BOOTX64.EFI` and `WOLFRAM.ELF`. The image is
 unsigned, so firmware Secure Boot policy must permit it. The loader requires a
 GOP mode with RGB or BGR 32-bit pixels, and passes its framebuffer and the UEFI
-memory map in the versioned `BootInfo` structure. Only
+memory map in version 2 of the shared 112-byte `BootInfo` structure. Physical
+reservation addresses are distinct from readable virtual pointers, including
+the framebuffer's virtual base. Only
 `EfiConventionalMemory` is passed as usable. All loader allocations and boot
 data are `EfiLoaderCode`/`EfiLoaderData` and remain reserved in the handoff.
 
-Before the jump, the loader installs four-level identity page tables covering
-firmware-described ranges, the kernel, its stack and boot data, and the GOP
-framebuffer. Kernel segments receive per-page writable and executable
-permissions. The kernel must validate the handoff and must never call UEFI
-boot services afterward.
+Before the jump, the loader installs temporary four-level page tables with
+the high kernel, boot-data and framebuffer mappings, scratch pages, and the
+identity mappings needed for the transition. Kernel segments receive
+per-page writable and executable permissions. The kernel builds packed
+aliases for eligible RAM, then replaces this root with permanent supervisor
+mappings and removes the identity and scratch windows. New process roots
+share the upper half and start with an empty lower half. RAM above the
+temporary identity window remains in the handoff and is reached through
+scratch-built aliases. The kernel validates supported physical-address
+width and alias capacity; it never calls UEFI boot services or reclaims
+firmware/loader memory after the handoff.
 
 Debug and release kernels now complete returning userspace syscall probes in
 QEMU/OVMF. Separate probes verify supervisor-read, RX-write, and NX-execute
-protection faults. The earlier MSI B650M-A PRO WIFI USB boot initialized the
-physical allocator and reached the Phase 1 diagnosed panic; it does not
-validate the userspace boundary.
+protection faults. Earlier MSI B650M-A PRO WIFI USB boots cover prior
+milestones. They do not validate this new memory discovery and high-half
+mapping transition; that still needs a fresh hardware boot.
 
 Run `make x86-smoke` from the repository root to repeat the debug and release
 userspace roundtrip and protection checks, plus an invalid-opcode exception
-probe. The smoke script
+probe and debug/release 8 GiB capacity probes. Normal and protection boots
+require `memory_verification: PASS` before their resident marker. Capacity
+boots also require more than 4 GiB of distinct frames retained together,
+then released, and read/write/map/copy/free checks on a frame above 4 GiB.
+The smoke script
 builds its kernels in a temporary target directory, so its deliberate fault
 image cannot replace the ordinary kernel intended for a USB stick.
 

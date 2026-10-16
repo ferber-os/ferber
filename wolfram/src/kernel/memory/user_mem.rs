@@ -2,7 +2,7 @@
 
 use core::ptr;
 
-use super::paging::AddressSpace;
+use super::{paging::AddressSpace, phys_map};
 
 const PAGE_SIZE: usize = 4096;
 #[cfg(target_arch = "riscv64")]
@@ -34,7 +34,8 @@ fn preflight(
     }
     let mut address = start;
     loop {
-        let (_, flags) = space.query(address).ok_or(UserMemError::NotMapped)?;
+        let (physical, flags) = space.query(address).ok_or(UserMemError::NotMapped)?;
+        phys_map::phys_to_virt(physical).ok_or(UserMemError::NotMapped)?;
         let permitted = if write {
             flags.writable
         } else {
@@ -55,7 +56,7 @@ fn preflight(
 ///
 /// # Safety
 /// Mappings and their backing must remain stable until return. Every queried
-/// physical byte must have a readable supervisor identity alias. `dst` must not
+/// physical byte must have a readable supervisor RAM alias. `dst` must not
 /// overlap any of that backing. These conditions require external synchronization.
 pub unsafe fn copy_from_user(
     space: &impl AddressSpace,
@@ -69,7 +70,11 @@ pub unsafe fn copy_from_user(
         let (physical, _) = space.query(address).expect("stable user mapping");
         let count = (PAGE_SIZE - address % PAGE_SIZE).min(dst.len() - copied);
         unsafe {
-            ptr::copy_nonoverlapping(physical as *const u8, dst.as_mut_ptr().add(copied), count)
+            ptr::copy_nonoverlapping(
+                phys_map::phys_to_virt(physical).expect("preflight RAM alias") as *const u8,
+                dst.as_mut_ptr().add(copied),
+                count,
+            )
         };
         copied += count;
     }
@@ -80,7 +85,7 @@ pub unsafe fn copy_from_user(
 ///
 /// # Safety
 /// Mappings and their backing must remain stable until return. Every queried
-/// physical byte must have a writable supervisor identity alias. `src` must not
+/// physical byte must have a writable supervisor RAM alias. `src` must not
 /// overlap any of that backing. These conditions require external synchronization.
 pub unsafe fn copy_to_user(
     space: &impl AddressSpace,
@@ -93,7 +98,13 @@ pub unsafe fn copy_to_user(
         let address = user_dst + copied;
         let (physical, _) = space.query(address).expect("stable user mapping");
         let count = (PAGE_SIZE - address % PAGE_SIZE).min(src.len() - copied);
-        unsafe { ptr::copy_nonoverlapping(src.as_ptr().add(copied), physical as *mut u8, count) };
+        unsafe {
+            ptr::copy_nonoverlapping(
+                src.as_ptr().add(copied),
+                phys_map::phys_to_virt(physical).expect("preflight RAM alias") as *mut u8,
+                count,
+            )
+        };
         copied += count;
     }
     Ok(())
@@ -109,8 +120,14 @@ pub fn self_test() {
     for create in [Vmo::create, Vmo::create_contiguous] {
         let dirty = create(PAGE_SIZE + 1).expect("dirty VMO allocation");
         let first = dirty.frames().get(0).unwrap();
-        for &frame in dirty.frames().as_slice() {
-            unsafe { ptr::write_bytes(frame as *mut u8, 0xa5, PAGE_SIZE) };
+        for frame in dirty.frames().iter() {
+            unsafe {
+                ptr::write_bytes(
+                    phys_map::phys_to_virt(frame).unwrap() as *mut u8,
+                    0xa5,
+                    PAGE_SIZE,
+                )
+            };
         }
         let physical = Vmo::create_physical(first, PAGE_SIZE).unwrap();
         let mut byte = [0];
@@ -120,8 +137,13 @@ pub fn self_test() {
         drop(dirty);
         let clean = create(PAGE_SIZE + 1).expect("recycled VMO allocation");
         assert_eq!(clean.frames().get(0), Some(first));
-        for &frame in clean.frames().as_slice() {
-            let page = unsafe { core::slice::from_raw_parts(frame as *const u8, PAGE_SIZE) };
+        for frame in clean.frames().iter() {
+            let page = unsafe {
+                core::slice::from_raw_parts(
+                    phys_map::phys_to_virt(frame).unwrap() as *const u8,
+                    PAGE_SIZE,
+                )
+            };
             assert!(
                 page.iter().all(|&byte| byte == 0),
                 "VMO page tail leaked old data"

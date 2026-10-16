@@ -34,7 +34,7 @@ trap cleanup EXIT
 (cd "$repo_root/boot/uefi" && cargo +nightly build --release --target x86_64-unknown-uefi)
 
 run_case() {
-    local profile=$1 scenario=$2 ram=$3
+    local profile=$1 scenario=$2 ram=$3 limit=8
     local cargo_args=(--features qemu-debug-port)
     local log="$trial_dir/$profile-$scenario.log"
     local qemu_log="$trial_dir/$profile-$scenario-qemu.log"
@@ -45,6 +45,7 @@ run_case() {
         isolation) cargo_args+=(--features user-isolation-probe) ;;
         write-rx) cargo_args+=(--features user-write-probe) ;;
         execute-nx) cargo_args+=(--features user-execute-probe) ;;
+        capacity) cargo_args+=(--features memory-capacity-probe); limit=120 ;;
     esac
     if [[ "$scenario" == exception ]]; then
         cargo_args=(--features x86-exception-probe --release)
@@ -58,7 +59,7 @@ run_case() {
     cp -- "$ovmf_vars" "$trial_dir/OVMF_VARS.fd"
 
     local status=0
-    timeout 8s qemu-system-x86_64 \
+    timeout "${limit}s" qemu-system-x86_64 \
         -machine q35 -m "${ram}M" -smp 1 \
         -drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
         -drive "if=pflash,format=raw,unit=1,file=$trial_dir/OVMF_VARS.fd" \
@@ -93,6 +94,11 @@ run_case() {
         echo "missing successful user-mode probe ($profile $scenario)" >&2
         exit 1
     fi
+    if [[ "$scenario" == capacity ]] && ! smoke_capacity_ok "$log"; then
+        cat "$log" >&2
+        echo 'x86 capacity evidence missing' >&2
+        exit 1
+    fi
     echo "x86 QEMU smoke passed: $profile $scenario, ${ram} MiB"
 }
 
@@ -105,4 +111,6 @@ run_case debug write-rx 512
 run_case release write-rx 512
 run_case debug execute-nx 512
 run_case release execute-nx 512
+run_case debug capacity 8192
+run_case release capacity 8192
 smoke_passed=1

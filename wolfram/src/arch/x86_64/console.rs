@@ -156,7 +156,7 @@ impl LockedConsole {
 }
 
 pub fn init(fb: &Framebuffer) {
-    let Ok(base) = usize::try_from(fb.base) else {
+    let Ok(base) = usize::try_from(fb.virtual_base) else {
         return;
     };
     let Ok(size) = usize::try_from(fb.size) else {

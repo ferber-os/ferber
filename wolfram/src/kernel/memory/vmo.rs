@@ -8,8 +8,8 @@ use alloc::vec::Vec;
 use core::ptr;
 
 use crate::kernel::capabilities::{KernelObject, Rights};
-use crate::kernel::memory::bitmap;
 use crate::kernel::memory::paging::MapFlags;
+use crate::kernel::memory::{bitmap, phys_map};
 
 const PAGE_SIZE: usize = 4096;
 
@@ -31,24 +31,42 @@ pub enum VmoError {
 /// A container of physical frames allocated to back a VMO.
 #[derive(Debug)]
 pub struct VmoFrames {
-    frames: Vec<usize>,
+    frames: FrameStorage,
+}
+
+#[derive(Debug)]
+enum FrameStorage {
+    Scattered(Vec<usize>),
+    Contiguous { base: usize, count: usize },
 }
 
 impl VmoFrames {
     pub fn new(frames: Vec<usize>) -> Self {
-        Self { frames }
+        Self {
+            frames: FrameStorage::Scattered(frames),
+        }
     }
-
+    pub fn contiguous(base: usize, count: usize) -> Self {
+        Self {
+            frames: FrameStorage::Contiguous { base, count },
+        }
+    }
     pub fn count(&self) -> usize {
-        self.frames.len()
+        match &self.frames {
+            FrameStorage::Scattered(frames) => frames.len(),
+            FrameStorage::Contiguous { count, .. } => *count,
+        }
     }
-
-    pub fn as_slice(&self) -> &[usize] {
-        &self.frames
-    }
-
     pub fn get(&self, index: usize) -> Option<usize> {
-        self.frames.get(index).copied()
+        match &self.frames {
+            FrameStorage::Scattered(frames) => frames.get(index).copied(),
+            FrameStorage::Contiguous { base, count } => {
+                (index < *count).then(|| base + index * PAGE_SIZE)
+            }
+        }
+    }
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.count()).map(|index| self.get(index).unwrap())
     }
 }
 
@@ -78,13 +96,22 @@ impl Vmo {
         }
 
         let num_pages = size.div_ceil(PAGE_SIZE);
-        let mut frames = Vec::with_capacity(num_pages);
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(num_pages)
+            .map_err(|_| VmoError::OutOfMemory)?;
 
         for _ in 0..num_pages {
             match bitmap::allocate_frame() {
                 Some(frame) => {
                     // Clear the complete frame, including bytes beyond the VMO's logical end.
-                    unsafe { ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE) };
+                    unsafe {
+                        ptr::write_bytes(
+                            phys_map::phys_to_virt(frame).expect("VMO RAM alias") as *mut u8,
+                            0,
+                            PAGE_SIZE,
+                        )
+                    };
                     frames.push(frame);
                 }
                 None => {
@@ -111,16 +138,17 @@ impl Vmo {
 
         let num_pages = size.div_ceil(PAGE_SIZE);
         let base = bitmap::allocate_frames(num_pages).ok_or(VmoError::OutOfMemory)?;
-        unsafe { ptr::write_bytes(base as *mut u8, 0, num_pages * PAGE_SIZE) };
-
-        let mut frames = Vec::with_capacity(num_pages);
-        for i in 0..num_pages {
-            frames.push(base + i * PAGE_SIZE);
-        }
+        unsafe {
+            ptr::write_bytes(
+                phys_map::phys_to_virt(base).expect("VMO RAM alias") as *mut u8,
+                0,
+                num_pages * PAGE_SIZE,
+            )
+        };
 
         Ok(Self {
             size,
-            frames: VmoFrames::new(frames),
+            frames: VmoFrames::contiguous(base, num_pages),
             is_physical: false,
         })
     }
@@ -136,14 +164,11 @@ impl Vmo {
         }
 
         let num_pages = size.div_ceil(PAGE_SIZE);
-        let mut frames = Vec::with_capacity(num_pages);
-        for i in 0..num_pages {
-            frames.push(base + i * PAGE_SIZE);
-        }
-
+        num_pages.checked_mul(PAGE_SIZE).and_then(|bytes| base.checked_add(bytes))
+            .ok_or(VmoError::OutOfBounds)?;
         Ok(Self {
             size,
-            frames: VmoFrames::new(frames),
+            frames: VmoFrames::contiguous(base, num_pages),
             is_physical: true,
         })
     }
@@ -182,7 +207,10 @@ impl Vmo {
 
     /// Read data from the VMO at `offset` into `buffer`.
     pub fn read(&self, offset: usize, buffer: &mut [u8]) -> Result<(), VmoError> {
-        if offset.checked_add(buffer.len()).is_none_or(|end| end > self.size) {
+        if offset
+            .checked_add(buffer.len())
+            .is_none_or(|end| end > self.size)
+        {
             return Err(VmoError::OutOfBounds);
         }
 
@@ -194,8 +222,19 @@ impl Vmo {
             let to_read = core::cmp::min(PAGE_SIZE - page_offset, buffer.len() - bytes_read);
 
             let frame = self.frames.get(page_idx).ok_or(VmoError::OutOfBounds)?;
+            if let Some(device) = phys_map::mmio_to_virt(frame) {
+                for byte in 0..to_read {
+                    buffer[bytes_read + byte] = unsafe {
+                        ptr::read_volatile((device + page_offset + byte) as *const u8)
+                    };
+                }
+                bytes_read += to_read;
+                continue;
+            }
             unsafe {
-                let src = (frame as *const u8).add(page_offset);
+                let src = (phys_map::phys_to_virt(frame).ok_or(VmoError::OutOfBounds)?
+                    as *const u8)
+                    .add(page_offset);
                 let dst = buffer.as_mut_ptr().add(bytes_read);
                 ptr::copy_nonoverlapping(src, dst, to_read);
             }
@@ -208,7 +247,10 @@ impl Vmo {
 
     /// Write data to the VMO at `offset` from `buffer`.
     pub fn write(&mut self, offset: usize, buffer: &[u8]) -> Result<(), VmoError> {
-        if offset.checked_add(buffer.len()).is_none_or(|end| end > self.size) {
+        if offset
+            .checked_add(buffer.len())
+            .is_none_or(|end| end > self.size)
+        {
             return Err(VmoError::OutOfBounds);
         }
 
@@ -220,9 +262,18 @@ impl Vmo {
             let to_write = core::cmp::min(PAGE_SIZE - page_offset, buffer.len() - bytes_written);
 
             let frame = self.frames.get(page_idx).ok_or(VmoError::OutOfBounds)?;
+            if let Some(device) = phys_map::mmio_to_virt(frame) {
+                for byte in 0..to_write {
+                    unsafe { ptr::write_volatile((device + page_offset + byte) as *mut u8,
+                        buffer[bytes_written + byte]) };
+                }
+                bytes_written += to_write;
+                continue;
+            }
             unsafe {
                 let src = buffer.as_ptr().add(bytes_written);
-                let dst = (frame as *mut u8).add(page_offset);
+                let dst = (phys_map::phys_to_virt(frame).ok_or(VmoError::OutOfBounds)? as *mut u8)
+                    .add(page_offset);
                 ptr::copy_nonoverlapping(src, dst, to_write);
             }
 
@@ -236,7 +287,7 @@ impl Vmo {
 impl Drop for Vmo {
     fn drop(&mut self) {
         if !self.is_physical {
-            for &frame in self.frames.as_slice() {
+            for frame in self.frames.iter() {
                 let _ = bitmap::free_frame(frame);
             }
         }

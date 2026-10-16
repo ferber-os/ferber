@@ -11,7 +11,7 @@ pub const OUT_OF_RESOURCES: Status = error(9);
 pub const EFI_LOADER_CODE: u32 = 1;
 pub const EFI_LOADER_DATA: u32 = 2;
 pub const EFI_CONVENTIONAL_MEMORY: u32 = 7;
-pub const ALLOCATE_ANY_PAGES: u32 = 0;
+pub const ALLOCATE_MAX_ADDRESS: u32 = 1;
 pub const FILE_MODE_READ: u64 = 1;
 
 const fn error(code: usize) -> Status {
@@ -89,7 +89,8 @@ impl BootServices {
     pub unsafe fn allocate_pages(&mut self, kind: u32, pages: usize, address: &mut u64) -> Status {
         let f: extern "efiapi" fn(u32, u32, usize, *mut u64) -> Status =
             core::mem::transmute(self.functions[2]);
-        f(ALLOCATE_ANY_PAGES, kind, pages, address)
+        *address = (1u64 << 47) - 1;
+        f(ALLOCATE_MAX_ADDRESS, kind, pages, address)
     }
 
     pub unsafe fn free_pages(&mut self, address: u64, pages: usize) -> Status {

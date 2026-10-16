@@ -120,7 +120,7 @@ pub trait AddressSpace {
     ) -> Result<(), PageError> {
         const PAGE_SIZE: usize = 4096;
         let mut mapped = 0;
-        for (i, &phys) in frames.as_slice().iter().enumerate() {
+        for (i, phys) in frames.iter().enumerate() {
             match self.map_page(virt_addr + i * PAGE_SIZE, phys, flags) {
                 Ok(()) => mapped += 1,
                 Err(e) => {

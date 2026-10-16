@@ -1,5 +1,10 @@
 pub const BOOT_MAGIC: u64 = 0x574f_4c46_5241_4d21;
-pub const BOOT_VERSION: u32 = 1;
+pub const BOOT_VERSION: u32 = 2;
+pub const BOOT_DATA_BASE: u64 = 0xffff_fffe_0000_0000;
+pub const BOOT_INFO_VA: u64 = BOOT_DATA_BASE;
+pub const BOOT_REGIONS_VA: u64 = BOOT_DATA_BASE + 0x1_0000;
+pub const MMIO_BASE: u64 = 0xffff_fffe_8000_0000;
+pub const KERNEL_IMAGE_BASE: u64 = 0xffff_ffff_8000_0000;
 pub const REGION_USABLE: u32 = 1;
 pub const REGION_RESERVED: u32 = 2;
 pub const PIXEL_NONE: u32 = 0;
@@ -19,11 +24,23 @@ pub struct MemoryRegion {
 #[derive(Clone, Copy, Default)]
 pub struct Framebuffer {
     pub base: u64,
+    pub virtual_base: u64,
     pub size: u64,
     pub width: u32,
     pub height: u32,
     pub stride: u32,
     pub pixel_format: u32,
+}
+
+impl Framebuffer {
+    pub fn overlaps(&self, start: u64, end: u64) -> bool {
+        self.size != 0
+            && self
+                .base
+                .checked_add(self.size)
+                .and_then(|end| end.checked_add(4095))
+                .is_none_or(|fb_end| (self.base & !4095) < end && start < (fb_end & !4095))
+    }
 }
 
 #[repr(C)]
@@ -37,9 +54,14 @@ pub struct BootInfo {
     pub memory_region_size: u32,
     pub kernel_start: u64,
     pub kernel_end: u64,
+    pub kernel_virtual_start: u64,
+    pub boot_info_physical: u64,
+    pub memory_regions_virtual: u64,
     pub framebuffer: Framebuffer,
 }
 
 const _: () = assert!(core::mem::size_of::<MemoryRegion>() == 24);
-const _: () = assert!(core::mem::size_of::<Framebuffer>() == 32);
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 80);
+const _: () = assert!(core::mem::size_of::<Framebuffer>() == 40);
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 112);
+const _: () = assert!(core::mem::offset_of!(BootInfo, kernel_virtual_start) == 48);
+const _: () = assert!(core::mem::offset_of!(BootInfo, framebuffer) == 72);

@@ -49,7 +49,23 @@ VMO-everything. No anonymous memory. No implicit backing.
 Every virtual memory region backed by a named kernel object.
 Rights enforced at page table level by MMU — hardware, not policy.
 
-Physical allocator: bitmap (boot) -> buddy (Phase 2).
+The physical bitmap allocator manages eligible firmware RAM across multiple
+ranges. Page-sized metadata blocks grow with discovered capacity; the buddy
+heap suballocates those physical pages. The heap's 128 MiB limit applies to
+one allocation, independently of total managed RAM.
+
+Both architectures run a high-half kernel with shared permanent supervisor
+tables and empty lower halves in new process roots. Packed RAM aliases cover
+eligible RAM without spending virtual space on physical holes or mapping
+firmware reservations. Kernel text is RX, rodata RO/NX, and RAM aliases RW/NX;
+the kernel image has no writable RAM alias. The packed alias windows are hard
+capacity limits, including 2 MiB alignment padding: Sv39 provides 248 GiB,
+while x86-64 is bounded by its window and CPU physical-address width. Exceeding
+the limit fails boot. Allocator metadata placement depends on validating the
+normalized physical map first. The current allocator lock is not safe for
+same-CPU interrupt reentry; IRQ-context allocation and SMP use need an explicit
+locking/publication design. See [the memory model](memory.md) for boot and
+allocation limits.
 
 ## 6. Drivers
 

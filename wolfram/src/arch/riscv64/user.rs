@@ -72,6 +72,6 @@ pub fn isolation_address() -> usize {
     )) {
         crate::kernel::syscall::USER_PC
     } else {
-        0x80200000
+        crate::boot_info::KERNEL_IMAGE_BASE as usize
     }
 }

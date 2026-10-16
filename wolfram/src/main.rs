@@ -27,18 +27,19 @@ core::arch::global_asm!(include_str!("arch/x86_64/boot.S"));
 
 #[cfg(target_arch = "riscv64")]
 #[no_mangle]
-pub extern "C" fn kernel_main(_hart_id: usize, device_tree: usize) -> ! {
+pub extern "C" fn kernel_main(_hart_id: usize, device_tree: usize, device_tree_physical: usize) -> ! {
     arch::init();
-    kernel_start("RISC-V 64", || kernel::memory::init(device_tree))
+    kernel_start("RISC-V 64", || kernel::memory::init(device_tree, device_tree_physical))
 }
 
 #[cfg(target_arch = "x86_64")]
 #[no_mangle]
 /// # Safety
-/// The loader must pass a readable, identity-mapped `BootInfo` that remains
+/// The loader must pass a readable, virtually mapped `BootInfo` that remains
 /// live until memory initialization finishes.
 pub unsafe extern "C" fn kernel_main(boot_info: *const boot_info::BootInfo) -> ! {
     let info = unsafe { boot_info.as_ref() }.expect("missing boot information");
+    info.validate().expect("invalid boot information");
     arch::init(info);
     kernel_start("x86-64", || kernel::memory::init_from_boot_info(info))
 }
@@ -60,17 +61,20 @@ fn kernel_start(
         memory.end,
         memory.free_pages
     );
+    let gib = memory.total_pages / 262_144;
+    let gib_fraction = memory.total_pages % 262_144 * 100 / 262_144;
     kprintln!(
-        "[mem]   managed RAM: {} MiB ({} total frames)",
-        (memory.end - memory.start) / (1024 * 1024),
-        (memory.end - memory.start) / 4096
+        "[mem]   managed RAM: {} MiB ({}.{:02} GiB, {} total frames)",
+        memory.total_pages / 256,
+        gib,
+        gib_fraction,
+        memory.total_pages
     );
     let probe =
         kernel::memory::bitmap::allocate_frame().expect("physical allocator has no free frames");
     kernel::memory::bitmap::free_frame(probe)
         .expect("physical allocator failed to release probe frame");
     assert!(kernel::memory::bitmap::free_frame(probe).is_err());
-    assert!(kernel::memory::bitmap::free_frame(memory.start).is_err());
     kprintln!("[mem]   physical allocator: ok");
 
     kprintln!("[mem]   running rigorous buddy allocator tests...");
@@ -209,8 +213,8 @@ fn kernel_start(
         let test_rw = MapFlags::user_rw();
         let test_ro = MapFlags::user_ro();
 
-        let f0 = vmo.frames().as_slice()[0];
-        let f1 = vmo.frames().as_slice()[1];
+        let f0 = vmo.frames().get(0).unwrap();
+        let f1 = vmo.frames().get(1).unwrap();
 
         // 1. Query before mapping
         assert_eq!(space.query(test_vaddr), None);
@@ -417,6 +421,7 @@ fn kernel_start(
         unsafe { core::arch::asm!("ud2", options(noreturn)) }
     }
 
+    kernel::memory::self_test();
     kernel::syscall::run(root_job, memory)
 }
 

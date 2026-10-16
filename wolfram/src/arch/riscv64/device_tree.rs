@@ -27,6 +27,9 @@ struct Node {
     child_size_cells: u32,
     reg_offset: usize,
     reg_len: usize,
+    enabled: bool,
+    dynamic: bool,
+    translated: bool,
 }
 
 impl Node {
@@ -38,6 +41,9 @@ impl Node {
         child_size_cells: 1,
         reg_offset: 0,
         reg_len: 0,
+        enabled: true,
+        dynamic: false,
+        translated: false,
     };
 }
 
@@ -167,6 +173,9 @@ impl<'a> DeviceTree<'a> {
                         child_size_cells: parent.child_size_cells,
                         reg_offset: 0,
                         reg_len: 0,
+                        enabled: parent.enabled,
+                        dynamic: false,
+                        translated: false,
                     };
                     depth += 1;
                 }
@@ -177,7 +186,13 @@ impl<'a> DeviceTree<'a> {
                     }
                     depth -= 1;
                     let node = stack[depth];
-                    if node.kind == wanted && node.reg_len != 0 {
+                    if node.enabled && node.kind == 2 && node.translated {
+                        return Err("translated reserved-memory is unsupported");
+                    }
+                    if node.enabled && node.kind == 3 && node.dynamic && node.reg_len == 0 {
+                        return Err("dynamic reserved-memory is unsupported");
+                    }
+                    if node.enabled && node.kind == wanted && node.reg_len != 0 {
                         self.regions(node, visit)?;
                     }
                 }
@@ -199,6 +214,17 @@ impl<'a> DeviceTree<'a> {
                         b"#size-cells" if len == 4 => {
                             node.child_size_cells = be32(self.structure, offset)?
                         }
+                        b"status" => {
+                            let status = section(self.structure, offset, len)?;
+                            node.enabled &= status == b"okay\0" || status == b"ok\0";
+                        }
+                        b"device_type" if depth == 2 => {
+                            if section(self.structure, offset, len)? == b"memory\0" {
+                                node.kind = 1;
+                            }
+                        }
+                        b"ranges" if node.kind == 2 => node.translated = len != 0,
+                        b"size" if node.kind == 3 => node.dynamic = true,
                         b"reg" => {
                             node.reg_offset = offset;
                             node.reg_len = len;
@@ -246,5 +272,133 @@ impl<'a> DeviceTree<'a> {
             value = (value << 32) | be32(self.structure, offset + i * 4)? as u64;
         }
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::vec::Vec;
+
+    struct Fixture {
+        structure: Vec<u8>,
+        strings: Vec<u8>,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            Self {
+                structure: Vec::new(),
+                strings: Vec::new(),
+            }
+        }
+        fn word(&mut self, value: u32) {
+            self.structure.extend_from_slice(&value.to_be_bytes());
+        }
+        fn begin(&mut self, name: &[u8]) {
+            self.word(1);
+            self.structure.extend_from_slice(name);
+            self.structure.push(0);
+            while !self.structure.len().is_multiple_of(4) {
+                self.structure.push(0);
+            }
+        }
+        fn end(&mut self) {
+            self.word(2);
+        }
+        fn prop(&mut self, name: &[u8], value: &[u8]) {
+            let offset = self.strings.len() as u32;
+            self.strings.extend_from_slice(name);
+            self.strings.push(0);
+            self.word(3);
+            self.word(value.len() as u32);
+            self.word(offset);
+            self.structure.extend_from_slice(value);
+            while !self.structure.len().is_multiple_of(4) {
+                self.structure.push(0);
+            }
+        }
+        fn tree(&self) -> DeviceTree<'_> {
+            DeviceTree {
+                bytes: &[0; 16],
+                structure: &self.structure,
+                strings: &self.strings,
+                reserve_offset: 0,
+            }
+        }
+        fn finish(&mut self) {
+            self.end();
+            self.word(9);
+        }
+    }
+    const REG: &[u8] = &[0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x20, 0, 0];
+
+    #[test]
+    fn disabled_memory_is_ignored_and_device_type_is_honored() {
+        let mut f = Fixture::new();
+        f.begin(b"");
+        f.begin(b"memory@80000000");
+        f.prop(b"reg", REG);
+        f.prop(b"status", b"disabled\0");
+        f.end();
+        f.begin(b"ram@80000000");
+        f.prop(b"reg", REG);
+        f.prop(b"device_type", b"memory\0");
+        f.prop(b"status", b"okay\0");
+        f.end();
+        f.finish();
+        let mut found = Vec::new();
+        f.tree()
+            .memory_regions(|r| found.push((r.start, r.end)))
+            .unwrap();
+        assert_eq!(found, [(0x80000000, 0x80200000)]);
+    }
+
+    #[test]
+    fn no_map_reservation_is_retained_but_disabled_child_is_ignored() {
+        let mut f = Fixture::new();
+        f.begin(b"");
+        f.begin(b"reserved-memory");
+        f.prop(b"ranges", b"");
+        f.begin(b"firmware@80000000");
+        f.prop(b"reg", REG);
+        f.prop(b"no-map", b"");
+        f.end();
+        f.begin(b"unused");
+        f.prop(b"reg", REG);
+        f.prop(b"status", b"disabled\0");
+        f.end();
+        f.end();
+        f.finish();
+        let mut found = Vec::new();
+        f.tree()
+            .reserved_regions(|r| found.push((r.start, r.end)))
+            .unwrap();
+        assert_eq!(found, [(0x80000000, 0x80200000)]);
+    }
+
+    #[test]
+    fn unsupported_reserved_memory_is_rejected() {
+        let mut f = Fixture::new();
+        f.begin(b"");
+        f.begin(b"reserved-memory");
+        f.prop(b"ranges", REG);
+        f.end();
+        f.finish();
+        assert_eq!(
+            f.tree().reserved_regions(|_| {}),
+            Err("translated reserved-memory is unsupported")
+        );
+        let mut f = Fixture::new();
+        f.begin(b"");
+        f.begin(b"reserved-memory");
+        f.begin(b"dynamic");
+        f.prop(b"size", &[0, 0, 0x10, 0]);
+        f.end();
+        f.end();
+        f.finish();
+        assert_eq!(
+            f.tree().reserved_regions(|_| {}),
+            Err("dynamic reserved-memory is unsupported")
+        );
     }
 }

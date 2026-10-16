@@ -37,8 +37,6 @@ struct Bootstrap {
     process: Arc<SpinLock<Process>>,
     thread: Arc<SpinLock<Thread>>,
     _code: Vmo,
-    #[cfg(target_arch = "riscv64")]
-    _supervisor: Vmo,
     probe: probe::Observer,
     _fixtures: Option<probe::Fixtures>,
     isolation: bool,
@@ -69,7 +67,9 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     let stack = Vmo::create(STACK_SIZE).expect("allocate user stack");
     let kernel_sp = {
         let mut task = thread.lock();
-        let top = task.kernel_stack().frames().get(0).unwrap() + task.kernel_stack().size();
+        let physical = task.kernel_stack().frames().get(0).unwrap();
+        let top = crate::kernel::memory::phys_map::phys_to_virt(physical)
+            .expect("kernel stack alias") + task.kernel_stack().size();
         task.set_user_stack(stack);
         task.set_state(ThreadState::Running);
         top
@@ -83,8 +83,6 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     };
     proc.set_state(ProcessState::Running);
     let space = proc.address_space_mut();
-    #[cfg(target_arch = "riscv64")]
-    let supervisor = unsafe { arch::prepare_user_space(space, memory.start, memory.end) };
     unsafe {
         let code_flags = if cfg!(feature = "user-execute-probe") {
             MapFlags::user_ro()
@@ -109,8 +107,6 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
         process: process.clone(),
         thread,
         _code: code,
-        #[cfg(target_arch = "riscv64")]
-        _supervisor: supervisor,
         probe: probe::Observer::new(),
         _fixtures: fixtures,
         isolation,
@@ -129,9 +125,6 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
 fn address_space_lifecycle(memory: bitmap::MemoryStats) {
     let before = bitmap::stats().free_pages;
     let mut space = ArchAddressSpace::new().expect("create disposable address space");
-    #[cfg(target_arch = "riscv64")]
-    let backing = unsafe { arch::prepare_user_space(&mut space, memory.start, memory.end) };
-    #[cfg(target_arch = "x86_64")]
     let _ = (&mut space, memory);
     unsafe {
         let original: usize;
@@ -147,8 +140,6 @@ fn address_space_lifecycle(memory: bitmap::MemoryStats) {
         core::arch::asm!("mov cr3, {}", in(reg) original);
     }
     drop(space);
-    #[cfg(target_arch = "riscv64")]
-    drop(backing);
     assert_eq!(
         bitmap::stats().free_pages,
         before,

@@ -5,16 +5,16 @@
 #![allow(dead_code)]
 
 extern crate alloc;
+use super::job::Job;
+use super::thread::{Thread, ThreadState};
+use super::TaskError;
+use crate::arch::ArchAddressSpace;
+use crate::kernel::capabilities::{HandleTable, KernelObject};
+use crate::kernel::memory::vmo::Vmo;
+use crate::kernel::sync::SpinLock;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::arch::ArchAddressSpace;
-use crate::kernel::capabilities::{KernelObject, HandleTable};
-use crate::kernel::memory::vmo::Vmo;
-use crate::kernel::sync::SpinLock;
-use super::thread::{Thread, ThreadState};
-use super::job::Job;
-use super::TaskError;
 
 static NEXT_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
@@ -90,9 +90,11 @@ impl Process {
         if self.state == ProcessState::Dead {
             return Err(TaskError::ProcessDead);
         }
-        let kstack = Vmo::create_contiguous(kstack_size)
-            .map_err(|_| TaskError::OutOfMemory)?;
-        let kstack_base = kstack.frames().get(0).ok_or(TaskError::OutOfMemory)?;
+        let kstack = Vmo::create_contiguous(kstack_size).map_err(|_| TaskError::OutOfMemory)?;
+        let kstack_base = crate::kernel::memory::phys_map::phys_to_virt(
+            kstack.frames().get(0).ok_or(TaskError::OutOfMemory)?,
+        )
+        .ok_or(TaskError::OutOfMemory)?;
         let kstack_top = kstack_base + kstack_size;
         let thread_id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
         let thread = Arc::new(SpinLock::new(Thread::new(

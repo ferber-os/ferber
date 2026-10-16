@@ -1,4 +1,7 @@
-use crate::{abi::Framebuffer, uefi, KernelImage, PAGE_SIZE};
+use crate::{
+    abi::{self, BootInfo},
+    uefi, KernelImage, PAGE_SIZE,
+};
 use core::{arch::asm, ptr};
 
 const PRESENT: u64 = 1;
@@ -57,10 +60,10 @@ impl PageTables {
         let mut address = start;
         while address < end {
             if address.is_multiple_of(TWO_MIB) && end - address >= TWO_MIB {
-                self.map_2m(services, address, flags)?;
+                self.map_2m(services, address, address, flags)?;
                 address += TWO_MIB;
             } else {
-                self.map_4k(services, address, flags)?;
+                self.map_4k(services, address, address, flags)?;
                 address += PAGE_SIZE;
             }
         }
@@ -81,17 +84,23 @@ impl PageTables {
         &self,
         services: *mut uefi::BootServices,
         address: u64,
+        physical: u64,
         flags: u64,
     ) -> Result<(), uefi::Status> {
         let entry = self.directory_entry(services, address)?;
         if *entry == 0 {
-            *entry = address | flags | HUGE;
+            *entry = physical | flags | HUGE;
         } else if *entry & HUGE == 0 {
             for page in 0..512 {
-                self.map_4k(services, address + page * PAGE_SIZE, flags)?;
+                self.map_4k(
+                    services,
+                    address + page * PAGE_SIZE,
+                    physical + page * PAGE_SIZE,
+                    flags,
+                )?;
             }
         } else {
-            *entry = address | flags | HUGE;
+            *entry = physical | flags | HUGE;
         }
         Ok(())
     }
@@ -100,6 +109,7 @@ impl PageTables {
         &self,
         services: *mut uefi::BootServices,
         address: u64,
+        physical: u64,
         flags: u64,
     ) -> Result<(), uefi::Status> {
         let entry = self.directory_entry(services, address)?;
@@ -120,7 +130,7 @@ impl PageTables {
         } else {
             *entry & ADDRESS_MASK
         };
-        *((table as *mut u64).add(((address >> 12) & 511) as usize)) = address | flags;
+        *((table as *mut u64).add(((address >> 12) & 511) as usize)) = physical | flags;
         Ok(())
     }
 }
@@ -166,9 +176,19 @@ pub unsafe fn build(
     map_size: usize,
     descriptor_size: usize,
     kernel: &KernelImage,
-    framebuffer: &Framebuffer,
+    info: &BootInfo,
+    regions_bytes: usize,
 ) -> Result<PageTables, uefi::Status> {
+    if info.framebuffer.overlaps(kernel.start, kernel.end)
+        || info.framebuffer.overlaps(info.boot_info_physical, info.boot_info_physical + PAGE_SIZE)
+        || info.framebuffer.overlaps(info.memory_regions, info.memory_regions + regions_bytes as u64)
+    {
+        return Err(uefi::LOAD_ERROR);
+    }
     let tables = PageTables::new(services)?;
+    let framebuffer = &info.framebuffer;
+    let boot_info = info.boot_info_physical;
+    let regions = info.memory_regions;
     for index in 0..map_size / descriptor_size {
         let descriptor =
             ptr::read_unaligned(map.add(index * descriptor_size) as *const uefi::MemoryDescriptor);
@@ -184,11 +204,8 @@ pub unsafe fn build(
             .checked_add(bytes)
             .ok_or(uefi::LOAD_ERROR)?;
         // A four-level identity map cannot represent addresses in the upper canonical half.
-        // These are irrelevant reserved MMIO ranges; usable RAM must fit below the limit.
+        // High physical RAM remains in BootInfo and is reached through scratch-built aliases.
         if descriptor.physical_start >= IDENTITY_LIMIT {
-            if descriptor.kind == uefi::EFI_CONVENTIONAL_MEMORY {
-                return Err(uefi::UNSUPPORTED);
-            }
             continue;
         }
         let end = end.min(IDENTITY_LIMIT);
@@ -232,10 +249,72 @@ pub unsafe fn build(
                 executable |= segment.flags & 1 != 0;
             }
         }
-        tables.map_4k(services, address, tables.flags(writable, executable, false))?;
+        if writable && executable {
+            return Err(uefi::UNSUPPORTED);
+        }
+        tables.map_4k(
+            services,
+            address,
+            address,
+            tables.flags(writable, executable, false),
+        )?;
+        tables.map_4k(
+            services,
+            abi::KERNEL_IMAGE_BASE + (address - kernel.start),
+            address,
+            tables.flags(writable, executable, false),
+        )?;
         address += PAGE_SIZE;
     }
+    tables.map_4k(
+        services,
+        abi::BOOT_INFO_VA,
+        boot_info,
+        tables.flags(false, false, false),
+    )?;
+    for offset in (0..pages_for(regions_bytes)).map(|page| page as u64 * PAGE_SIZE) {
+        tables.map_4k(
+            services,
+            abi::BOOT_REGIONS_VA + offset,
+            regions + offset,
+            tables.flags(false, false, false),
+        )?;
+    }
+    if framebuffer.pixel_format != 0 {
+        let size = page_up((framebuffer.base & (PAGE_SIZE - 1)) + framebuffer.size)
+            .ok_or(uefi::LOAD_ERROR)?;
+        for offset in (0..size).step_by(PAGE_SIZE as usize) {
+            tables.map_4k(
+                services,
+                abi::MMIO_BASE + offset,
+                page_down(framebuffer.base) + offset,
+                tables.flags(true, false, true),
+            )?;
+        }
+    }
+    // A stable alias to the scratch leaf table lets the kernel access arbitrary
+    // physical page-table frames before the permanent RAM aliases exist.
+    const SCRATCH_TABLE: u64 = abi::BOOT_DATA_BASE + 0x20_0000;
+    const SCRATCH: u64 = abi::BOOT_DATA_BASE + 0x40_0000;
+    tables.map_4k(
+        services,
+        SCRATCH,
+        boot_info,
+        tables.flags(true, false, false),
+    )?;
+    let scratch_directory = tables.directory_entry(services, SCRATCH)?;
+    let scratch_table = *scratch_directory & ADDRESS_MASK;
+    tables.map_4k(
+        services,
+        SCRATCH_TABLE,
+        scratch_table,
+        tables.flags(true, false, false),
+    )?;
     Ok(tables)
+}
+
+fn pages_for(bytes: usize) -> usize {
+    bytes.div_ceil(PAGE_SIZE as usize)
 }
 
 pub unsafe fn enable_nx_and_switch(root: u64, nx_supported: bool) {

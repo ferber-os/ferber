@@ -5,12 +5,18 @@ SECTIONS {
     __kernel_start = .;
 
     .text : ALIGN(4096) {
+        __text_start = .;
         *(.text.entry)
         *(.text .text.*)
     }
+    . = ALIGN(4096);
+    __text_end = .;
     .rodata : ALIGN(4096) {
+        __rodata_start = .;
         *(.rodata .rodata.*)
     }
+    . = ALIGN(4096);
+    __rodata_end = .;
     .data : ALIGN(4096) {
         *(.data .data.*)
     }

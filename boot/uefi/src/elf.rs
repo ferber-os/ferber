@@ -1,4 +1,4 @@
-use crate::{uefi, KernelImage, KernelSegment, PAGE_SIZE};
+use crate::{abi::KERNEL_IMAGE_BASE, uefi, KernelImage, KernelSegment, PAGE_SIZE};
 use core::{mem::size_of, ptr};
 
 const PT_LOAD: u32 = 1;
@@ -170,7 +170,7 @@ pub unsafe fn load_kernel(
         return Err(uefi::LOAD_ERROR);
     }
     let span = maximum - minimum;
-    if span > usize::MAX as u64 {
+    if span >= 2 * 1024 * 1024 * 1024 || span > usize::MAX as u64 {
         return Err(uefi::OUT_OF_RESOURCES);
     }
     let pages = usize::try_from(span / PAGE_SIZE).map_err(|_| uefi::OUT_OF_RESOURCES)?;
@@ -201,8 +201,7 @@ pub unsafe fn load_kernel(
         (*services).free_pages(image, pages);
         return Err(status);
     }
-    let entry =
-        loaded_address(image, minimum, span, header.entry, 1).ok_or(uefi::LOAD_ERROR)? as u64;
+    let entry = KERNEL_IMAGE_BASE + (header.entry - minimum);
     for segment in &mut segments[..segment_count] {
         segment.start = image + (segment.start - minimum);
         segment.end = image + (segment.end - minimum);
@@ -275,7 +274,7 @@ unsafe fn relocate(
     }
     let table =
         loaded_address(image, minimum, span, rela_address, rela_size).ok_or(uefi::LOAD_ERROR)?;
-    let bias = i128::from(image) - i128::from(minimum);
+    let bias = i128::from(KERNEL_IMAGE_BASE) - i128::from(minimum);
     for index in 0..(rela_size / rela_entry) {
         let rela = ptr::read_unaligned(table.add((index * rela_entry) as usize) as *const Rela);
         if rela.info >> 32 != 0 || rela.info as u32 != R_X86_64_RELATIVE {
