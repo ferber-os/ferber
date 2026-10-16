@@ -8,6 +8,8 @@ global_asm!(
     sys_exit = const crate::kernel::syscall::SYS_EXIT,
     sys_close = const crate::kernel::syscall::SYS_HANDLE_CLOSE,
     sys_duplicate = const crate::kernel::syscall::SYS_HANDLE_DUPLICATE,
+    sys_attenuate = const crate::kernel::syscall::SYS_CAP_ATTENUATE,
+    sys_revoke = const crate::kernel::syscall::SYS_CAP_REVOKE,
     sys_inspect = const crate::kernel::syscall::SYS_CAP_INSPECT,
     user_stack = const crate::kernel::syscall::USER_STACK,
     stack_size = const crate::kernel::syscall::STACK_SIZE,
@@ -44,7 +46,6 @@ pub fn user_probe() -> &'static [u8] {
     unsafe {
         let start = &riscv_user_probe_start as *const u8;
         let len = (&riscv_user_probe_end as *const u8 as usize) - start as usize;
-        assert!(len <= 4096);
         core::slice::from_raw_parts(start, len)
     }
 }

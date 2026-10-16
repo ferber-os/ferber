@@ -9,6 +9,7 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+#![feature(allocator_ext)]
 
 extern crate alloc;
 
@@ -254,8 +255,7 @@ fn kernel_start(
         kprintln!("[mem]   paging HAL: ok");
     }
 
-    kernel::capabilities::init();
-    kprintln!("[cap]   capability system: initialized global node allocator pool");
+    kprintln!("[cap]   capability system: global node quota ready");
     kprintln!("[cap]   handle table & rights subsystem ready for Phase 2");
 
     let root_job = kernel::task::Job::create_root();
@@ -321,10 +321,9 @@ fn kernel_start(
             SIGNAL_READABLE, SIGNAL_WRITABLE, SIGNAL_PEER_CLOSED,
         };
         use crate::kernel::ipc::fastcall::{fastcall, FastCallArgs};
-        use crate::kernel::capabilities::{CapNode, Rights, ObjectType};
+        use crate::kernel::capabilities::{Rights, ObjectType, CAP_NODE_ALLOCATOR};
         use alloc::vec;
         use alloc::vec::Vec;
-        use core::ptr::NonNull;
 
         // 1. Paired endpoint creation & bidirectional messaging
         let (ep_a, ep_b) = Channel::create();
@@ -333,7 +332,8 @@ fn kernel_start(
         assert_eq!(ep_a.lock().signals() & SIGNAL_READABLE, 0);
 
         let msg1 = ChannelMessage::new(vec![1, 2, 3, 4], Vec::new());
-        ep_a.lock().send(msg1).expect("failed to send message on ep_a");
+        let sent = ep_a.lock().send(msg1);
+        sent.expect("failed to send message on ep_a");
         assert_eq!(ep_b.lock().signals() & SIGNAL_READABLE, SIGNAL_READABLE);
 
         let recv_b = ep_b.lock().recv().expect("failed to recv on ep_b");
@@ -345,17 +345,13 @@ fn kernel_start(
         let proc_a = root_job.lock().create_process("proc_a").expect("create proc_a");
         let proc_b = root_job.lock().create_process("proc_b").expect("create proc_b");
 
-        // Create a dummy capability node
-        let dummy_node = unsafe {
-            let n = alloc::boxed::Box::leak(alloc::boxed::Box::new(CapNode::new(
-                100,
-                Rights::READ | Rights::WRITE | Rights::TRANSFER,
-                NonNull::dangling(),
-                ObjectType::Vmo,
-                None,
-            )));
-            NonNull::new_unchecked(n as *mut CapNode)
-        };
+        // The capability retains its VMO while it moves between tables and messages.
+        let object = alloc::sync::Arc::new(kernel::memory::Vmo::create(4096).expect("IPC fixture VMO"));
+        let dummy_node = CAP_NODE_ALLOCATOR.alloc_root(
+            object,
+            ObjectType::Vmo,
+            Rights::READ | Rights::WRITE | Rights::TRANSFER,
+        ).expect("IPC fixture capability");
 
         // Insert into proc_a's handle table
         let h_a = proc_a.lock().handle_table().lock().insert(dummy_node).expect("insert in proc_a");
@@ -371,7 +367,8 @@ fn kernel_start(
 
         // Send message carrying the capability node
         let cap_msg = ChannelMessage::new(vec![0xAA], vec![transferred_node]);
-        ep_a.lock().send(cap_msg).expect("send cap_msg");
+        let sent = ep_a.lock().send(cap_msg);
+        sent.expect("send cap_msg");
 
         // Process B receives message and inserts capability into its handle table
         let mut recv_msg = ep_b.lock().recv().expect("recv cap_msg");
@@ -387,7 +384,9 @@ fn kernel_start(
         drop(ep_b);
         assert_eq!(ep_a.lock().signals() & SIGNAL_PEER_CLOSED, SIGNAL_PEER_CLOSED);
         let send_err = ep_a.lock().send(ChannelMessage::new(vec![9], Vec::new()));
-        assert_eq!(send_err.err(), Some(ChannelError::PeerClosed));
+        let (error, rejected) = send_err.expect_err("closed peer accepted message");
+        assert_eq!(error, ChannelError::PeerClosed);
+        drop(rejected);
         kprintln!("[ipc]     [3/4] queue bounds enforcement & peer closure signaling: ok");
 
         // 4. FastCall register transfer & direct thread donation

@@ -13,6 +13,8 @@ global_asm!(
     sys_handle_close = const crate::kernel::syscall::SYS_HANDLE_CLOSE,
     sys_handle_duplicate = const crate::kernel::syscall::SYS_HANDLE_DUPLICATE,
     sys_cap_inspect = const crate::kernel::syscall::SYS_CAP_INSPECT,
+    sys_cap_attenuate = const crate::kernel::syscall::SYS_CAP_ATTENUATE,
+    sys_cap_revoke = const crate::kernel::syscall::SYS_CAP_REVOKE,
 );
 
 #[repr(C)]

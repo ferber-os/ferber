@@ -147,11 +147,11 @@ Wolfram uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.1** adds userspace handle closure,
-rights-checked duplication, and capability inspection on both RISC-V 64 and
-x86-64. It builds on Phase 3 M1 (`v0.2.0`): user-mode entry, returning
-syscalls, and supervisor-memory isolation. The normal resident probe passes
-on physical x86-64 hardware. Scheduling, ELF loading, and init remain pending.
+Current milestone: **Uranium-238-v0.2.2** adds rights-checked capability
+attenuation, descendant revocation, and owned capability-node lifetimes on both
+RISC-V 64 and x86-64. It extends the handle syscalls introduced in `v0.2.1`
+and Phase 3 M1 (`v0.2.0`). All three normal resident markers pass on physical
+x86-64 hardware. Scheduling, ELF loading, and init remain pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---
@@ -177,10 +177,11 @@ make debug   # boots with GDB server on :1234
 ```
 
 `make run` executes the in-kernel checks, enters a resident user-mode probe,
-returns through yield and unknown syscalls, exercises handle operations, and
-exits through the kernel. A successful normal boot prints both
-`[WOLFRAM_TEST] privilege_switch_roundtrip: PASS` and
-`[WOLFRAM_TEST] handle_syscalls: PASS`, then halts until QEMU is stopped.
+returns through yield and unknown syscalls, exercises handle operations and
+capability mutation, and exits through the kernel. A successful
+normal boot requires all three markers: `privilege_switch_roundtrip: PASS`,
+`handle_syscalls: PASS`, and `capability_mutation: PASS`, each with the
+`[WOLFRAM_TEST]` prefix. It then halts until QEMU is stopped.
 The separate `user-isolation-probe` feature attempts a supervisor-memory read
 and expects a diagnosed user protection fault followed by
 `[WOLFRAM_TEST] privilege_isolation: PASS`.
@@ -210,19 +211,24 @@ builds the actual bare-metal kernel and checks the ELF that the loader expects;
 see the [UEFI loader notes](boot/uefi/README.md) for build and packaging steps.
 The MSI B650M-A PRO WIFI previously booted the Phase 1 path from USB,
 initialized the physical allocator, and reached its expected diagnosed panic.
-A release-profile build of the current handle-syscall implementation also
-completed the normal resident probe on physical x86-64 hardware, reaching both
-PASS markers and the expected halt. Dedicated protection-fault builds remain
-validated in QEMU.
+The user booted a release-profile ISO of the v0.2.2 capability-mutation
+implementation on physical x86-64 hardware, reaching all three normal PASS
+markers and the expected halt. That run preceded the version metadata bump.
+Dedicated protection-fault builds remain validated in QEMU.
 
 The resident ABI uses Linux-style argument registers with Wolfram syscall
 numbers: `0` is an immediate-return yield hint, `1` exits the resident thread,
-`2` closes a handle, `3` duplicates a handle, and `4` inspects its type and
-rights. Unknown numbers return `-38`. This is not musl compatibility. The probe
-process starts with zero handles, then receives explicitly delegated test
+`2` closes a handle, `3` duplicates a handle, `4` inspects its type and
+rights, `5` derives a capability with equal or fewer rights, and `6` revokes a
+capability and its descendants. Attenuation requires `DUPLICATE`; revocation
+requires `MANAGE`. Unknown numbers return `-38`. This is not musl compatibility.
+The probe process starts with zero handles, then receives explicitly delegated test
 capabilities. See the [syscall ABI](docs/syscall-abi.md) for rights, errors,
-and inspection output. Code and both stacks are VMO-backed, and
-resident user-copy helpers preflight page permissions before copying through
+and inspection output. Nodes own their ancestry and object backing; close
+releases ownership, and final owners reclaim the nodes and backing. Revocation
+does not remove existing VMO mappings. Code and both stacks are VMO-backed;
+the RX code VMO spans as many pages as the resident probe needs. Resident
+user-copy helpers preflight page permissions before copying through
 supervisor physical aliases. See [the memory model](docs/memory.md) for their
 caller contract and temporary bootstrap mappings.
 

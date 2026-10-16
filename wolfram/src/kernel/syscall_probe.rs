@@ -1,12 +1,13 @@
 //! Resident test fixtures and observations, kept outside runtime syscall execution.
 
 use super::*;
-use crate::kernel::capabilities::{CapNode, ObjectType, Rights};
-use alloc::boxed::Box;
-use core::ptr::NonNull;
+use crate::kernel::capabilities::{CapNode, KernelObject, ObjectType, Rights, CAP_NODE_ALLOCATOR};
+
+#[path = "syscall_mutation_tests.rs"]
+mod mutation_tests;
 
 const CANARIES: [usize; 6] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
-const OUTCOMES: [(usize, isize); 14] = [
+const OUTCOMES: [(usize, isize); 24] = [
     (SYS_HANDLE_CLOSE, 0),
     (SYS_HANDLE_CLOSE, -9),
     (SYS_HANDLE_DUPLICATE, 0),
@@ -21,12 +22,23 @@ const OUTCOMES: [(usize, isize); 14] = [
     (SYS_CAP_INSPECT, -14),
     (SYS_YIELD, 0),
     (99, -38),
+    (SYS_CAP_ATTENUATE, 0),
+    (SYS_CAP_ATTENUATE, -9),
+    (SYS_CAP_ATTENUATE, -13),
+    (SYS_CAP_ATTENUATE, -22),
+    (SYS_CAP_ATTENUATE, -116),
+    (SYS_CAP_ATTENUATE, -24),
+    (SYS_CAP_REVOKE, 0),
+    (SYS_CAP_REVOKE, -9),
+    (SYS_CAP_REVOKE, -13),
+    (SYS_CAP_REVOKE, -116),
 ];
+const _: () = assert!(OUTCOMES.len() < u32::BITS as usize);
 
 pub(super) struct Observer {
     calls: usize,
     valid: bool,
-    outcomes: u16,
+    outcomes: u32,
 }
 
 impl Observer {
@@ -48,12 +60,13 @@ impl Observer {
                     nr == 99 && result == -38
                 };
         } else {
-            let normalized = if nr == SYS_HANDLE_DUPLICATE && result >= 0 {
-                0
-            } else {
-                result
-            };
-            let observed_nr = if nr > SYS_CAP_INSPECT { 99 } else { nr };
+            let normalized =
+                if matches!(nr, SYS_HANDLE_DUPLICATE | SYS_CAP_ATTENUATE) && result >= 0 {
+                    0
+                } else {
+                    result
+                };
+            let observed_nr = if nr > SYS_CAP_REVOKE { 99 } else { nr };
             for (index, &(expected_nr, expected_result)) in OUTCOMES.iter().enumerate() {
                 if observed_nr == expected_nr && normalized == expected_result {
                     self.outcomes |= 1 << index;
@@ -78,42 +91,43 @@ impl Observer {
         );
         assert_eq!(
             self.outcomes,
-            (1 << OUTCOMES.len()) - 1,
-            "incomplete handle syscall coverage"
+            (1u32 << OUTCOMES.len()) - 1,
+            "incomplete capability syscall coverage"
         );
         assert_eq!(handles, 0, "user probe leaked handles");
     }
 }
 
 pub(super) struct Fixtures {
-    nodes: [Box<CapNode>; 3],
-    _vmo: Box<Vmo>,
+    nodes: [Arc<CapNode>; 3],
 }
-
-// Nodes have stable boxed addresses, immutable metadata, atomic revocation, and retained backing.
-unsafe impl Send for Fixtures {}
 
 impl Fixtures {
     pub(super) fn delegate(process: &Process) -> Self {
-        let vmo = Box::new(Vmo::create(4096).expect("fixture VMO"));
-        let object = NonNull::from(vmo.as_ref()).cast();
-        let full = Rights::DUPLICATE | Rights::INSPECT | Rights::READ;
-        let nodes = [full, Rights::READ, full]
-            .map(|rights| Box::new(CapNode::new(0, rights, object, ObjectType::Vmo, None)));
+        let object: Arc<dyn KernelObject> = Arc::new(Vmo::create(4096).expect("fixture VMO"));
+        let full = Rights::DUPLICATE | Rights::INSPECT | Rights::READ | Rights::MANAGE;
+        let nodes = [full, Rights::READ, full].map(|rights| {
+            CAP_NODE_ALLOCATOR
+                .alloc_root(Arc::clone(&object), ObjectType::Vmo, rights)
+                .expect("fixture capability")
+        });
         nodes[2].revoke();
         let mut table = process.handle_table().lock();
         assert_eq!(table.count(), 0, "fixture delegation requires empty table");
         for (slot, node) in nodes.iter().enumerate() {
             assert_eq!(
-                table.insert(NonNull::from(node.as_ref())).unwrap(),
+                table
+                    .insert(Arc::clone(node))
+                    .unwrap_or_else(|(error, _)| panic!("fixture insert: {error:?}")),
                 slot as u32
             );
         }
-        Self { nodes, _vmo: vmo }
+        Self { nodes }
     }
 }
 
 pub(super) fn self_test() {
+    crate::kernel::capabilities::self_test();
     const BASE: usize = 0x30_0000_0000;
     let before = bitmap::stats().free_pages;
     let mut backing = Vmo::create(8192).expect("syscall copy backing");
@@ -135,7 +149,13 @@ pub(super) fn self_test() {
         |nr, handle, pointer| dispatch_for_process(&process, nr, [handle, pointer, 7, 8, 9, 10]);
     assert_eq!(call(SYS_YIELD, usize::MAX, 0), 0);
     assert_eq!(call(99, 0, 0), -38);
-    for nr in [SYS_HANDLE_CLOSE, SYS_HANDLE_DUPLICATE, SYS_CAP_INSPECT] {
+    for nr in [
+        SYS_HANDLE_CLOSE,
+        SYS_HANDLE_DUPLICATE,
+        SYS_CAP_INSPECT,
+        SYS_CAP_ATTENUATE,
+        SYS_CAP_REVOKE,
+    ] {
         assert_eq!(
             call(nr, 1usize << 32, BASE),
             -9,
@@ -145,7 +165,7 @@ pub(super) fn self_test() {
     assert_eq!(call(SYS_CAP_INSPECT, 0, BASE + 4092), 0);
     let mut bytes = [0; 8];
     backing.read(4092, &mut bytes).unwrap();
-    assert_eq!(bytes, [2, 0, 0, 0, 5, 1, 0, 0]);
+    assert_eq!(bytes, [2, 0, 0, 0, 5, 3, 0, 0]);
     for (handle, error) in [(1, -13), (2, -116), (256, -9)] {
         assert_eq!(
             call(SYS_CAP_INSPECT, handle, 0),
@@ -192,6 +212,7 @@ pub(super) fn self_test() {
         assert_eq!(handle, 0);
         assert_eq!(call(SYS_HANDLE_CLOSE, handle as usize, 0), 0);
     }
+    mutation_tests::check(&process, BASE);
     loop {
         let result = call(SYS_HANDLE_DUPLICATE, 3, 0);
         if result == -24 {
@@ -200,6 +221,13 @@ pub(super) fn self_test() {
         assert!(result >= 0);
     }
     assert_eq!(process.lock().handle_table().lock().count(), 256);
+    let nodes_before = CAP_NODE_ALLOCATOR.live_count();
+    assert_eq!(call(SYS_CAP_ATTENUATE, 3, 0x305), -24);
+    assert_eq!(
+        CAP_NODE_ALLOCATOR.live_count(),
+        nodes_before,
+        "full table allocated a child"
+    );
     for (handle, error) in [(1, -13), (2, -116), (256, -9)] {
         assert_eq!(
             call(SYS_HANDLE_DUPLICATE, handle, 0),

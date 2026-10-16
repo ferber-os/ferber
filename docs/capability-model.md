@@ -79,15 +79,17 @@ A process can hold a channel handle without knowing who is on the other end.
 
 ## Handle Syscalls
 
-The resident syscall boundary exposes close, duplicate, and inspect on both
-architectures. A process starts with an empty table; the resident probe receives
-its test capabilities through explicit kernel delegation afterward.
+The resident syscall boundary exposes close, duplicate, inspect, attenuate,
+and revoke on both architectures. A process starts with an empty table; the
+resident probe receives its test capabilities through explicit kernel delegation
+afterward.
 
 Duplicate requires `DUPLICATE` and creates another local handle to the same
 capability node with exactly the same rights. It does not allocate a child node.
-Closing a handle removes only that table entry, even if its node was revoked.
-It does not revoke aliases or destroy the object. Node revocation invalidates
-every alias; revoked handles can still be closed.
+Closing a handle removes only that table entry and releases its owned node
+reference, even if the node was revoked. It does not revoke aliases. Node
+revocation invalidates every alias and descendant; revoked handles can still
+be closed.
 
 Inspect requires `INSPECT` and returns only the object type and rights through
 a validated eight-byte user buffer. It does not reveal pointers or dereference
@@ -95,16 +97,28 @@ the underlying object. See [the syscall ABI](syscall-abi.md) for the wire format
 and errors.
 
 The current table holds 256 handles and reuses vacant numeric slots. A closed
-number can later name a different capability. Nodes and objects have separate,
-externally retained lifetimes; closing the last handle does not reclaim them.
-Attenuation and revocation syscalls remain future work.
+number can later name a different capability. Tables, typed handles, and messages
+own `Arc<CapNode>` references. Nodes own their parent and object, so descendants
+retain their ancestry and backing. Nodes and objects are reclaimed after their
+final owners disappear; closing the last numeric handle need not remove every
+owner. Unshared ancestry chains are dropped iteratively. Complete task/exit
+reclamation remains future work.
+
+The global factory limits live and reserved nodes to 1,024. Roots and derived
+children consume quota; duplicate aliases do not. Fallible allocation and checked
+`u64` IDs report exhaustion without leaking reserved quota. This is a live-node
+bound, not a permanent array or lifetime allocation limit.
 
 ---
 
 ## Attenuation
 
 When passing a handle to another process, you can only pass equal or fewer rights.
-Never more. The kernel enforces this on every handle transfer.
+Never more. `sys_cap_attenuate` requires a valid source with `DUPLICATE`, then
+validates the requested mask and its subset relationship. Equal or zero rights
+are allowed and produce a distinct child node; the source stays in its table.
+Undefined or oversized masks return `-22`; recognized rights escalation returns
+`-13`. See the [syscall ABI](syscall-abi.md) for allocation errors and precedence.
 
 ```rust
 // you hold READ | WRITE | DUPLICATE on a VMO
@@ -135,7 +149,7 @@ It is also enforced at compile time by the Rust type system.
 ```rust
 pub struct Handle<T: KernelObject, R: RightMarker> {
     raw: u32,
-    node: NonNull<CapNode>,
+    node: Arc<CapNode>,
     _type: PhantomData<T>,
     _rights: PhantomData<R>,
 }
@@ -162,12 +176,14 @@ Two layers of enforcement, one of them free.
 
 Capabilities move across processes with strict linear ownership semantics:
 - **`transfer_send(handle)`**: Requires `Rights::TRANSFER`. Removes that handle from the sender's table. Independently duplicated handles remain present.
-- **`transfer_recv(node)`**: Inserts the transferred capability node into the receiver's handle table.
+- **`transfer_recv(node)`**: Moves the owned node reference into the receiver's table. A full table returns the error together with that reference, so the caller retains ownership.
 - **Leak-Free Drop Revocation**: If a message carrying in-flight capability nodes is dropped before delivery (e.g. queue full, receiver terminated, channel destroyed), `Drop for ChannelMessage` automatically calls `node.revoke()`, immediately invalidating the unreceived capability so no dangling authority survives.
 
-That drop revokes the shared node, so it also invalidates independently duplicated
-aliases. This policy needs review before channel operations become public
-syscalls. These handle syscalls do not change the existing IPC behavior.
+Messages retain owned `Arc<CapNode>` references while in transit. Dropping an
+undelivered message revokes its shared nodes, invalidating independently
+duplicated aliases and derived descendants before releasing ownership. This
+trusted-kernel action does not require a user `MANAGE` right. The policy still
+needs review before channel operations become public syscalls.
 
 ---
 
@@ -177,10 +193,15 @@ The hard problem of capability systems: once you give someone a handle,
 how do you take it back?
 
 Wolfram uses indirect capability nodes. Processes don't hold handles
-to objects directly — they hold handles to capability nodes that point
-to objects. To revoke, the kernel invalidates the node. Every handle
-pointing through it immediately loses access. The holder's next syscall
-using that handle returns `CapError::Revoked`.
+to objects directly — they hold handles to capability nodes that own object
+references. `sys_cap_revoke` requires `MANAGE` and invalidates the selected node
+with one Release store. Every lookup checks the node and its ancestors with
+Acquire loads. Aliases and descendants then return `CapError::Revoked`
+(`-116` at the syscall boundary); ancestors and siblings survive. Repeated
+revocation returns `-116`, while close remains permitted.
+
+Revocation denies later capability operations. It does not tear down existing
+VMO mappings, destroy processes, or replace task cleanup.
 
 ```
 process A holds: Handle → CapNode(7) → VMO(0xdeadbeef)
@@ -193,8 +214,8 @@ kernel revokes CapNode(7):
 
 One kernel operation. Instant. Both handles dead simultaneously.
 
-This adds one pointer indirection per capability lookup.
-The overhead is negligible. The operational value is not.
+Capability lookup walks the immutable parent chain, so its cost grows with
+derivation depth. It does not scan the global node factory or traverse children.
 
 ---
 

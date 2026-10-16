@@ -121,10 +121,10 @@ x86_enter_user:
     jne 9f
 .endm
 
-.macro CHECK_INSPECT
+.macro CHECK_INSPECT rights=0x305
     cmp dword ptr [rsi], 2
     jne 9f
-    cmp dword ptr [rsi + 4], 0x105
+    cmp dword ptr [rsi + 4], \rights
     jne 9f
 .endm
 
@@ -243,11 +243,19 @@ x86_user_probe_start:
     cmp qword ptr [rsi], 0x5a5a5a5a
     jne 9f
     HANDLE_CALL {sys_handle_duplicate}, -13
+    HANDLE_CALL {sys_cap_revoke}, -13
+    mov esi, 0x305
+    HANDLE_CALL {sys_cap_attenuate}, -13
+    mov rsi, {user_stack} + 128
     mov edi, 2
     HANDLE_CALL {sys_cap_inspect}, -116
     cmp qword ptr [rsi], 0x5a5a5a5a
     jne 9f
     HANDLE_CALL {sys_handle_duplicate}, -116
+    HANDLE_CALL {sys_cap_revoke}, -116
+    mov esi, 0x305
+    HANDLE_CALL {sys_cap_attenuate}, -116
+    mov rsi, {user_stack} + 128
     HANDLE_CALL {sys_handle_close}, 0
     HANDLE_CALL {sys_handle_close}, -9
     HANDLE_CALL {sys_cap_inspect}, -9
@@ -276,6 +284,77 @@ x86_user_probe_start:
     HANDLE_CALL {sys_cap_inspect}, 0
     CHECK_INSPECT
 
+    # Rights are a checked u32 mask; validation must never truncate or amplify.
+    xor edi, edi
+    mov esi, 0x400
+    HANDLE_CALL {sys_cap_attenuate}, -22
+    mov rsi, 0x100000000
+    HANDLE_CALL {sys_cap_attenuate}, -22
+    mov esi, 8
+    HANDLE_CALL {sys_cap_attenuate}, -13
+    mov edi, 2
+    HANDLE_CALL {sys_cap_attenuate}, -9
+    HANDLE_CALL {sys_cap_revoke}, -9
+    mov rdi, 0x100000000
+    HANDLE_CALL {sys_cap_attenuate}, -9
+    HANDLE_CALL {sys_cap_revoke}, -9
+
+    # A zero-rights child is valid and closeable, but grants no operations.
+    xor edi, edi
+    xor esi, esi
+    HANDLE_CALL {sys_cap_attenuate}, 2
+    mov edi, 2
+    HANDLE_CALL {sys_cap_revoke}, -13
+    HANDLE_CALL {sys_cap_attenuate}, -13
+    HANDLE_CALL {sys_handle_duplicate}, -13
+    mov rsi, {user_stack} + 128
+    HANDLE_CALL {sys_cap_inspect}, -13
+    HANDLE_CALL {sys_handle_close}, 0
+
+    # Equal rights still create a distinct branch; attenuation preserves its parent.
+    xor edi, edi
+    mov esi, 0x305
+    HANDLE_CALL {sys_cap_attenuate}, 2
+    mov esi, 0x104
+    HANDLE_CALL {sys_cap_attenuate}, 3
+    mov edi, 2
+    HANDLE_CALL {sys_cap_attenuate}, 4
+    HANDLE_CALL {sys_handle_duplicate}, 5
+    mov rsi, {user_stack} + 128
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+    mov edi, 3
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT 0x104
+    HANDLE_CALL {sys_cap_revoke}, -13
+    mov edi, 4
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT 0x104
+    HANDLE_CALL {sys_cap_revoke}, -13
+
+    # Revocation through an alias reaches its branch and descendants, not siblings.
+    mov edi, 5
+    HANDLE_CALL {sys_cap_revoke}, 0
+    .irp handle, 2, 4, 5
+        mov edi, \handle
+        mov rsi, {user_stack} + 128
+        HANDLE_CALL {sys_cap_inspect}, -116
+        HANDLE_CALL {sys_handle_duplicate}, -116
+        mov esi, 0x305
+        HANDLE_CALL {sys_cap_attenuate}, -116
+        HANDLE_CALL {sys_cap_revoke}, -116
+        HANDLE_CALL {sys_handle_close}, 0
+    .endr
+    xor edi, edi
+    mov rsi, {user_stack} + 128
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+    mov edi, 3
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT 0x104
+    HANDLE_CALL {sys_handle_close}, 0
+    xor edi, edi
+
     # Fill every free slot, recover one slot, then close all handles.
     mov r12d, 2
 .Lfill_handles:
@@ -284,6 +363,9 @@ x86_user_probe_start:
     cmp r12, 256
     jne .Lfill_handles
     HANDLE_CALL {sys_handle_duplicate}, -24
+    mov esi, 0x305
+    HANDLE_CALL {sys_cap_attenuate}, -24
+    mov rsi, {user_stack} + 128
     HANDLE_CALL {sys_cap_inspect}, 0
     CHECK_INSPECT
     mov edi, 127

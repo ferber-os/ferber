@@ -41,9 +41,11 @@ Hardware page tables are managed through the architecture-agnostic `AddressSpace
 
 ## The bootstrap address space keeps the kernel reachable
 
-The M1 user code page starts at `0x0000_0010_0000_0000` and is user RX. Its
-16 KiB stack starts at `0x0000_0020_0000_0000` and is user RW/NX. Both addresses
-are in the positive canonical Sv39 range and work on x86-64 as well.
+The resident user code VMO starts at `0x0000_0010_0000_0000` and is user RX.
+Its backing rounds the actual probe length up to whole pages; it is not limited
+to a single page. Its 16 KiB stack starts at `0x0000_0020_0000_0000` and is user
+RW/NX. Both addresses are in the positive canonical Sv39 range and work on
+x86-64 as well. The dedicated execute-fault probe maps its code RO/NX instead.
 
 On RISC-V, each bootstrap address space identity-maps the allocator-managed
 RAM bank through a retained physical VMO. Mappings begin supervisor RW/NX;

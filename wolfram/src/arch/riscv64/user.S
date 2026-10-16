@@ -367,16 +367,16 @@ riscv_user_probe_start:
     addi sp, sp, 528
     ret
 
-    .macro checked nr, result
+    .macro checked nr, result, failure=.Luser_fail
     li a7, \nr
     jal ra, .Lchecked_ecall
     li t0, \result
-    bne a0, t0, .Luser_fail
+    bne a0, t0, \failure
     .endm
 
-    .macro cap nr, handle, result
+    .macro cap nr, handle, result, failure=.Luser_fail
     li a0, \handle
-    checked \nr, \result
+    checked \nr, \result, \failure
     .endm
 
     .macro inspect_at address, result
@@ -391,14 +391,14 @@ riscv_user_probe_start:
     checked {sys_yield}, 0
     checked 100, -38
     checked 99, -38
-    .macro check_info address
+    .macro check_info address, rights=0x305, failure=.Luser_fail
     li t0, \address
-    li t1, 0x0000010500000002
+    li t1, ((\rights << 32) | 2)
     li t2, 8
 .Linfo_loop\@:
     lbu t3, 0(t0)
     andi t4, t1, 255
-    bne t3, t4, .Luser_fail
+    bne t3, t4, \failure
     srli t1, t1, 8
     addi t0, t0, 1
     addi t2, t2, -1
@@ -436,6 +436,11 @@ riscv_user_probe_start:
     cap {sys_inspect}, 1, -13
     cap {sys_duplicate}, 2, -116
     cap {sys_inspect}, 2, -116
+    li a1, 4
+    cap {sys_attenuate}, 1, -13
+    cap {sys_revoke}, 1, -13
+    cap {sys_attenuate}, 2, -116
+    cap {sys_revoke}, 2, -116
     cap {sys_close}, 2, 0
     cap {sys_close}, 1, 0
     cap {sys_duplicate}, 256, -9
@@ -444,6 +449,58 @@ riscv_user_probe_start:
     cap {sys_duplicate}, 0x100000003, -9
     cap {sys_inspect}, 0x100000003, -9
     cap {sys_close}, 0x100000003, -9
+    j .Lmutation_start
+.Lmutation_fail:
+    j .Luser_fail
+    .macro mutate handle, rights, result
+    li a1, \rights
+    cap {sys_attenuate}, \handle, \result, .Lmutation_fail
+    .endm
+    .macro mutation_inspect handle, rights
+    li a1, ({user_stack} + 512)
+    cap {sys_inspect}, \handle, 0, .Lmutation_fail
+    check_info ({user_stack} + 512), \rights, .Lmutation_fail
+    .endm
+.Lmutation_start:
+    mutate 256, 0x305, -9
+    cap {sys_revoke}, 256, -9, .Lmutation_fail
+    mutate 0x100000003, 0x305, -9
+    cap {sys_revoke}, 0x100000003, -9, .Lmutation_fail
+    mutate 3, 0x400, -22
+    mutate 3, 0x100000305, -22
+    mutate 3, 0x30d, -13
+    // Equal-right child, independently derived sibling, and grandchild.
+    mutate 3, 0x305, 0
+    mutate 3, 0x104, 1
+    mutate 0, 0x104, 2
+    cap {sys_duplicate}, 0, 4, .Lmutation_fail
+    mutation_inspect 0, 0x305
+    mutation_inspect 1, 0x104
+    mutation_inspect 2, 0x104
+    // Revoking through an alias kills this branch, not its parent or sibling.
+    cap {sys_revoke}, 4, 0, .Lmutation_fail
+    li a1, ({user_stack} + 512)
+    cap {sys_inspect}, 0, -116, .Lmutation_fail
+    cap {sys_inspect}, 4, -116, .Lmutation_fail
+    cap {sys_inspect}, 2, -116, .Lmutation_fail
+    mutate 0, 0x104, -116
+    mutate 2, 0x104, -116
+    cap {sys_revoke}, 0, -116, .Lmutation_fail
+    cap {sys_revoke}, 4, -116, .Lmutation_fail
+    cap {sys_revoke}, 2, -116, .Lmutation_fail
+    mutation_inspect 3, 0x305
+    mutation_inspect 1, 0x104
+    cap {sys_revoke}, 1, -13, .Lmutation_fail
+    // Empty authority is a valid child, with no rights to inspect or mutate it.
+    mutate 3, 0, 5
+    cap {sys_inspect}, 5, -13, .Lmutation_fail
+    cap {sys_revoke}, 5, -13, .Lmutation_fail
+    mutate 5, 0, -13
+    cap {sys_close}, 0, 0, .Lmutation_fail
+    cap {sys_close}, 1, 0, .Lmutation_fail
+    cap {sys_close}, 2, 0, .Lmutation_fail
+    cap {sys_close}, 4, 0, .Lmutation_fail
+    cap {sys_close}, 5, 0, .Lmutation_fail
     li s0, 0
 .Lfill_handles:
     li a0, 3
@@ -458,6 +515,8 @@ riscv_user_probe_start:
     li t0, 256
     blt s0, t0, .Lfill_handles
     cap {sys_duplicate}, 3, -24
+    li a1, 0x305
+    cap {sys_attenuate}, 3, -24
     cap {sys_close}, 255, 0
     cap {sys_duplicate}, 3, 255
     li s0, 0

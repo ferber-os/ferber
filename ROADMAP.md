@@ -140,7 +140,7 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
   - [x] Resident dispatcher: Wolfram numbers, six argument registers, and `-38` for unknown numbers, independent of probe bookkeeping
   - [x] Bootstrap task operations: immediate-return yield hint (`0`) and thread exit (`1`) followed by halt
   - [x] Capability metadata inspection: `sys_cap_inspect` requires `INSPECT` and copies type/rights to validated user memory
-  - [ ] Capability mutation: `sys_cap_attenuate`, `sys_cap_revoke`
+  - [x] Capability mutation: `sys_cap_attenuate` with `DUPLICATE`, validated rights subsets, and owned child nodes; `sys_cap_revoke` with `MANAGE` and descendant invalidation
   - [x] Handle operations: `sys_handle_close`, `sys_handle_duplicate` with `DUPLICATE` enforcement and shared-node aliases
   - [ ] Channel IPC: `sys_chan_create`, `sys_chan_send`, `sys_chan_recv`
   - [ ] Channel wait-queue integration: blocking `sys_chan_recv` with thread parking on `ChannelEndpoint.wait_queue`
@@ -162,6 +162,11 @@ The resident handle-syscall path (`Uranium-238-v0.2.1`) extends M1 with
 explicitly delegated test capabilities, inspection, same-node duplication, and
 independent handle closure on both architectures. It retains the single-task
 and halt-on-exit limits.
+
+The resident mutation path (`Uranium-238-v0.2.2`) adds attenuation and descendant
+revocation, reference-owned nodes/backing, and a 1,024-node live/reserved quota. Normal probes require the
+additional `capability_mutation: PASS` marker. This extends the resident path;
+it does not add scheduling, init, VMO-mapping revocation, or complete exit cleanup.
 See [the syscall ABI](docs/syscall-abi.md).
 
 ### Userspace Binary Loading & Execution

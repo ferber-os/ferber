@@ -8,7 +8,6 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::kernel::capabilities::{CapNode, KernelObject};
@@ -28,27 +27,32 @@ pub enum ChannelError {
     InsufficientRights,
 }
 
+#[derive(Debug)]
 pub struct ChannelMessage {
     pub bytes: Vec<u8>,
-    pub handles: Vec<NonNull<CapNode>>,
+    pub handles: Vec<Arc<CapNode>>,
 }
 
-unsafe impl Send for ChannelMessage {}
-unsafe impl Sync for ChannelMessage {}
-
 impl ChannelMessage {
-    pub fn new(bytes: Vec<u8>, handles: Vec<NonNull<CapNode>>) -> Self {
+    pub fn new(bytes: Vec<u8>, handles: Vec<Arc<CapNode>>) -> Self {
         Self { bytes, handles }
+    }
+
+    fn revoke(&self) {
+        for node in &self.handles {
+            node.revoke();
+        }
+    }
+
+    fn reject(self, error: ChannelError) -> (ChannelError, Self) {
+        self.revoke();
+        (error, self)
     }
 }
 
 impl Drop for ChannelMessage {
     fn drop(&mut self) {
-        for node in &self.handles {
-            unsafe {
-                node.as_ref().revoke();
-            }
-        }
+        self.revoke();
     }
 }
 
@@ -75,9 +79,6 @@ pub struct ChannelEndpoint {
     signals: u32,
 }
 
-unsafe impl Send for ChannelEndpoint {}
-unsafe impl Sync for ChannelEndpoint {}
-
 impl KernelObject for ChannelEndpoint {
     fn type_name(&self) -> &'static str {
         "Channel"
@@ -85,7 +86,10 @@ impl KernelObject for ChannelEndpoint {
 }
 
 impl ChannelEndpoint {
-    pub fn create() -> (Arc<SpinLock<ChannelEndpoint>>, Arc<SpinLock<ChannelEndpoint>>) {
+    pub fn create() -> (
+        Arc<SpinLock<ChannelEndpoint>>,
+        Arc<SpinLock<ChannelEndpoint>>,
+    ) {
         Self::create_with_limits(
             DEFAULT_MAX_QUEUE_DEPTH,
             DEFAULT_MAX_MESSAGE_BYTES,
@@ -97,7 +101,10 @@ impl ChannelEndpoint {
         max_queue_depth: usize,
         max_message_bytes: usize,
         max_handles: usize,
-    ) -> (Arc<SpinLock<ChannelEndpoint>>, Arc<SpinLock<ChannelEndpoint>>) {
+    ) -> (
+        Arc<SpinLock<ChannelEndpoint>>,
+        Arc<SpinLock<ChannelEndpoint>>,
+    ) {
         let id1 = NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed);
         let id2 = NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -128,17 +135,18 @@ impl ChannelEndpoint {
         (end1, end2)
     }
 
-    pub fn send(&mut self, msg: ChannelMessage) -> Result<(), ChannelError> {
+    /// Rejected messages are revoked and returned for destruction after unlocking.
+    pub fn send(&mut self, msg: ChannelMessage) -> Result<(), (ChannelError, ChannelMessage)> {
         if self.state == ChannelState::PeerClosed {
-            return Err(ChannelError::PeerClosed);
+            return Err(msg.reject(ChannelError::PeerClosed));
         }
 
         if msg.bytes.len() > self.max_message_bytes {
-            return Err(ChannelError::MessageTooLarge);
+            return Err(msg.reject(ChannelError::MessageTooLarge));
         }
 
         if msg.handles.len() > self.max_handles {
-            return Err(ChannelError::TooManyHandles);
+            return Err(msg.reject(ChannelError::TooManyHandles));
         }
 
         let peer_arc = match self.peer.as_ref().and_then(|p| p.upgrade()) {
@@ -147,7 +155,7 @@ impl ChannelEndpoint {
                 self.state = ChannelState::PeerClosed;
                 self.signals |= SIGNAL_PEER_CLOSED;
                 self.peer = None;
-                return Err(ChannelError::PeerClosed);
+                return Err(msg.reject(ChannelError::PeerClosed));
             }
         };
 
@@ -155,11 +163,11 @@ impl ChannelEndpoint {
         if peer.state == ChannelState::PeerClosed {
             self.state = ChannelState::PeerClosed;
             self.signals |= SIGNAL_PEER_CLOSED;
-            return Err(ChannelError::PeerClosed);
+            return Err(msg.reject(ChannelError::PeerClosed));
         }
 
         if peer.queue.len() >= peer.max_queue_depth {
-            return Err(ChannelError::QueueFull);
+            return Err(msg.reject(ChannelError::QueueFull));
         }
 
         peer.queue.push_back(msg);

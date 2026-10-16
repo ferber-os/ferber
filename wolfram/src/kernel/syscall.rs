@@ -2,7 +2,7 @@
 //! exit operate on the current task. Linux-style registers, Wolfram numbers.
 
 use crate::arch::{self, ArchAddressSpace};
-use crate::kernel::capabilities::CapError;
+use crate::kernel::capabilities::{CapError, Rights};
 use crate::kernel::memory::user_mem::copy_to_user;
 use crate::kernel::memory::{
     bitmap,
@@ -22,6 +22,8 @@ pub(crate) const SYS_EXIT: usize = 1;
 pub(crate) const SYS_HANDLE_CLOSE: usize = 2;
 pub(crate) const SYS_HANDLE_DUPLICATE: usize = 3;
 pub(crate) const SYS_CAP_INSPECT: usize = 4;
+pub(crate) const SYS_CAP_ATTENUATE: usize = 5;
+pub(crate) const SYS_CAP_REVOKE: usize = 6;
 
 #[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
 compile_error!("user-write-probe and user-execute-probe must run separately");
@@ -62,8 +64,7 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     } else {
         arch::user_probe()
     };
-    assert!(probe.len() <= 4096);
-    let mut code = Vmo::create(4096).expect("allocate user code");
+    let mut code = Vmo::create(probe.len()).expect("allocate user code");
     code.write(0, probe).expect("copy user probe");
     let stack = Vmo::create(STACK_SIZE).expect("allocate user stack");
     let kernel_sp = {
@@ -162,6 +163,9 @@ fn cap_errno(error: CapError) -> isize {
         CapError::InsufficientRights => -13,
         CapError::TableFull => -24,
         CapError::Revoked => -116,
+        CapError::InvalidRights => -22,
+        CapError::OutOfMemory => -12,
+        CapError::NodeCapacity => -28,
     }
 }
 
@@ -177,7 +181,11 @@ pub(crate) fn dispatch_for_process(
     }
     if !matches!(
         nr,
-        SYS_HANDLE_CLOSE | SYS_HANDLE_DUPLICATE | SYS_CAP_INSPECT
+        SYS_HANDLE_CLOSE
+            | SYS_HANDLE_DUPLICATE
+            | SYS_CAP_INSPECT
+            | SYS_CAP_ATTENUATE
+            | SYS_CAP_REVOKE
     ) {
         return -38;
     }
@@ -185,32 +193,108 @@ pub(crate) fn dispatch_for_process(
         Ok(handle) => handle,
         Err(_) => return -9,
     };
-    let process = process.lock();
-    let result = match nr {
-        SYS_HANDLE_CLOSE => process.handle_table().lock().close(handle).map(|()| 0),
-        SYS_HANDLE_DUPLICATE => process
-            .handle_table()
-            .lock()
-            .duplicate(handle)
-            .map(|h| h as isize),
+    match nr {
+        SYS_HANDLE_CLOSE => {
+            let removed = {
+                let process = process.lock();
+                let mut table = process.handle_table().lock();
+                table.remove(handle)
+            };
+            match removed {
+                Ok(node) => {
+                    // Last owners can destroy objects that acquire other kernel locks.
+                    drop(node);
+                    0
+                }
+                Err(error) => cap_errno(error),
+            }
+        }
+        SYS_HANDLE_DUPLICATE => {
+            let result = {
+                let process = process.lock();
+                let mut table = process.handle_table().lock();
+                table.duplicate(handle)
+            };
+            result.map(|h| h as isize).unwrap_or_else(cap_errno)
+        }
         SYS_CAP_INSPECT => {
+            let process = process.lock();
             let info = process.handle_table().lock().inspect(handle);
             match info {
                 Ok(info) => {
                     // The process lock pins resident mappings; retained VMO owners pin RAM aliases.
-                    return match unsafe {
+                    match unsafe {
                         copy_to_user(process.address_space(), args[1], &info.to_le_bytes())
                     } {
                         Ok(()) => 0,
                         Err(_) => -14,
-                    };
+                    }
                 }
-                Err(error) => Err(error),
+                Err(error) => cap_errno(error),
             }
         }
+        SYS_CAP_ATTENUATE => {
+            let (source, rights) = {
+                let process = process.lock();
+                let table = process.handle_table().lock();
+                let source = match table.lookup(handle) {
+                    Ok(source) => source,
+                    Err(error) => return cap_errno(error),
+                };
+                if !source.rights().contains(Rights::DUPLICATE) {
+                    return -13;
+                }
+                let rights = match u32::try_from(args[1]).ok().and_then(Rights::from_bits) {
+                    Some(rights) => rights,
+                    None => return -22,
+                };
+                if !source.rights().contains(rights) {
+                    return -13;
+                }
+                if table.is_full() {
+                    return -24;
+                }
+                (Arc::clone(source), rights)
+            };
+            let child = match source.attenuate(rights) {
+                Ok(child) => child,
+                Err(error) => return cap_errno(error),
+            };
+            let inserted = {
+                let process = process.lock();
+                let mut table = process.handle_table().lock();
+                if source.is_valid() {
+                    table.insert(child)
+                } else {
+                    Err((CapError::Revoked, child))
+                }
+            };
+            match inserted {
+                Ok(handle) => handle as isize,
+                Err((error, child)) => {
+                    drop(child);
+                    cap_errno(error)
+                }
+            }
+        }
+        SYS_CAP_REVOKE => {
+            let node = {
+                let process = process.lock();
+                let table = process.handle_table().lock();
+                let node = match table.lookup(handle) {
+                    Ok(node) => node,
+                    Err(error) => return cap_errno(error),
+                };
+                if !node.rights().contains(Rights::MANAGE) {
+                    return -13;
+                }
+                Arc::clone(node)
+            };
+            node.revoke();
+            0
+        }
         _ => unreachable!(),
-    };
-    result.unwrap_or_else(cap_errno)
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -239,6 +323,7 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
         }
         kprintln!("[WOLFRAM_TEST] privilege_switch_roundtrip: PASS");
         kprintln!("[WOLFRAM_TEST] handle_syscalls: PASS");
+        kprintln!("[WOLFRAM_TEST] capability_mutation: PASS");
         halt()
     }
     let result = dispatch_for_process(&process, nr, args);
