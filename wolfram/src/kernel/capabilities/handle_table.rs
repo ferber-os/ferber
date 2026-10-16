@@ -1,5 +1,24 @@
+use super::{CapNode, Rights};
 use core::ptr::NonNull;
-use super::CapNode;
+
+/// Fixed-width capability metadata; no kernel addresses cross the ABI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct CapInfo {
+    pub object_type: u32,
+    pub rights: u32,
+}
+
+const _: () = assert!(core::mem::size_of::<CapInfo>() == 8);
+
+impl CapInfo {
+    pub fn to_le_bytes(self) -> [u8; 8] {
+        let mut bytes = [0; 8];
+        bytes[..4].copy_from_slice(&self.object_type.to_le_bytes());
+        bytes[4..].copy_from_slice(&self.rights.to_le_bytes());
+        bytes
+    }
+}
 
 const MAX_HANDLES: usize = 256;
 
@@ -36,20 +55,25 @@ impl HandleTable {
                 return Ok(i as u32);
             }
         }
-        
+
         Err(CapError::TableFull)
     }
 
     /// Look up a handle. Returns the CapNode if the handle is valid and the
     /// node hasn't been revoked.
     pub fn lookup(&self, handle: u32) -> Result<&CapNode, CapError> {
-        let entry = self.entries.get(handle as usize).copied().flatten().ok_or(CapError::InvalidHandle)?;
-        
+        let entry = self
+            .entries
+            .get(handle as usize)
+            .copied()
+            .flatten()
+            .ok_or(CapError::InvalidHandle)?;
+
         let node = unsafe { entry.as_ref() };
         if !node.is_valid() {
             return Err(CapError::Revoked);
         }
-        
+
         Ok(node)
     }
 
@@ -69,9 +93,38 @@ impl HandleTable {
         self.count as usize
     }
 
+    /// Release this slot, including revoked capabilities, without revoking aliases.
+    pub fn close(&mut self, handle: u32) -> Result<(), CapError> {
+        self.remove(handle).map(|_| ())
+    }
+
+    /// Duplicate the same capability node and rights without allocating a node.
+    pub fn duplicate(&mut self, handle: u32) -> Result<u32, CapError> {
+        let node = self.lookup(handle)?;
+        if !node.rights().contains(Rights::DUPLICATE) {
+            return Err(CapError::InsufficientRights);
+        }
+        let pointer = NonNull::from(node);
+        self.insert(pointer)
+    }
+
+    pub fn inspect(&self, handle: u32) -> Result<CapInfo, CapError> {
+        let node = self.lookup(handle)?;
+        if !node.rights().contains(Rights::INSPECT) {
+            return Err(CapError::InsufficientRights);
+        }
+        Ok(CapInfo {
+            object_type: node.object_type() as u32,
+            rights: node.rights().bits(),
+        })
+    }
+
     /// Extract a capability node for transfer out of this process.
     /// Fails if the handle is invalid, revoked, or lacks TRANSFER rights.
-    pub fn transfer_send(&mut self, handle: u32) -> Result<core::ptr::NonNull<super::CapNode>, CapError> {
+    pub fn transfer_send(
+        &mut self,
+        handle: u32,
+    ) -> Result<core::ptr::NonNull<super::CapNode>, CapError> {
         let node = self.lookup(handle)?;
         if !node.rights().contains(super::Rights::TRANSFER) {
             return Err(CapError::InsufficientRights);
@@ -80,7 +133,10 @@ impl HandleTable {
     }
 
     /// Insert a transferred capability node into this process's handle table.
-    pub fn transfer_recv(&mut self, node: core::ptr::NonNull<super::CapNode>) -> Result<u32, CapError> {
+    pub fn transfer_recv(
+        &mut self,
+        node: core::ptr::NonNull<super::CapNode>,
+    ) -> Result<u32, CapError> {
         self.insert(node)
     }
 }

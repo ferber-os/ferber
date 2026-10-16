@@ -121,7 +121,7 @@ riscv_drop_to_user:
     li t1, 1
     bne t0, t1, .Luser_fail
     ld t0, 16(sp)
-    li t1, 137438969856
+    li t1, ({user_stack} + {stack_size})
     bne t0, t1, .Luser_fail
     ld t0, 24(sp)
     li t1, 3
@@ -249,21 +249,21 @@ riscv_user_probe_start:
     bnez t4, .Luser_fail
     bnez t5, .Luser_fail
     bnez t6, .Luser_fail
-    li t0, 0x2000004000
+    li t0, ({user_stack} + {stack_size})
     bne sp, t0, .Luser_fail
     li t0, 0x5a5a
     sd t0, -8(sp)
-    seed 0
+    seed {sys_yield}
     ecall
-    check 0, 0
-    seed 0
+    check 0, {sys_yield}
+    seed {sys_yield}
     ecall
-    check 0, 0
+    check 0, {sys_yield}
     seed 99
     ecall
     check -38, 99
-    li a0, 0
-    j .Luser_exit
+    j .Lhandle_probe
+
 .Luser_fail:
     li a0, 1
 .Luser_exit:
@@ -272,9 +272,204 @@ riscv_user_probe_start:
     li a3, 0
     li a4, 0
     li a5, 0
-    li a7, 1
+    li a7, {sys_exit}
     ecall
     unimp
+    // Snapshot both sides of ecall so every non-result GPR is checked.
+.Lchecked_ecall:
+    addi sp, sp, -528
+    sd x1, 8(sp)
+    sd x2, 16(sp)
+    sd x3, 24(sp)
+    sd x4, 32(sp)
+    sd x5, 40(sp)
+    sd x6, 48(sp)
+    sd x7, 56(sp)
+    sd x8, 64(sp)
+    sd x9, 72(sp)
+    sd x10, 80(sp)
+    sd x11, 88(sp)
+    sd x12, 96(sp)
+    sd x13, 104(sp)
+    sd x14, 112(sp)
+    sd x15, 120(sp)
+    sd x16, 128(sp)
+    sd x17, 136(sp)
+    sd x18, 144(sp)
+    sd x19, 152(sp)
+    sd x20, 160(sp)
+    sd x21, 168(sp)
+    sd x22, 176(sp)
+    sd x23, 184(sp)
+    sd x24, 192(sp)
+    sd x25, 200(sp)
+    sd x26, 208(sp)
+    sd x27, 216(sp)
+    sd x28, 224(sp)
+    sd x29, 232(sp)
+    sd x30, 240(sp)
+    sd x31, 248(sp)
+    ld t0, 520(sp)
+    sd t0, 0(sp)
+    ld t0, 40(sp)
+    ecall
+    sd x1, 264(sp)
+    sd x2, 272(sp)
+    sd x3, 280(sp)
+    sd x4, 288(sp)
+    sd x5, 296(sp)
+    sd x6, 304(sp)
+    sd x7, 312(sp)
+    sd x8, 320(sp)
+    sd x9, 328(sp)
+    sd x10, 336(sp)
+    sd x11, 344(sp)
+    sd x12, 352(sp)
+    sd x13, 360(sp)
+    sd x14, 368(sp)
+    sd x15, 376(sp)
+    sd x16, 384(sp)
+    sd x17, 392(sp)
+    sd x18, 400(sp)
+    sd x19, 408(sp)
+    sd x20, 416(sp)
+    sd x21, 424(sp)
+    sd x22, 432(sp)
+    sd x23, 440(sp)
+    sd x24, 448(sp)
+    sd x25, 456(sp)
+    sd x26, 464(sp)
+    sd x27, 472(sp)
+    sd x28, 480(sp)
+    sd x29, 488(sp)
+    sd x30, 496(sp)
+    sd x31, 504(sp)
+    li t0, 8
+.Lcompare_regs:
+    li t1, 80
+    beq t0, t1, .Lnext_reg
+    add t1, sp, t0
+    ld t2, 0(t1)
+    ld t3, 256(t1)
+    bne t2, t3, .Luser_fail
+.Lnext_reg:
+    addi t0, t0, 8
+    li t1, 256
+    blt t0, t1, .Lcompare_regs
+    ld t0, 520(sp)
+    ld t1, 0(sp)
+    bne t0, t1, .Luser_fail
+    ld ra, 8(sp)
+    ld t0, 40(sp)
+    ld t1, 48(sp)
+    ld t2, 56(sp)
+    ld t3, 224(sp)
+    addi sp, sp, 528
+    ret
+
+    .macro checked nr, result
+    li a7, \nr
+    jal ra, .Lchecked_ecall
+    li t0, \result
+    bne a0, t0, .Luser_fail
+    .endm
+
+    .macro cap nr, handle, result
+    li a0, \handle
+    checked \nr, \result
+    .endm
+
+    .macro inspect_at address, result
+    li a0, 0
+    li a1, \address
+    checked {sys_inspect}, \result
+    .endm
+
+.Lhandle_probe:
+    li a0, 123
+    li a1, 456
+    checked {sys_yield}, 0
+    checked 100, -38
+    checked 99, -38
+    .macro check_info address
+    li t0, \address
+    li t1, 0x0000010500000002
+    li t2, 8
+.Linfo_loop\@:
+    lbu t3, 0(t0)
+    andi t4, t1, 255
+    bne t3, t4, .Luser_fail
+    srli t1, t1, 8
+    addi t0, t0, 1
+    addi t2, t2, -1
+    bnez t2, .Linfo_loop\@
+    .endm
+    inspect_at ({user_stack} + 512), 0
+    check_info ({user_stack} + 512)
+    inspect_at ({user_stack} + 513), 0
+    check_info ({user_stack} + 513)
+    inspect_at ({user_stack} + 4092), 0
+    check_info ({user_stack} + 4092)
+    inspect_at 0, -14
+    inspect_at {user_pc}, -14
+    inspect_at ({user_stack} - 4096), -14
+    inspect_at 0x80200000, -14
+    inspect_at -4, -14
+    // The valid prefix must stay unchanged when the next page is missing.
+    li s0, ({user_stack} + {stack_size} - 4)
+    li t0, 0x5a5a5a5a
+    sw t0, 0(s0)
+    mv a1, s0
+    cap {sys_inspect}, 0, -14
+    lwu t0, 0(s0)
+    li t1, 0x5a5a5a5a
+    bne t0, t1, .Luser_fail
+    // Restore the stack sentinel after the overlapping range-failure test.
+    li t0, 0x5a5a
+    sd t0, -8(sp)
+    cap {sys_duplicate}, 0, 3
+    cap {sys_close}, 0, 0
+    li a1, ({user_stack} + 512)
+    cap {sys_inspect}, 3, 0
+    cap {sys_close}, 0, -9
+    cap {sys_duplicate}, 1, -13
+    cap {sys_inspect}, 1, -13
+    cap {sys_duplicate}, 2, -116
+    cap {sys_inspect}, 2, -116
+    cap {sys_close}, 2, 0
+    cap {sys_close}, 1, 0
+    cap {sys_duplicate}, 256, -9
+    cap {sys_inspect}, 256, -9
+    cap {sys_close}, 256, -9
+    cap {sys_duplicate}, 0x100000003, -9
+    cap {sys_inspect}, 0x100000003, -9
+    cap {sys_close}, 0x100000003, -9
+    li s0, 0
+.Lfill_handles:
+    li a0, 3
+    li a7, {sys_duplicate}
+    jal ra, .Lchecked_ecall
+    bne a0, s0, .Luser_fail
+    addi s0, s0, 1
+    li t0, 3
+    bne s0, t0, .Lfill_next
+    addi s0, s0, 1
+.Lfill_next:
+    li t0, 256
+    blt s0, t0, .Lfill_handles
+    cap {sys_duplicate}, 3, -24
+    cap {sys_close}, 255, 0
+    cap {sys_duplicate}, 3, 255
+    li s0, 0
+.Lclose_handles:
+    mv a0, s0
+    checked {sys_close}, 0
+    addi s0, s0, 1
+    li t0, 256
+    blt s0, t0, .Lclose_handles
+    cap {sys_close}, 255, -9
+    li a0, 0
+    j .Luser_exit
     .globl riscv_user_probe_end
 riscv_user_probe_end:
 
@@ -294,7 +489,7 @@ riscv_isolation_fault:
     ld t1, 0(t0)
     .endif
     li a0, 1
-    li a7, 1
+    li a7, {sys_exit}
     ecall
     unimp
     .globl riscv_isolation_probe_end

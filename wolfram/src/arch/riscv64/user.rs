@@ -4,6 +4,13 @@ use core::arch::global_asm;
 
 global_asm!(
     include_str!("user.S"),
+    sys_yield = const crate::kernel::syscall::SYS_YIELD,
+    sys_exit = const crate::kernel::syscall::SYS_EXIT,
+    sys_close = const crate::kernel::syscall::SYS_HANDLE_CLOSE,
+    sys_duplicate = const crate::kernel::syscall::SYS_HANDLE_DUPLICATE,
+    sys_inspect = const crate::kernel::syscall::SYS_CAP_INSPECT,
+    user_stack = const crate::kernel::syscall::USER_STACK,
+    stack_size = const crate::kernel::syscall::STACK_SIZE,
     write_probe = const cfg!(feature = "user-write-probe") as usize,
     user_pc = const crate::kernel::syscall::USER_PC,
 );
@@ -58,7 +65,10 @@ pub fn isolation_fault_offset() -> usize {
 }
 
 pub fn isolation_address() -> usize {
-    if cfg!(any(feature = "user-write-probe", feature = "user-execute-probe")) {
+    if cfg!(any(
+        feature = "user-write-probe",
+        feature = "user-execute-probe"
+    )) {
         crate::kernel::syscall::USER_PC
     } else {
         0x80200000

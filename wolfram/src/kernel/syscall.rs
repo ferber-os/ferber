@@ -2,6 +2,8 @@
 //! exit operate on the current task. Linux-style registers, Wolfram numbers.
 
 use crate::arch::{self, ArchAddressSpace};
+use crate::kernel::capabilities::CapError;
+use crate::kernel::memory::user_mem::copy_to_user;
 use crate::kernel::memory::{
     bitmap,
     paging::{AddressSpace, MapFlags},
@@ -12,13 +14,21 @@ use crate::kernel::task::{Job, Process, ProcessState, Thread, ThreadState};
 use crate::kprintln;
 use alloc::sync::Arc;
 
+#[path = "syscall_probe.rs"]
+mod probe;
+
+pub(crate) const SYS_YIELD: usize = 0;
+pub(crate) const SYS_EXIT: usize = 1;
+pub(crate) const SYS_HANDLE_CLOSE: usize = 2;
+pub(crate) const SYS_HANDLE_DUPLICATE: usize = 3;
+pub(crate) const SYS_CAP_INSPECT: usize = 4;
+
 #[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
 compile_error!("user-write-probe and user-execute-probe must run separately");
 
 pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
-const USER_STACK: usize = 0x0000_0020_0000_0000;
-const STACK_SIZE: usize = 16384;
-const ARG_CANARIES: [usize; 6] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+pub(crate) const USER_STACK: usize = 0x0000_0020_0000_0000;
+pub(crate) const STACK_SIZE: usize = 16384;
 
 struct Bootstrap {
     _root: Arc<SpinLock<Job>>,
@@ -27,16 +37,17 @@ struct Bootstrap {
     _code: Vmo,
     #[cfg(target_arch = "riscv64")]
     _supervisor: Vmo,
-    calls: usize,
-    valid_sequence: bool,
+    probe: probe::Observer,
+    _fixtures: Option<probe::Fixtures>,
     isolation: bool,
 }
 
-// shortcut: one resident bootstrap task, replace with per-CPU current-task state in M2.
+// shortcut: one resident task, replace with per-CPU current-task state before multitask scheduling.
 static BOOTSTRAP: SpinLock<Option<Bootstrap>> = SpinLock::new(None);
 
 pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     address_space_lifecycle(memory);
+    probe::self_test();
     let process = root
         .lock()
         .create_process("user_probe")
@@ -64,6 +75,11 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     };
     let mut proc = process.lock();
     assert_eq!(proc.handle_table().lock().count(), 0);
+    let fixtures = if isolation {
+        None
+    } else {
+        Some(probe::Fixtures::delegate(&proc))
+    };
     proc.set_state(ProcessState::Running);
     let space = proc.address_space_mut();
     #[cfg(target_arch = "riscv64")]
@@ -94,8 +110,8 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
         _code: code,
         #[cfg(target_arch = "riscv64")]
         _supervisor: supervisor,
-        calls: 0,
-        valid_sequence: true,
+        probe: probe::Observer::new(),
+        _fixtures: fixtures,
         isolation,
     });
     kprintln!(
@@ -140,39 +156,98 @@ fn address_space_lifecycle(memory: bitmap::MemoryStats) {
     kprintln!("[mem]   address-space activation and teardown: ok");
 }
 
-pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
-    let mut bootstrap = BOOTSTRAP.lock();
-    let task = bootstrap
-        .as_mut()
-        .expect("syscall without current user task");
-    assert!(!task.isolation, "syscall during isolation probe");
-    assert_eq!(task.thread.lock().state(), ThreadState::Running);
-    match nr {
-        0 => {
-            task.valid_sequence &= task.calls < 2 && args == ARG_CANARIES;
-            task.calls = task.calls.saturating_add(1);
-            0
-        }
-        1 => {
-            task.thread.lock().set_state(ThreadState::Dead);
-            assert_eq!(args[0], 0, "user probe failed");
-            assert!(
-                task.valid_sequence,
-                "user syscall sequence or arguments corrupted"
-            );
-            assert_eq!(task.calls, 3, "incomplete user roundtrip");
-            assert_eq!(task.process.lock().handle_table().lock().count(), 0);
-            assert_eq!(task.thread.lock().state(), ThreadState::Dead);
-            drop(bootstrap);
-            kprintln!("[WOLFRAM_TEST] privilege_switch_roundtrip: PASS");
-            halt()
-        }
-        _ => {
-            task.valid_sequence &= nr == 99 && task.calls == 2 && args == ARG_CANARIES;
-            task.calls = task.calls.saturating_add(1);
-            -38
-        }
+fn cap_errno(error: CapError) -> isize {
+    match error {
+        CapError::InvalidHandle => -9,
+        CapError::InsufficientRights => -13,
+        CapError::TableFull => -24,
+        CapError::Revoked => -116,
     }
+}
+
+/// Execute returning syscalls using only the trusted calling process.
+/// No test bookkeeping or resident probe lock participates in object operations.
+pub(crate) fn dispatch_for_process(
+    process: &Arc<SpinLock<Process>>,
+    nr: usize,
+    args: [usize; 6],
+) -> isize {
+    if nr == SYS_YIELD {
+        return 0;
+    }
+    if !matches!(
+        nr,
+        SYS_HANDLE_CLOSE | SYS_HANDLE_DUPLICATE | SYS_CAP_INSPECT
+    ) {
+        return -38;
+    }
+    let handle = match u32::try_from(args[0]) {
+        Ok(handle) => handle,
+        Err(_) => return -9,
+    };
+    let process = process.lock();
+    let result = match nr {
+        SYS_HANDLE_CLOSE => process.handle_table().lock().close(handle).map(|()| 0),
+        SYS_HANDLE_DUPLICATE => process
+            .handle_table()
+            .lock()
+            .duplicate(handle)
+            .map(|h| h as isize),
+        SYS_CAP_INSPECT => {
+            let info = process.handle_table().lock().inspect(handle);
+            match info {
+                Ok(info) => {
+                    // The process lock pins resident mappings; retained VMO owners pin RAM aliases.
+                    return match unsafe {
+                        copy_to_user(process.address_space(), args[1], &info.to_le_bytes())
+                    } {
+                        Ok(()) => 0,
+                        Err(_) => -14,
+                    };
+                }
+                Err(error) => Err(error),
+            }
+        }
+        _ => unreachable!(),
+    };
+    result.unwrap_or_else(cap_errno)
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn observe_x86_flags(nr: usize, flags: u64) {
+    let bootstrap = BOOTSTRAP.lock();
+    if let Some(task) = bootstrap.as_ref() {
+        task.probe.x86_flags(nr, flags);
+    }
+}
+
+pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
+    let (process, thread) = {
+        let bootstrap = BOOTSTRAP.lock();
+        let task = bootstrap
+            .as_ref()
+            .expect("syscall without current user task");
+        (Arc::clone(&task.process), Arc::clone(&task.thread))
+    };
+    if nr == SYS_EXIT {
+        thread.lock().set_state(ThreadState::Dead);
+        let count = process.lock().handle_table().lock().count();
+        {
+            let bootstrap = BOOTSTRAP.lock();
+            let task = bootstrap.as_ref().unwrap();
+            task.probe.finish(args[0], count, task.isolation);
+        }
+        kprintln!("[WOLFRAM_TEST] privilege_switch_roundtrip: PASS");
+        kprintln!("[WOLFRAM_TEST] handle_syscalls: PASS");
+        halt()
+    }
+    let result = dispatch_for_process(&process, nr, args);
+    {
+        let mut bootstrap = BOOTSTRAP.lock();
+        let task = bootstrap.as_mut().unwrap();
+        task.probe.observe(nr, args, result, task.isolation);
+    }
+    result
 }
 
 pub fn user_fault(pc: usize, addr: usize, cause: usize) -> ! {

@@ -80,7 +80,7 @@ run_case() {
     fi
     if [[ "$scenario" == exception ]]; then
         if ! rg -Fq 'W O L F R A M   K E R N E L   P A N I C' "$log" \
-            || rg -q 'FAIL|\[WOLFRAM_TEST\] privilege_' "$log" \
+            || rg -q 'FAIL|\[WOLFRAM_TEST\]' "$log" \
             || ! rg -Fq 'probing x86 invalid-opcode exception...' "$log" \
             || ! rg -Fq 'detail: x86 exception vector=6 error=0x0 rip=' "$log" \
             || ! rg -Fq 'where:       src/arch/x86_64/trap.rs:' "$log"; then

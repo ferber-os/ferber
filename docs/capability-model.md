@@ -60,7 +60,7 @@ Every handle carries a rights bitmask:
 ```rust
 bitflags! {
     pub struct Rights: u32 {
-        const DUPLICATE  = 1 << 0;  // copy handle to give to another process
+        const DUPLICATE  = 1 << 0;  // create another handle to the same node
         const TRANSFER   = 1 << 1;  // move handle into another process
         const READ       = 1 << 2;  // read from object
         const WRITE      = 1 << 3;  // write to object
@@ -76,6 +76,28 @@ bitflags! {
 
 `INSPECT` separates "can use this object" from "can see metadata about it."
 A process can hold a channel handle without knowing who is on the other end.
+
+## Handle Syscalls
+
+The resident syscall boundary exposes close, duplicate, and inspect on both
+architectures. A process starts with an empty table; the resident probe receives
+its test capabilities through explicit kernel delegation afterward.
+
+Duplicate requires `DUPLICATE` and creates another local handle to the same
+capability node with exactly the same rights. It does not allocate a child node.
+Closing a handle removes only that table entry, even if its node was revoked.
+It does not revoke aliases or destroy the object. Node revocation invalidates
+every alias; revoked handles can still be closed.
+
+Inspect requires `INSPECT` and returns only the object type and rights through
+a validated eight-byte user buffer. It does not reveal pointers or dereference
+the underlying object. See [the syscall ABI](syscall-abi.md) for the wire format
+and errors.
+
+The current table holds 256 handles and reuses vacant numeric slots. A closed
+number can later name a different capability. Nodes and objects have separate,
+externally retained lifetimes; closing the last handle does not reclaim them.
+Attenuation and revocation syscalls remain future work.
 
 ---
 
@@ -139,9 +161,13 @@ Two layers of enforcement, one of them free.
 ## Capability Transfer & Move Semantics
 
 Capabilities move across processes with strict linear ownership semantics:
-- **`transfer_send(handle)`**: Requires `Rights::TRANSFER`. Atomically removes the handle from the sender's handle table upon dispatch, guaranteeing that the sender cannot retain access while transferring.
+- **`transfer_send(handle)`**: Requires `Rights::TRANSFER`. Removes that handle from the sender's table. Independently duplicated handles remain present.
 - **`transfer_recv(node)`**: Inserts the transferred capability node into the receiver's handle table.
 - **Leak-Free Drop Revocation**: If a message carrying in-flight capability nodes is dropped before delivery (e.g. queue full, receiver terminated, channel destroyed), `Drop for ChannelMessage` automatically calls `node.revoke()`, immediately invalidating the unreceived capability so no dangling authority survives.
+
+That drop revokes the shared node, so it also invalidates independently duplicated
+aliases. This policy needs review before channel operations become public
+syscalls. These handle syscalls do not change the existing IPC behavior.
 
 ---
 

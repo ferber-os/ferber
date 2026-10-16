@@ -96,7 +96,7 @@ x86_enter_user:
     jne 9f
     cmp r15, 0x6789abcd
     jne 9f
-    mov rax, 0x2000003ff8
+    mov rax, {user_stack} + {stack_size} - 8
     cmp rsp, rax
     jne 9f
     cmp qword ptr [rsp], 0x12345678
@@ -111,6 +111,20 @@ x86_enter_user:
     pushfq
     pop rcx
     cmp rcx, 0x8d7
+    jne 9f
+.endm
+
+.macro HANDLE_CALL nr, result
+    mov eax, \nr
+    call .Lhandle_call
+    cmp rax, \result
+    jne 9f
+.endm
+
+.macro CHECK_INSPECT
+    cmp dword ptr [rsi], 2
+    jne 9f
+    cmp dword ptr [rsi + 4], 0x105
     jne 9f
 .endm
 
@@ -152,7 +166,7 @@ x86_user_probe_start:
     and eax, 3
     cmp eax, 3
     jne 9f
-    mov rax, 0x2000004000
+    mov rax, {user_stack} + {stack_size}
     cmp rsp, rax
     jne 9f
     mov ebx, 0x12345678
@@ -168,12 +182,12 @@ x86_user_probe_start:
     mov r10d, 0x44
     mov r8d, 0x55
     mov r9d, 0x66
-    xor eax, eax
+    mov eax, {sys_yield}
     PROBE_SYSCALL
     test rax, rax
     jnz 9f
     CHECK_USER
-    xor eax, eax
+    mov eax, {sys_yield}
     PROBE_SYSCALL
     test rax, rax
     jnz 9f
@@ -186,12 +200,135 @@ x86_user_probe_start:
     pop rax
     cmp rax, 0x12345678
     jne 9f
+    # Fixtures are explicitly delegated after the process's empty-table check.
+    # Keep calls below the final four stack bytes used by the preflight test.
+    sub rsp, 128
+    mov edi, 0xdead
+    HANDLE_CALL {sys_yield}, 0
+    HANDLE_CALL 99, -38
+    HANDLE_CALL 100, -38
+
+    xor edi, edi
+    mov rsi, {user_stack} + 128
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+    inc rsi
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+    mov rsi, {user_stack} + 4092
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+
+    # Invalid outputs must fail before any destination byte changes.
+    xor esi, esi
+    HANDLE_CALL {sys_cap_inspect}, -14
+    mov rsi, {user_pc}
+    HANDLE_CALL {sys_cap_inspect}, -14
+    mov rsi, {user_stack} + {stack_size}
+    HANDLE_CALL {sys_cap_inspect}, -14
+    mov rsi, 0xffff800000000000
+    HANDLE_CALL {sys_cap_inspect}, -14
+    mov rsi, -4
+    HANDLE_CALL {sys_cap_inspect}, -14
+    mov rsi, {user_stack} + {stack_size} - 4
+    mov dword ptr [rsi], 0x5a5a5a5a
+    HANDLE_CALL {sys_cap_inspect}, -14
+    cmp dword ptr [rsi], 0x5a5a5a5a
+    jne 9f
+
+    mov rsi, {user_stack} + 128
+    mov qword ptr [rsi], 0x5a5a5a5a
+    mov edi, 1
+    HANDLE_CALL {sys_cap_inspect}, -13
+    cmp qword ptr [rsi], 0x5a5a5a5a
+    jne 9f
+    HANDLE_CALL {sys_handle_duplicate}, -13
+    mov edi, 2
+    HANDLE_CALL {sys_cap_inspect}, -116
+    cmp qword ptr [rsi], 0x5a5a5a5a
+    jne 9f
+    HANDLE_CALL {sys_handle_duplicate}, -116
+    HANDLE_CALL {sys_handle_close}, 0
+    HANDLE_CALL {sys_handle_close}, -9
+    HANDLE_CALL {sys_cap_inspect}, -9
+    HANDLE_CALL {sys_handle_duplicate}, -9
+
+    # High bits must not be silently narrowed to a live u32 slot.
+    mov rdi, 0x100000000
+    HANDLE_CALL {sys_cap_inspect}, -9
+    HANDLE_CALL {sys_handle_duplicate}, -9
+    HANDLE_CALL {sys_handle_close}, -9
+    mov edi, 256
+    HANDLE_CALL {sys_cap_inspect}, -9
+    HANDLE_CALL {sys_handle_duplicate}, -9
+    HANDLE_CALL {sys_handle_close}, -9
+
+    # Duplicate aliases share the node, but closing either handle preserves the other.
+    xor edi, edi
+    HANDLE_CALL {sys_handle_duplicate}, 2
+    HANDLE_CALL {sys_handle_close}, 0
+    mov edi, 2
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+    HANDLE_CALL {sys_handle_duplicate}, 0
+    HANDLE_CALL {sys_handle_close}, 0
+    xor edi, edi
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+
+    # Fill every free slot, recover one slot, then close all handles.
+    mov r12d, 2
+.Lfill_handles:
+    HANDLE_CALL {sys_handle_duplicate}, r12
+    inc r12
+    cmp r12, 256
+    jne .Lfill_handles
+    HANDLE_CALL {sys_handle_duplicate}, -24
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+    mov edi, 127
+    HANDLE_CALL {sys_handle_close}, 0
+    xor edi, edi
+    HANDLE_CALL {sys_handle_duplicate}, 127
+    HANDLE_CALL {sys_handle_duplicate}, -24
+    xor edi, edi
+.Lclose_handles:
+    HANDLE_CALL {sys_handle_close}, 0
+    inc edi
+    cmp edi, 256
+    jne .Lclose_handles
+    xor edi, edi
+    HANDLE_CALL {sys_handle_close}, -9
+    HANDLE_CALL {sys_handle_duplicate}, -9
+    HANDLE_CALL {sys_cap_inspect}, -9
+    add rsp, 128
     xor edi, edi
     jmp 10f
+
+.Lhandle_call:
+    push rdi
+    push rsi
+    push rdx
+    push r10
+    push r8
+    push r9
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    PROBE_SYSCALL
+    .irp reg, r15, r14, r13, r12, rbp, rbx, r9, r8, r10, rdx, rsi, rdi
+        pop rcx
+        cmp \reg, rcx
+        jne 9f
+    .endr
+    ret
 9:
     mov edi, 1
 10:
-    mov eax, 1
+    mov eax, {sys_exit}
     xor esi, esi
     xor edx, edx
     xor r10d, r10d
@@ -214,7 +351,7 @@ x86_isolation_fault:
     mov rax, [rax]
     .endif
     mov edi, 1
-    mov eax, 1
+    mov eax, {sys_exit}
     syscall
     ud2
 .balign 8

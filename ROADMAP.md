@@ -137,10 +137,11 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
   - [x] x86-64: Trusted syscall stack selected through `swapgs` before using user-controlled RSP
 - [x] Resident user probes on both architectures: returning yield/unknown syscalls, register/stack checks, exit, and separate supervisor-read, RX-write, and NX-execute fault tests
 - [ ] System call dispatch table:
-  - [x] Bootstrap dispatcher: Wolfram numbers, six argument registers, and `-38` for unknown numbers in the armed probe
+  - [x] Resident dispatcher: Wolfram numbers, six argument registers, and `-38` for unknown numbers, independent of probe bookkeeping
   - [x] Bootstrap task operations: immediate-return yield hint (`0`) and thread exit (`1`) followed by halt
-  - [ ] Capability operations: `sys_cap_attenuate`, `sys_cap_revoke`, `sys_cap_inspect`
-  - [ ] Handle operations: `sys_handle_close`, `sys_handle_duplicate`
+  - [x] Capability metadata inspection: `sys_cap_inspect` requires `INSPECT` and copies type/rights to validated user memory
+  - [ ] Capability mutation: `sys_cap_attenuate`, `sys_cap_revoke`
+  - [x] Handle operations: `sys_handle_close`, `sys_handle_duplicate` with `DUPLICATE` enforcement and shared-node aliases
   - [ ] Channel IPC: `sys_chan_create`, `sys_chan_send`, `sys_chan_recv`
   - [ ] Channel wait-queue integration: blocking `sys_chan_recv` with thread parking on `ChannelEndpoint.wait_queue`
   - [ ] FastCall IPC: `sys_fastcall` register transfer
@@ -156,6 +157,12 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
 halt. Secondary harts stay parked; interrupts, FP/vector user state, and
 preemptive scheduling are outside this milestone. Linux-style registers use
 custom Wolfram syscall numbers and do not provide musl compatibility.*
+
+The resident handle-syscall path (`Uranium-238-v0.2.1`) extends M1 with
+explicitly delegated test capabilities, inspection, same-node duplication, and
+independent handle closure on both architectures. It retains the single-task
+and halt-on-exit limits.
+See [the syscall ABI](docs/syscall-abi.md).
 
 ### Userspace Binary Loading & Execution
 - [ ] Userspace ELF loader (`elf_loader.rs`):

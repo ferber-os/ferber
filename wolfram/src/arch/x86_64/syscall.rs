@@ -6,6 +6,13 @@ global_asm!(
     include_str!("syscall.S"),
     write_probe = const cfg!(feature = "user-write-probe") as usize,
     user_pc = const crate::kernel::syscall::USER_PC,
+    user_stack = const crate::kernel::syscall::USER_STACK,
+    stack_size = const crate::kernel::syscall::STACK_SIZE,
+    sys_yield = const crate::kernel::syscall::SYS_YIELD,
+    sys_exit = const crate::kernel::syscall::SYS_EXIT,
+    sys_handle_close = const crate::kernel::syscall::SYS_HANDLE_CLOSE,
+    sys_handle_duplicate = const crate::kernel::syscall::SYS_HANDLE_DUPLICATE,
+    sys_cap_inspect = const crate::kernel::syscall::SYS_CAP_INSPECT,
 );
 
 #[repr(C)]
@@ -95,9 +102,7 @@ extern "C" fn x86_syscall_handler(frame: &mut SyscallFrame, entry_flags: u64) {
         0,
         "unsafe syscall entry flags"
     );
-    if cfg!(feature = "qemu-debug-port") && matches!(frame.rax, 0 | 99) {
-        assert_eq!(frame.rflags, 0xcd7, "user flags probe was not armed");
-    }
+    crate::kernel::syscall::observe_x86_flags(frame.rax as usize, frame.rflags);
     assert!(
         frame.cs == 0x23 && frame.ss == 0x1b,
         "invalid user selectors"
