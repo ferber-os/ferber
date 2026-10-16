@@ -126,6 +126,9 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
 
 Phase 3 transitions execution from kernel-only testing into unprivileged userspace, implementing the system call boundary, userspace privilege switching, the initial user process, and foundational runtime services.
 
+### Physical Memory Discovery & Allocation
+- [ ] Discover and make allocatable all usable firmware-reported RAM, including discontiguous ranges and memory above 4 GiB, while preserving reserved ranges on RISC-V FDT and x86-64 UEFI.
+
 ### Privilege Boundary & System Call ABI
 - [x] Userspace privilege level switching:
   - [x] RISC-V 64: User mode (U-mode) entry via `sret`, configuring `sstatus.SPP = 0`, `sstatus.SPIE = 1`, and `sepc`
