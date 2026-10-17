@@ -19,8 +19,9 @@
 
 <br>
 
-Ferber is a microkernel operating system written in Rust. RISC-V 64 is its
-current QEMU reference port; x86-64 UEFI is the next physical-hardware target.
+Ferber is a microkernel operating system written in Rust. It boots in QEMU on
+RISC-V 64 and x86-64, and has passed resident userspace checks on physical
+x86-64 hardware.
 It is not a Linux distribution. It is not a fork. It is a kernel built from first principles around
 one idea: **programs should not have access to anything they weren't explicitly given.**
 
