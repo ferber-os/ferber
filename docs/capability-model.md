@@ -177,13 +177,24 @@ Two layers of enforcement, one of them free.
 Capabilities move across processes with strict linear ownership semantics:
 - **`transfer_send(handle)`**: Requires `Rights::TRANSFER`. Removes that handle from the sender's table. Independently duplicated handles remain present.
 - **`transfer_recv(node)`**: Moves the owned node reference into the receiver's table. A full table returns the error together with that reference, so the caller retains ownership.
-- **Leak-Free Drop Revocation**: If a message carrying in-flight capability nodes is dropped before delivery (e.g. queue full, receiver terminated, channel destroyed), `Drop for ChannelMessage` automatically calls `node.revoke()`, immediately invalidating the unreceived capability so no dangling authority survives.
+- **Message discard**: Releases owned node references without revoking shared
+  nodes. Independently duplicated aliases and descendants remain valid. Only an
+  explicit authorized revoke invalidates them.
 
-Messages retain owned `Arc<CapNode>` references while in transit. Dropping an
-undelivered message revokes its shared nodes, invalidating independently
-duplicated aliases and derived descendants before releasing ownership. This
-trusted-kernel action does not require a user `MANAGE` right. The policy still
-needs review before channel operations become public syscalls.
+The resident channel syscalls move up to 64 capabilities per message. Send
+requires `WRITE` on the endpoint and `TRANSFER` on every payload capability;
+receive requires `READ`. A rejected send preserves every source slot. A rejected
+receive leaves the message queued, the receiver table unchanged, and all user
+output unchanged. Repeated source slot numbers are invalid, while distinct
+slots aliasing one node can be moved together. Queued nodes that become revoked
+remain closeable but convey no usable authority when received.
+
+This milestone accepts only VMO and current leaf Resource payload backing.
+Both the declared tag and actual backing must match. Channel and task objects
+can retain queues directly or through handle tables, so they are rejected until
+graph-owning transfers have a complete lifetime policy. The same restrictions
+apply to attenuated or duplicated aliases. A capability's type tag alone never
+authorizes a cast: dispatch also checks the backing's runtime type.
 
 ---
 

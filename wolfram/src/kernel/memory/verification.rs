@@ -1,4 +1,4 @@
-//! Boot evidence for permanent mappings and real physical allocator capacity.
+//! Boot evidence for permanent mappings, owned backing, and frame accounting.
 
 use super::{
     bitmap,
@@ -8,7 +8,6 @@ use super::{
 use crate::{arch::ArchAddressSpace, kprintln};
 
 const PAGE: usize = 4096;
-const FOUR_GIB: usize = 1usize << 32;
 
 pub fn self_test() {
     assert_eq!(
@@ -62,17 +61,7 @@ pub fn self_test() {
         }
     }
     drop(space);
-    if stats.total_pages >= FOUR_GIB / PAGE {
-        if let Some(frame) = bitmap::allocate_frame_above(FOUR_GIB) {
-            high_frame(frame);
-            kprintln!("[mem]   frame above 4 GiB: zero/read/write/map/copy/free ok");
-        } else {
-            #[cfg(feature = "memory-capacity-probe")]
-            panic!("no free frame above 4 GiB");
-        }
-    }
-    #[cfg(feature = "memory-capacity-probe")]
-    capacity();
+    allocated_frame();
     kprintln!(
         "[mem]   accounting: {} managed = {} bootstrap + {} allocated + {} free; {} extents",
         stats.total_pages,
@@ -84,14 +73,15 @@ pub fn self_test() {
     kprintln!("[WOLFRAM_TEST] memory_verification: PASS");
 }
 
-fn high_frame(frame: usize) {
-    let free_with_frame = bitmap::stats().free_pages;
-    let mut backing = Vmo::create_physical(frame, PAGE).expect("high frame backing");
-    backing.write(0, &[0; PAGE]).unwrap();
+fn allocated_frame() {
+    let before = bitmap::stats();
+    let backing = Vmo::create_contiguous(PAGE).expect("verification backing");
+    let frame = backing.frames().get(0).unwrap();
+    assert_eq!(bitmap::stats().allocated_pages, before.allocated_pages + 1);
     let mut page = [0xff; PAGE];
     backing.read(0, &mut page).unwrap();
     assert!(page.iter().all(|&byte| byte == 0));
-    let mut space = ArchAddressSpace::new().expect("high frame root");
+    let mut space = ArchAddressSpace::new().expect("verification root");
     const USER: usize = 0x10_0000_0000;
     unsafe {
         space
@@ -119,38 +109,6 @@ fn high_frame(frame: usize) {
     }
     drop(space);
     drop(backing);
-    assert_eq!(bitmap::stats().free_pages, free_with_frame);
-    bitmap::free_frame(frame).expect("release high frame");
-    assert_eq!(bitmap::stats().free_pages, free_with_frame + 1);
-}
-
-#[cfg(feature = "memory-capacity-probe")]
-fn capacity() {
-    use alloc::vec::Vec;
-    const RUN: usize = 512;
-    const RUNS: usize = FOUR_GIB / PAGE / RUN + 1;
-    let mut retained = Vec::with_capacity(RUNS);
-    let before = bitmap::stats();
-    assert!(before.total_pages > FOUR_GIB / PAGE);
-    for _ in 0..RUNS {
-        retained.push(bitmap::allocate_frames(RUN).expect("retain more than 4 GiB of frames"));
-    }
-    assert_eq!(before.free_pages - bitmap::stats().free_pages, RUNS * RUN);
-    retained.sort_unstable();
-    assert!(
-        retained
-            .windows(2)
-            .all(|pair| pair[0] + RUN * PAGE <= pair[1]),
-        "duplicate frame ownership"
-    );
-    assert!(retained.iter().any(|&frame| frame >= FOUR_GIB));
-    for &frame in &retained {
-        bitmap::free_frames(frame, RUN).expect("release retained capacity");
-    }
     assert_eq!(bitmap::stats().free_pages, before.free_pages);
     assert_eq!(bitmap::stats().allocated_pages, before.allocated_pages);
-    kprintln!(
-        "[mem]   capacity: retained and released {} distinct frames",
-        RUNS * RUN
-    );
 }

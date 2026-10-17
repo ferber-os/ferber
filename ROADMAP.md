@@ -79,7 +79,7 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
 - [x] Capability linear move semantics:
   - [x] `transfer_send`: validates `Rights::TRANSFER` and excises handle from sender immediately upon dispatch
   - [x] `transfer_recv`: installs capability node into recipient handle table
-  - [x] Automatic revocation: `Drop for ChannelMessage` revokes unreceived in-flight capability nodes
+  - [x] Owned in-flight capability references; discarded messages release ownership without revoking surviving aliases
 
 ### Task Container Model & Scheduling
 - [x] Zero-dependency atomic spinlock (`SpinLock<T>`) with Acquire/Release memory ordering
@@ -105,7 +105,7 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
 
 ### Inter-Process Communication (IPC)
 - [x] **Asynchronous Channels (`channel.rs`)**:
-  - [x] Paired bidirectional endpoints (`ChannelEndpoint`) with mutual weak references
+  - [x] Paired bidirectional endpoints (`ChannelEndpoint`) with shared pair state
   - [x] Bounded message queues (default max depth: 64 messages)
   - [x] Message size limits (64 KiB maximum payload)
   - [x] Handle migration limits (64 handles per message)
@@ -127,11 +127,10 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
 Phase 3 transitions execution from kernel-only testing into unprivileged userspace, implementing the system call boundary, userspace privilege switching, the initial user process, and foundational runtime services.
 
 ### Physical Memory Discovery & Allocation
-- [x] Discover and make allocatable all usable firmware-reported RAM within architecture/alias limits, including discontiguous ranges and memory above 4 GiB, while preserving reserved ranges on RISC-V FDT and x86-64 UEFI.
+- [x] Discover and make allocatable all usable firmware-reported RAM within architecture/alias limits, including discontiguous ranges, while preserving reserved ranges on RISC-V FDT and x86-64 UEFI.
 - [x] Permanent high-half kernel mappings and packed RAM aliases on both architectures; private user lower halves and shared supervisor upper halves.
-- [x] Debug/release 8 GiB capacity probes retaining over 4 GiB of distinct frames, high-frame access after address-space activation, and transactional allocator accounting checks.
+- [x] RAM-size-independent boot verification of detected extents, permanent aliases, owned-page allocation and user copies, and transactional allocator accounting.
 - [ ] Reclaim UEFI boot-services memory after loader ownership and references end.
-- [ ] Gate the high-frame boot probe on allocatable memory above 4 GiB, independent of total managed RAM.
 - [ ] Define IRQ-safe allocator locking and SMP initialization/publication before enabling allocation from interrupt context or multiple CPUs.
 
 ### Privilege Boundary & System Call ABI
@@ -150,8 +149,9 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
   - [x] Capability metadata inspection: `sys_cap_inspect` requires `INSPECT` and copies type/rights to validated user memory
   - [x] Capability mutation: `sys_cap_attenuate` with `DUPLICATE`, validated rights subsets, and owned child nodes; `sys_cap_revoke` with `MANAGE` and descendant invalidation
   - [x] Handle operations: `sys_handle_close`, `sys_handle_duplicate` with `DUPLICATE` enforcement and shared-node aliases
-  - [ ] Channel IPC: `sys_chan_create`, `sys_chan_send`, `sys_chan_recv`
-  - [ ] Channel wait-queue integration: blocking `sys_chan_recv` with thread parking on `ChannelEndpoint.wait_queue`
+  - [x] Nonblocking channel IPC: `sys_chan_create`, `sys_chan_send`, `sys_chan_recv`; validated user buffers, transactional VMO/leaf Resource capability moves, bounded queues, and peer closure
+  - [ ] Ownership-cycle policy for transferring channel endpoints and other graph-owning capabilities
+  - [ ] Channel wait-queue integration: blocking `sys_chan_recv` with scheduler-backed thread parking and wakeup
   - [ ] FastCall IPC: `sys_fastcall` register transfer
   - [ ] VMO operations: `sys_vmo_create`, `sys_vmo_read`, `sys_vmo_write`, `sys_vmo_map`, `sys_vmo_unmap`
   - [ ] Task creation: `sys_process_create`, `sys_thread_create`
@@ -197,6 +197,9 @@ See [the syscall ABI](docs/syscall-abi.md).
   - [ ] Standalone userspace microkernel server
   - [ ] Files and directories represented strictly as capability handles
   - [ ] Mount point namespace isolation per process container
+- [ ] Initial ramdisk (`initramfs`):
+  - [ ] Read-only boot image containing userspace binaries (`init`, `sh`, `fer`)
+  - [ ] Kernel loads `init` from the image; a userspace filesystem server exposes its contents through the VFS
 
 ### User Shell & Command-Line Skeleton
 - [ ] Basic interactive shell running over serial console
@@ -228,9 +231,14 @@ Phase 4 moves device drivers into userspace microkernel services with fine-grain
   - [ ] Packet transmit and receive buffers backed by pinned VMOs
 - [ ] VirtIO block device driver (`virtio-blk` in QEMU):
   - [ ] Block read/write request processing
-- [ ] Initial ramdisk (`initramfs`):
-  - [ ] Read-only ramdisk image bundled at boot
-  - [ ] Serves userspace binaries (`init`, `sh`, `fer`) to the VFS server
+
+### Persistent Storage & First On-Disk Filesystem
+- [ ] Capability-controlled block-device service shared by both architectures
+- [ ] First on-disk filesystem implemented as a userspace VFS server:
+  - [ ] Select and document the initial disk format and validate untrusted on-disk metadata
+  - [ ] Read-only mounting, directory traversal, and file reads
+  - [ ] Writable files, directory updates, and block allocation with explicit flush and crash-consistency guarantees
+  - [ ] Corrupt-image, interrupted-write, and reboot-persistence tests on both architectures
 
 ---
 
@@ -253,7 +261,8 @@ The long-term roadmap toward running Wolfram as a daily operating system.
 
 - [ ] Self-hosting Rust toolchain compiling the Wolfram kernel on Wolfram OS
 - [ ] Preemptive multi-core SMP scheduling with per-CPU runqueues and work stealing
-- [ ] Native NVMe block driver and persistent capability-native filesystem
+- [ ] Native NVMe block driver using the established block-device service
+- [ ] Capability-native on-disk filesystem building on the existing VFS and persistence interfaces
 - [ ] Native Ethernet / Wi-Fi network stack (TCP/UDP/IP)
 - [ ] Userspace graphical compositor running over GOP framebuffer VMO
 - [ ] Hardware IOMMU protection for zero-trust userspace DMA isolation

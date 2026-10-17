@@ -25,9 +25,9 @@ defines the order of work and what counts as evidence for each step.
 - Fix and exercise the RISC-V trap path before calling its boot reliable. Give
   each active hart a separate stack or explicitly park secondary harts.
 
-The Phase 1 bitmap allocator managed the RAM bank containing the kernel, up to
-4 GiB. The current range allocator removes that ceiling; the buddy heap keeps
-its separate 128 MiB single-allocation limit.
+The current range allocator manages discovered RAM extents within the
+architecture and alias-window limits. The buddy heap keeps its separate
+128 MiB single-allocation limit.
 
 ## 2. Define a common handoff to the kernel
 

@@ -41,7 +41,19 @@ Jobs form a tree. Killing a job kills everything in it recursively. No orphans.
 Channels: async, bidirectional, bytes + handles, bounded queue, move semantics.
 FastCall: sync, register-only, ~50-150 cycles, thread donation, interrupt/hot paths only.
 
-Handle transfer is a move. Sender loses the handle on send.
+Resident syscalls create channel pairs and send/receive without blocking on
+both architectures. A pair has one state lock covering both incoming queues
+and peer-open state, avoiding opposite-endpoint lock acquisition. Receivers
+drain queued messages before observing peer closure.
+
+Handle transfer is a move. The sender loses the selected table slots only when
+the message is enqueued. Receive preflights output ranges and table space before
+publishing any result. Failed operations preserve table entries, queued
+messages, and user output. Discarding a message releases its references without
+revoking aliases. Payload backing is limited to checked VMOs and the current leaf
+Resource object; channels and task objects need a separate ownership-cycle
+design before transfer. Blocking receive and
+scheduler integration remain planned. See the [resident ABI](syscall-abi.md).
 
 ## 5. Memory
 

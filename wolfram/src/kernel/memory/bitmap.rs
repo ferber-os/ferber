@@ -227,30 +227,6 @@ pub fn allocate_frame() -> Option<usize> {
     })
 }
 
-/// Target a physical range without consuming every lower frame first.
-pub fn allocate_frame_above(minimum: usize) -> Option<usize> {
-    ALLOCATOR.with(|state| {
-        assert!(state.initialized, "physical allocator used before init");
-        let mut current = state.head;
-        while current != 0 {
-            let b = unsafe { block(current) };
-            let first = minimum
-                .saturating_sub(b.start)
-                .div_ceil(PAGE_SIZE)
-                .min(b.frames);
-            for index in first..b.frames {
-                if b.used[index / 64] & (1 << (index % 64)) == 0 {
-                    let address = b.start + index * PAGE_SIZE;
-                    state.mark(address, false);
-                    return Some(address);
-                }
-            }
-            current = b.next;
-        }
-        None
-    })
-}
-
 pub fn allocate_frames(count: usize) -> Option<usize> {
     if count == 0 {
         return None;
@@ -422,7 +398,6 @@ mod tests {
         assert_eq!(allocated.len(), initial.free_pages);
         assert_eq!(stats().free_pages, 0);
         assert!(allocate_frames(1).is_none());
-        assert!(allocate_frame_above(start + bytes).is_none());
         for frame in allocated {
             free_frame(frame).unwrap();
         }

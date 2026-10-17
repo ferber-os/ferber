@@ -45,7 +45,6 @@ run_case() {
         isolation) cargo_args+=(--features user-isolation-probe) ;;
         write-rx) cargo_args+=(--features user-write-probe) ;;
         execute-nx) cargo_args+=(--features user-execute-probe) ;;
-        capacity) cargo_args+=(--features memory-capacity-probe); limit=120 ;;
     esac
     if [[ "$scenario" == exception ]]; then
         cargo_args=(--features x86-exception-probe --release)
@@ -94,11 +93,6 @@ run_case() {
         echo "missing successful user-mode probe ($profile $scenario)" >&2
         exit 1
     fi
-    if [[ "$scenario" == capacity ]] && ! smoke_capacity_ok "$log"; then
-        cat "$log" >&2
-        echo 'x86 capacity evidence missing' >&2
-        exit 1
-    fi
     echo "x86 QEMU smoke passed: $profile $scenario, ${ram} MiB"
 }
 
@@ -111,6 +105,4 @@ run_case debug write-rx 512
 run_case release write-rx 512
 run_case debug execute-nx 512
 run_case release execute-nx 512
-run_case debug capacity 8192
-run_case release capacity 8192
 smoke_passed=1

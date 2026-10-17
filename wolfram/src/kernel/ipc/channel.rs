@@ -1,12 +1,11 @@
-//! Async bidirectional channel. Carries bytes + handles.
-//! Bounded queue. Backpressure on send when full.
-//! Handle transfer is a move. Sender loses the handle.
+//! Bounded bidirectional channels. Each endpoint owns its incoming queue.
+//! Transferring or discarding a message releases references; only revoke revokes.
 
 #![allow(dead_code)]
 
 extern crate alloc;
 use alloc::collections::VecDeque;
-use alloc::sync::{Arc, Weak};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -25,6 +24,7 @@ pub enum ChannelError {
     MessageTooLarge,
     TooManyHandles,
     InsufficientRights,
+    OutOfMemory,
 }
 
 #[derive(Debug)]
@@ -37,23 +37,6 @@ impl ChannelMessage {
     pub fn new(bytes: Vec<u8>, handles: Vec<Arc<CapNode>>) -> Self {
         Self { bytes, handles }
     }
-
-    fn revoke(&self) {
-        for node in &self.handles {
-            node.revoke();
-        }
-    }
-
-    fn reject(self, error: ChannelError) -> (ChannelError, Self) {
-        self.revoke();
-        (error, self)
-    }
-}
-
-impl Drop for ChannelMessage {
-    fn drop(&mut self) {
-        self.revoke();
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,18 +48,21 @@ pub enum ChannelState {
 static NEXT_CHANNEL_ID: AtomicU64 = AtomicU64::new(1);
 
 pub const DEFAULT_MAX_QUEUE_DEPTH: usize = 64;
-pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 65536; // 64 KiB
+pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 65536;
 pub const DEFAULT_MAX_HANDLES: usize = 64;
+
+struct PairState {
+    queues: [VecDeque<ChannelMessage>; 2],
+    open: [bool; 2],
+}
 
 pub struct ChannelEndpoint {
     id: u64,
-    peer: Option<Weak<SpinLock<ChannelEndpoint>>>,
-    queue: VecDeque<ChannelMessage>,
+    side: usize,
+    pair: Arc<SpinLock<PairState>>,
     max_queue_depth: usize,
     max_message_bytes: usize,
     max_handles: usize,
-    state: ChannelState,
-    signals: u32,
 }
 
 impl KernelObject for ChannelEndpoint {
@@ -86,10 +72,7 @@ impl KernelObject for ChannelEndpoint {
 }
 
 impl ChannelEndpoint {
-    pub fn create() -> (
-        Arc<SpinLock<ChannelEndpoint>>,
-        Arc<SpinLock<ChannelEndpoint>>,
-    ) {
+    pub fn create() -> Result<(Arc<Self>, Arc<Self>), ChannelError> {
         Self::create_with_limits(
             DEFAULT_MAX_QUEUE_DEPTH,
             DEFAULT_MAX_MESSAGE_BYTES,
@@ -101,97 +84,95 @@ impl ChannelEndpoint {
         max_queue_depth: usize,
         max_message_bytes: usize,
         max_handles: usize,
-    ) -> (
-        Arc<SpinLock<ChannelEndpoint>>,
-        Arc<SpinLock<ChannelEndpoint>>,
-    ) {
-        let id1 = NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed);
-        let id2 = NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed);
-
-        let end1 = Arc::new(SpinLock::new(ChannelEndpoint {
-            id: id1,
-            peer: None,
-            queue: VecDeque::new(),
+    ) -> Result<(Arc<Self>, Arc<Self>), ChannelError> {
+        let pair = Arc::try_new(SpinLock::new(PairState {
+            queues: [VecDeque::new(), VecDeque::new()],
+            open: [true, true],
+        }))
+        .map_err(|_| ChannelError::OutOfMemory)?;
+        let endpoint = |side| Self {
+            id: NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed),
+            side,
+            pair: Arc::clone(&pair),
             max_queue_depth,
             max_message_bytes,
             max_handles,
-            state: ChannelState::Open,
-            signals: SIGNAL_WRITABLE,
-        }));
-
-        let end2 = Arc::new(SpinLock::new(ChannelEndpoint {
-            id: id2,
-            peer: Some(Arc::downgrade(&end1)),
-            queue: VecDeque::new(),
-            max_queue_depth,
-            max_message_bytes,
-            max_handles,
-            state: ChannelState::Open,
-            signals: SIGNAL_WRITABLE,
-        }));
-
-        end1.lock().peer = Some(Arc::downgrade(&end2));
-
-        (end1, end2)
+        };
+        let first = Arc::try_new(endpoint(0)).map_err(|_| ChannelError::OutOfMemory)?;
+        let second = Arc::try_new(endpoint(1)).map_err(|_| ChannelError::OutOfMemory)?;
+        Ok((first, second))
     }
 
-    /// Rejected messages are revoked and returned for destruction after unlocking.
-    pub fn send(&mut self, msg: ChannelMessage) -> Result<(), (ChannelError, ChannelMessage)> {
-        if self.state == ChannelState::PeerClosed {
-            return Err(msg.reject(ChannelError::PeerClosed));
+    fn validate_size(&self, bytes: usize, handles: usize) -> Result<(), ChannelError> {
+        if bytes > self.max_message_bytes {
+            return Err(ChannelError::MessageTooLarge);
         }
-
-        if msg.bytes.len() > self.max_message_bytes {
-            return Err(msg.reject(ChannelError::MessageTooLarge));
+        if handles > self.max_handles {
+            return Err(ChannelError::TooManyHandles);
         }
-
-        if msg.handles.len() > self.max_handles {
-            return Err(msg.reject(ChannelError::TooManyHandles));
-        }
-
-        let peer_arc = match self.peer.as_ref().and_then(|p| p.upgrade()) {
-            Some(peer) => peer,
-            None => {
-                self.state = ChannelState::PeerClosed;
-                self.signals |= SIGNAL_PEER_CLOSED;
-                self.peer = None;
-                return Err(msg.reject(ChannelError::PeerClosed));
-            }
-        };
-
-        let mut peer = peer_arc.lock();
-        if peer.state == ChannelState::PeerClosed {
-            self.state = ChannelState::PeerClosed;
-            self.signals |= SIGNAL_PEER_CLOSED;
-            return Err(msg.reject(ChannelError::PeerClosed));
-        }
-
-        if peer.queue.len() >= peer.max_queue_depth {
-            return Err(msg.reject(ChannelError::QueueFull));
-        }
-
-        peer.queue.push_back(msg);
-        peer.signals |= SIGNAL_READABLE;
         Ok(())
     }
 
-    pub fn recv(&mut self) -> Result<ChannelMessage, ChannelError> {
-        match self.queue.pop_front() {
-            Some(msg) => {
-                if self.queue.is_empty() {
-                    self.signals &= !SIGNAL_READABLE;
-                }
-                Ok(msg)
-            }
-            None => {
-                self.signals &= !SIGNAL_READABLE;
-                if self.state == ChannelState::PeerClosed {
-                    Err(ChannelError::PeerClosed)
-                } else {
-                    Err(ChannelError::QueueEmpty)
-                }
-            }
+    /// No source handles may be removed before admission and storage reservation.
+    /// The callback must not acquire process/table locks or destroy kernel objects.
+    pub fn send_with<E: From<ChannelError>>(
+        &self,
+        bytes: usize,
+        handles: usize,
+        prepare: impl FnOnce() -> Result<ChannelMessage, E>,
+    ) -> Result<(), E> {
+        self.validate_size(bytes, handles)?;
+        let mut pair = self.pair.lock();
+        let peer = 1 - self.side;
+        if !pair.open[peer] {
+            return Err(ChannelError::PeerClosed.into());
         }
+        let queue = &mut pair.queues[peer];
+        if queue.len() >= self.max_queue_depth {
+            return Err(ChannelError::QueueFull.into());
+        }
+        queue
+            .try_reserve(1)
+            .map_err(|_| ChannelError::OutOfMemory)?;
+        let message = prepare()?;
+        assert_eq!(
+            (message.bytes.len(), message.handles.len()),
+            (bytes, handles)
+        );
+        queue.push_back(message);
+        Ok(())
+    }
+
+    /// On rejection the caller retains the message and drops it after unlocking.
+    pub fn send(&self, message: ChannelMessage) -> Result<(), (ChannelError, ChannelMessage)> {
+        let mut message = Some(message);
+        let lengths = message.as_ref().unwrap();
+        let result = self.send_with(lengths.bytes.len(), lengths.handles.len(), || {
+            Ok(message.take().unwrap())
+        });
+        result.map_err(|error| (error, message.unwrap()))
+    }
+
+    /// Failed callbacks preserve the queue. Commit callbacks must preflight before
+    /// mutating the message. Return residual ownership for destruction after locks.
+    pub fn recv_with<R, E: From<ChannelError>>(
+        &self,
+        receive: impl FnOnce(&mut ChannelMessage) -> Result<R, E>,
+    ) -> Result<(R, ChannelMessage), E> {
+        let mut pair = self.pair.lock();
+        let peer_open = pair.open[1 - self.side];
+        let queue = &mut pair.queues[self.side];
+        let message = queue.front_mut().ok_or(if peer_open {
+            ChannelError::QueueEmpty
+        } else {
+            ChannelError::PeerClosed
+        })?;
+        let result = receive(message)?;
+        Ok((result, queue.pop_front().unwrap()))
+    }
+
+    pub fn recv(&self) -> Result<ChannelMessage, ChannelError> {
+        self.recv_with(|_| Ok(())).map(|(_, message)| message)
     }
 
     pub fn id(&self) -> u64 {
@@ -199,45 +180,119 @@ impl ChannelEndpoint {
     }
 
     pub fn state(&self) -> ChannelState {
-        self.state
+        if self.is_peer_closed() {
+            ChannelState::PeerClosed
+        } else {
+            ChannelState::Open
+        }
     }
 
     pub fn signals(&self) -> u32 {
-        self.signals
+        let pair = self.pair.lock();
+        let mut signals = 0;
+        if !pair.queues[self.side].is_empty() {
+            signals |= SIGNAL_READABLE;
+        }
+        if !pair.open[1 - self.side] {
+            signals |= SIGNAL_PEER_CLOSED;
+        } else if pair.queues[1 - self.side].len() < self.max_queue_depth {
+            signals |= SIGNAL_WRITABLE;
+        }
+        signals
     }
 
     pub fn queue_len(&self) -> usize {
-        self.queue.len()
+        self.pair.lock().queues[self.side].len()
     }
-
     pub fn max_queue_depth(&self) -> usize {
         self.max_queue_depth
     }
-
     pub fn max_message_bytes(&self) -> usize {
         self.max_message_bytes
     }
-
     pub fn max_handles(&self) -> usize {
         self.max_handles
     }
-
     pub fn is_peer_closed(&self) -> bool {
-        self.state == ChannelState::PeerClosed
+        !self.pair.lock().open[1 - self.side]
     }
 }
 
 impl Drop for ChannelEndpoint {
     fn drop(&mut self) {
-        if let Some(peer_weak) = self.peer.take() {
-            if let Some(peer_arc) = peer_weak.upgrade() {
-                let mut peer = peer_arc.lock();
-                peer.state = ChannelState::PeerClosed;
-                peer.signals |= SIGNAL_PEER_CLOSED;
-                peer.peer = None;
-            }
-        }
+        let discarded = {
+            let mut pair = self.pair.lock();
+            pair.open[self.side] = false;
+            core::mem::take(&mut pair.queues[self.side])
+        };
+        drop(discarded);
     }
 }
 
 pub use ChannelEndpoint as Channel;
+
+/// Exercise admission atomicity, retry, signal state, and destructor reentrancy.
+#[cfg(not(test))]
+pub fn self_test() {
+    use crate::kernel::capabilities::{ObjectType, Rights, CAP_NODE_ALLOCATOR};
+    use core::sync::atomic::AtomicUsize;
+
+    let (first, second) = Channel::create_with_limits(1, 4, 1).unwrap();
+    first
+        .send(ChannelMessage::new(alloc::vec![1], Vec::new()))
+        .unwrap();
+    second
+        .send(ChannelMessage::new(alloc::vec![2], Vec::new()))
+        .unwrap();
+    assert_eq!(first.signals() & SIGNAL_WRITABLE, 0);
+    let full = first.send_with::<ChannelError>(0, 0, || panic!("full queue ran commit"));
+    assert_eq!(full, Err(ChannelError::QueueFull));
+    let failed = second.recv_with::<(), ChannelError>(|message| {
+        assert_eq!(message.bytes, [1]);
+        Err(ChannelError::MessageTooLarge)
+    });
+    assert_eq!(failed.unwrap_err(), ChannelError::MessageTooLarge);
+    assert_eq!(second.queue_len(), 1);
+    assert_eq!(second.recv().unwrap().bytes, [1]);
+    assert_eq!(first.signals() & SIGNAL_WRITABLE, SIGNAL_WRITABLE);
+    drop(second);
+    assert_eq!(first.recv().unwrap().bytes, [2]);
+    assert_eq!(first.recv().unwrap_err(), ChannelError::PeerClosed);
+    assert_eq!(first.signals(), SIGNAL_PEER_CLOSED);
+
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    struct Reentrant {
+        peer: alloc::sync::Weak<Channel>,
+    }
+    impl KernelObject for Reentrant {
+        fn type_name(&self) -> &'static str {
+            "Resource"
+        }
+    }
+    impl Drop for Reentrant {
+        fn drop(&mut self) {
+            let peer = self.peer.upgrade().unwrap();
+            let pair = peer
+                .pair
+                .try_lock()
+                .expect("message dropped with pair locked");
+            assert!(!pair.open[1 - peer.side]);
+            DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let before = DROPS.load(Ordering::Relaxed);
+    let nodes_before = CAP_NODE_ALLOCATOR.live_count();
+    let (first, second) = Channel::create().unwrap();
+    let object = Arc::new(Reentrant {
+        peer: Arc::downgrade(&first),
+    });
+    let node = CAP_NODE_ALLOCATOR
+        .alloc_root(object, ObjectType::Resource, Rights::TRANSFER)
+        .unwrap();
+    first
+        .send(ChannelMessage::new(Vec::new(), alloc::vec![node]))
+        .unwrap();
+    drop(second);
+    assert_eq!(DROPS.load(Ordering::Relaxed), before + 1);
+    assert_eq!(CAP_NODE_ALLOCATOR.live_count(), nodes_before);
+}

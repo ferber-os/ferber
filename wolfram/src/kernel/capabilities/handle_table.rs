@@ -87,6 +87,31 @@ impl HandleTable {
         Err(CapError::InvalidHandle)
     }
 
+    /// Select free slots without publishing handles. The caller retains the table lock.
+    pub fn free_slots(&self, count: usize, slots: &mut [u32]) -> Result<(), CapError> {
+        assert!(count <= slots.len());
+        if count > MAX_HANDLES - self.count as usize {
+            return Err(CapError::TableFull);
+        }
+        for (slot, index) in slots.iter_mut().take(count).zip(
+            self.entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| entry.is_none().then_some(index)),
+        ) {
+            *slot = index as u32;
+        }
+        Ok(())
+    }
+
+    /// Commit to a slot selected under the same uninterrupted table lock.
+    pub fn insert_at(&mut self, slot: u32, node: Arc<CapNode>) {
+        let entry = &mut self.entries[slot as usize];
+        assert!(entry.is_none());
+        *entry = Some(node);
+        self.count += 1;
+    }
+
     pub fn is_full(&self) -> bool {
         self.count as usize == MAX_HANDLES
     }

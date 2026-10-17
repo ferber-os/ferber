@@ -66,9 +66,13 @@ Translations and localization are welcome, along with documentation, testing, UX
 ## Testing
 
 ```bash
-make test        # unit tests
-make qemu        # boot in QEMU, watch serial output
-make qemu-debug  # boot with GDB on :1234
+bash scripts/memory-tests.sh     # host memory/FDT/allocator regressions
+bash scripts/channel-tests.sh    # host channel concurrency/allocation failures
+bash scripts/smoke-log.sh --self-test
+make run                        # RISC-V boot checks and resident user probe
+bash scripts/riscv-smoke.sh      # RISC-V normal and protection-fault matrix
+make x86-smoke                  # x86-64 UEFI normal and protection-fault matrix
+bash scripts/x86-iso-smoke.sh    # x86-64 release ISO boot
 ```
 
 If you're adding kernel functionality, add a test.

@@ -15,6 +15,7 @@ pub use allocator::{CapNodeAllocator, CAP_NODE_ALLOCATOR, NODE_CAPACITY};
 pub use handle_table::{CapError, HandleTable};
 
 use alloc::sync::Arc;
+use core::any::Any;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -35,7 +36,7 @@ bitflags::bitflags! {
 }
 
 /// Marker trait for kernel-managed objects that can be held via handles.
-pub trait KernelObject: Send + Sync {
+pub trait KernelObject: Any + Send + Sync {
     /// Human-readable type name for diagnostics and `fer cap audit`.
     fn type_name(&self) -> &'static str;
 }
@@ -68,12 +69,7 @@ impl KernelObject for Thread {
 
 pub use crate::kernel::memory::vmo::Vmo;
 
-pub struct Channel;
-impl KernelObject for Channel {
-    fn type_name(&self) -> &'static str {
-        "Channel"
-    }
-}
+pub use crate::kernel::ipc::channel::Channel;
 
 pub struct Job;
 impl KernelObject for Job {
@@ -212,6 +208,11 @@ impl CapNode {
                 None => return true,
             }
         }
+    }
+
+    /// Verify the concrete backing; a serializable type tag is not a cast.
+    pub fn object_ref<T: KernelObject>(&self) -> Option<&T> {
+        (self.object.as_ref() as &dyn Any).downcast_ref::<T>()
     }
 
     pub fn rights(&self) -> Rights {

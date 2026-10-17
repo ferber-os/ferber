@@ -49,7 +49,7 @@ jobs:
       - name: Clippy (user probes)
         working-directory: wolfram
         run: |
-          for feature in user-isolation-probe user-write-probe user-execute-probe memory-capacity-probe; do
+          for feature in user-isolation-probe user-write-probe user-execute-probe; do
             cargo clippy --target riscv64gc-unknown-none-elf --features "$feature" -- -D warnings
             cargo clippy --target x86_64-unknown-none --features "qemu-debug-port,$feature" -- -D warnings
           done
@@ -57,13 +57,16 @@ jobs:
 
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
 
       - name: Test physical memory models
         run: bash scripts/memory-tests.sh
+
+      - name: Test channel concurrency and allocation failures
+        run: bash scripts/channel-tests.sh
 
       - name: Smoke test (RISC-V)
         run: bash scripts/riscv-smoke.sh

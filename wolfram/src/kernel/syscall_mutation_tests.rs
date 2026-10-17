@@ -8,7 +8,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-const FULL: usize = 0x305;
+const FULL: usize = 0x307;
 
 fn call(process: &Arc<SpinLock<Process>>, nr: usize, handle: usize, argument: usize) -> isize {
     dispatch_for_process(process, nr, [handle, argument, 7, 8, 9, 10])
@@ -144,7 +144,7 @@ pub(super) fn check(process: &Arc<SpinLock<Process>>, output: usize) {
 fn rejected_send_without_locks() {
     static DROPS: AtomicUsize = AtomicUsize::new(0);
     struct ReentrantObject {
-        endpoint: alloc::sync::Weak<SpinLock<Channel>>,
+        endpoint: alloc::sync::Weak<Channel>,
     }
     impl KernelObject for ReentrantObject {
         fn type_name(&self) -> &'static str {
@@ -157,14 +157,12 @@ fn rejected_send_without_locks() {
                 .endpoint
                 .upgrade()
                 .expect("rejected send lost endpoint");
-            let _guard = endpoint
-                .try_lock()
-                .expect("rejected message dropped under endpoint lock");
+            let _ = endpoint.signals();
             DROPS.fetch_add(1, Ordering::Relaxed);
         }
     }
     let before = DROPS.load(Ordering::Relaxed);
-    let (sender, _receiver) = Channel::create_with_limits(0, 64, 4);
+    let (sender, _receiver) = Channel::create_with_limits(0, 64, 4).unwrap();
     let node = CAP_NODE_ALLOCATOR
         .alloc_root(
             Arc::new(ReentrantObject {
@@ -175,14 +173,11 @@ fn rejected_send_without_locks() {
         )
         .unwrap();
     let message = ChannelMessage::new(Vec::new(), vec![node]);
-    let rejected = {
-        let mut sender = sender.lock();
-        sender.send(message)
-    };
+    let rejected = { sender.send(message) };
     let (error, message) = rejected.unwrap_err();
     assert_eq!(error, ChannelError::QueueFull);
     assert_eq!(DROPS.load(Ordering::Relaxed), before);
-    assert!(!message.handles[0].is_valid());
+    assert!(message.handles[0].is_valid());
     drop(message);
     assert_eq!(DROPS.load(Ordering::Relaxed), before + 1);
 
@@ -196,13 +191,10 @@ fn rejected_send_without_locks() {
     let branch = root.attenuate(Rights::all()).unwrap();
     let descendant = branch.attenuate(Rights::READ).unwrap();
     let alias = Arc::clone(&branch);
-    let rejected = {
-        let mut sender = sender.lock();
-        sender.send(ChannelMessage::new(Vec::new(), vec![branch]))
-    };
+    let rejected = { sender.send(ChannelMessage::new(Vec::new(), vec![branch])) };
     let (error, message) = rejected.unwrap_err();
     assert_eq!(error, ChannelError::QueueFull);
-    assert!(!alias.is_valid() && !descendant.is_valid());
+    assert!(alias.is_valid() && descendant.is_valid());
     assert!(root.is_valid());
     drop(message);
 }
@@ -314,7 +306,7 @@ fn ownership_checks() {
     let branch = root.attenuate(rights).unwrap();
     let grandchild = branch.attenuate(rights).unwrap();
     drop(ChannelMessage::new(Vec::new(), vec![Arc::clone(&branch)]));
-    assert!(!branch.is_valid() && !grandchild.is_valid());
+    assert!(branch.is_valid() && grandchild.is_valid());
     assert!(root.is_valid());
     drop(grandchild);
     drop(branch);

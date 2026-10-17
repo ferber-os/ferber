@@ -17,7 +17,7 @@ pub enum UserMemError {
     PermissionDenied,
 }
 
-fn preflight(
+pub(crate) fn preflight(
     space: &impl AddressSpace,
     start: usize,
     len: usize,

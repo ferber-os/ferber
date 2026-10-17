@@ -330,19 +330,19 @@ fn kernel_start(
         use alloc::vec::Vec;
 
         // 1. Paired endpoint creation & bidirectional messaging
-        let (ep_a, ep_b) = Channel::create();
-        assert_eq!(ep_a.lock().signals() & SIGNAL_WRITABLE, SIGNAL_WRITABLE);
-        assert_eq!(ep_b.lock().signals() & SIGNAL_WRITABLE, SIGNAL_WRITABLE);
-        assert_eq!(ep_a.lock().signals() & SIGNAL_READABLE, 0);
+        let (ep_a, ep_b) = Channel::create().expect("channel pair");
+        assert_eq!(ep_a.signals() & SIGNAL_WRITABLE, SIGNAL_WRITABLE);
+        assert_eq!(ep_b.signals() & SIGNAL_WRITABLE, SIGNAL_WRITABLE);
+        assert_eq!(ep_a.signals() & SIGNAL_READABLE, 0);
 
         let msg1 = ChannelMessage::new(vec![1, 2, 3, 4], Vec::new());
-        let sent = ep_a.lock().send(msg1);
+        let sent = ep_a.send(msg1);
         sent.expect("failed to send message on ep_a");
-        assert_eq!(ep_b.lock().signals() & SIGNAL_READABLE, SIGNAL_READABLE);
+        assert_eq!(ep_b.signals() & SIGNAL_READABLE, SIGNAL_READABLE);
 
-        let recv_b = ep_b.lock().recv().expect("failed to recv on ep_b");
+        let recv_b = ep_b.recv().expect("failed to recv on ep_b");
         assert_eq!(recv_b.bytes.as_slice(), &[1, 2, 3, 4]);
-        assert_eq!(ep_b.lock().signals() & SIGNAL_READABLE, 0);
+        assert_eq!(ep_b.signals() & SIGNAL_READABLE, 0);
         kprintln!("[ipc]     [1/4] paired endpoint creation & bidirectional messaging: ok");
 
         // 2. Capability handle move semantics (sender loses handle, receiver gains handle)
@@ -371,11 +371,11 @@ fn kernel_start(
 
         // Send message carrying the capability node
         let cap_msg = ChannelMessage::new(vec![0xAA], vec![transferred_node]);
-        let sent = ep_a.lock().send(cap_msg);
+        let sent = ep_a.send(cap_msg);
         sent.expect("send cap_msg");
 
         // Process B receives message and inserts capability into its handle table
-        let mut recv_msg = ep_b.lock().recv().expect("recv cap_msg");
+        let mut recv_msg = ep_b.recv().expect("recv cap_msg");
         let recv_node = recv_msg.handles.pop().expect("pop handle");
         let h_b = proc_b.lock().handle_table().lock()
             .transfer_recv(recv_node)
@@ -386,8 +386,8 @@ fn kernel_start(
 
         // 3. Queue bounds enforcement & peer closure signaling
         drop(ep_b);
-        assert_eq!(ep_a.lock().signals() & SIGNAL_PEER_CLOSED, SIGNAL_PEER_CLOSED);
-        let send_err = ep_a.lock().send(ChannelMessage::new(vec![9], Vec::new()));
+        assert_eq!(ep_a.signals() & SIGNAL_PEER_CLOSED, SIGNAL_PEER_CLOSED);
+        let send_err = ep_a.send(ChannelMessage::new(vec![9], Vec::new()));
         let (error, rejected) = send_err.expect_err("closed peer accepted message");
         assert_eq!(error, ChannelError::PeerClosed);
         drop(rejected);
@@ -402,6 +402,7 @@ fn kernel_start(
         assert_eq!(fc_ret.ret1, 0x22);
         kprintln!("[ipc]     [4/4] FastCall register transfer & direct thread donation: ok");
     }
+    kernel::ipc::channel::self_test();
     kprintln!("[ipc]   channel & fastcall subsystem: ok");
 
     kprintln!();

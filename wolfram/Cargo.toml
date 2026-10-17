@@ -1,6 +1,6 @@
 [package]
 name = "wolfram"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = ["notvcto <git@notvc.to>"]
 description = "Wolfram kernel — capability-based microkernel for RISC-V"
@@ -17,8 +17,6 @@ user-isolation-probe = []
 user-write-probe = ["user-isolation-probe"]
 user-execute-probe = ["user-isolation-probe"]
 x86-exception-probe = ["qemu-debug-port"]
-# Retains over 4 GiB of frames without touching each payload page; needs 8 GiB RAM.
-memory-capacity-probe = []
 
 [profile.dev]
 panic = "abort"

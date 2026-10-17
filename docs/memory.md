@@ -120,15 +120,16 @@ VMOs through halt. Exit still marks the bootstrap thread Dead and halts;
 active task reclamation and SMP remain separate work.
 
 `memory_verification: PASS` checks high code/stack permissions, absence of
-the low kernel alias, shared-upper mutation rejection, alias translations
-and accounting. The ordinary high-frame probe is currently gated on total
-managed RAM being at least 4 GiB, then searches for a free frame above 4 GiB.
-A sparse map with less than 4 GiB total can contain such a frame and still
-skip this probe. A more precise gate would test directly for allocatable
-memory above 4 GiB. With 8 GiB, `memory-capacity-probe` retains 1,049,088
-distinct frames together without touching every payload page, releases them,
-and restores accounting. Both smoke suites run the capacity probe in debug
-and release; host memory/FDT tests run with `bash scripts/memory-tests.sh`.
+the low kernel alias, shared-upper mutation rejection, and accounting. It walks
+detected RAM extents in order and verifies alias translation and supervisor
+RW/NX permissions at both ends of each extent. An ordinary owned VMO page
+exercises allocation, initial zeroing, user mapping, read/write and user copies
+after address-space activation, unmapping, and free/allocated-page accounting
+restoration. Only that owned allocation is written. This is representative
+backing verification, not an exhaustive destructive RAM test. The same checks
+run regardless of physical addresses or total RAM; no threshold-specific
+capacity build is required. Host memory/FDT tests run with
+`bash scripts/memory-tests.sh`.
 The current x86-64 release ISO has also passed these checks on physical
 hardware with 32 GiB installed: 8,240,704 managed frames across 23 extents.
 

@@ -14,6 +14,9 @@ use crate::kernel::task::{Job, Process, ProcessState, Thread, ThreadState};
 use crate::kprintln;
 use alloc::sync::Arc;
 
+#[path = "syscall_channel.rs"]
+mod channel;
+
 #[path = "syscall_probe.rs"]
 mod probe;
 
@@ -24,6 +27,9 @@ pub(crate) const SYS_HANDLE_DUPLICATE: usize = 3;
 pub(crate) const SYS_CAP_INSPECT: usize = 4;
 pub(crate) const SYS_CAP_ATTENUATE: usize = 5;
 pub(crate) const SYS_CAP_REVOKE: usize = 6;
+pub(crate) const SYS_CHAN_CREATE: usize = 7;
+pub(crate) const SYS_CHAN_SEND: usize = 8;
+pub(crate) const SYS_CHAN_RECV: usize = 9;
 
 #[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
 compile_error!("user-write-probe and user-execute-probe must run separately");
@@ -48,6 +54,7 @@ static BOOTSTRAP: SpinLock<Option<Bootstrap>> = SpinLock::new(None);
 pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     address_space_lifecycle(memory);
     probe::self_test();
+    channel::self_test();
     let process = root
         .lock()
         .create_process("user_probe")
@@ -69,7 +76,8 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
         let mut task = thread.lock();
         let physical = task.kernel_stack().frames().get(0).unwrap();
         let top = crate::kernel::memory::phys_map::phys_to_virt(physical)
-            .expect("kernel stack alias") + task.kernel_stack().size();
+            .expect("kernel stack alias")
+            + task.kernel_stack().size();
         task.set_user_stack(stack);
         task.set_state(ThreadState::Running);
         top
@@ -169,6 +177,9 @@ pub(crate) fn dispatch_for_process(
 ) -> isize {
     if nr == SYS_YIELD {
         return 0;
+    }
+    if matches!(nr, SYS_CHAN_CREATE | SYS_CHAN_SEND | SYS_CHAN_RECV) {
+        return channel::dispatch(process, nr, args);
     }
     if !matches!(
         nr,
@@ -315,6 +326,7 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
         kprintln!("[WOLFRAM_TEST] privilege_switch_roundtrip: PASS");
         kprintln!("[WOLFRAM_TEST] handle_syscalls: PASS");
         kprintln!("[WOLFRAM_TEST] capability_mutation: PASS");
+        kprintln!("[WOLFRAM_TEST] channel_syscalls: PASS");
         halt()
     }
     let result = dispatch_for_process(&process, nr, args);

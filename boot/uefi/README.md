@@ -47,16 +47,17 @@ firmware/loader memory after the handoff.
 
 Debug and release kernels now complete returning userspace syscall probes in
 QEMU/OVMF. Separate probes verify supervisor-read, RX-write, and NX-execute
-protection faults. Earlier MSI B650M-A PRO WIFI USB boots cover prior
-milestones. They do not validate this new memory discovery and high-half
-mapping transition; that still needs a fresh hardware boot.
+protection faults. The memory discovery and high-half mapping transition also
+passed a physical x86-64 boot with 32 GiB installed: 8,240,704 managed frames
+across 23 extents.
 
 Run `make x86-smoke` from the repository root to repeat the debug and release
 userspace roundtrip and protection checks, plus an invalid-opcode exception
-probe and debug/release 8 GiB capacity probes. Normal and protection boots
-require `memory_verification: PASS` before their resident marker. Capacity
-boots also require more than 4 GiB of distinct frames retained together,
-then released, and read/write/map/copy/free checks on a frame above 4 GiB.
+probe. Normal and protection boots require `memory_verification: PASS` before
+their resident marker. Verification walks detected extents, checks permanent
+aliases, exercises an owned VMO page and user copies after activation, and
+restores allocator accounting. It has no RAM-size threshold. Normal boots also
+require `channel_syscalls: PASS` for nonblocking channel IPC.
 The smoke script
 builds its kernels in a temporary target directory, so its deliberate fault
 image cannot replace the ordinary kernel intended for a USB stick.

@@ -147,10 +147,10 @@ Wolfram uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.3** adds sparse physical RAM discovery,
-allocation across discontiguous extents, and permanent high-half mappings on
-RISC-V 64 and x86-64. It manages RAM above 4 GiB and has passed the memory and
-userspace boot checks on physical x86-64 hardware with 32 GiB installed.
+Current milestone: **Uranium-238-v0.2.4** adds nonblocking capability-based
+channel syscalls on RISC-V 64 and x86-64, with transactional message and
+capability transfer. It passed the resident userspace checks on physical
+x86-64 hardware with 32 GiB installed.
 Scheduling, ELF loading, and init remain pending.
 Phase 2 concluded with `v0.1.7`.
 
@@ -178,10 +178,10 @@ make debug   # boots with GDB server on :1234
 
 `make run` executes the in-kernel checks, enters a resident user-mode probe,
 returns through yield and unknown syscalls, exercises handle operations and
-capability mutation, and exits through the kernel. A successful
-normal boot requires `memory_verification: PASS` and all three resident
-markers: `privilege_switch_roundtrip: PASS`, `handle_syscalls: PASS`, and
-`capability_mutation: PASS`, each with the
+capability mutation and nonblocking channel IPC, and exits through the kernel.
+A successful normal boot requires `memory_verification: PASS` and four resident
+markers: `privilege_switch_roundtrip: PASS`, `handle_syscalls: PASS`,
+`capability_mutation: PASS`, and `channel_syscalls: PASS`, each with the
 `[WOLFRAM_TEST]` prefix. It then halts until QEMU is stopped.
 The separate `user-isolation-probe` feature attempts a supervisor-memory read
 and expects a diagnosed user protection fault followed by
@@ -193,9 +193,9 @@ respectively. Their markers are `privilege_write_rx: PASS` and
 fault probe separately.
 
 The physical allocator uses all eligible firmware-reported RAM ranges from
-the RISC-V device tree or x86-64 UEFI map, including discontiguous ranges and
-RAM above 4 GiB. Reserved ranges, the kernel image, boot data, and allocator
-metadata remain unavailable for allocation. Both ports run the kernel in the
+the RISC-V device tree or x86-64 UEFI map, including discontiguous ranges.
+Reserved ranges, the kernel image, boot data, and allocator metadata remain
+unavailable for allocation. Both ports run the kernel in the
 high half with permanent supervisor mappings and packed RAM aliases. Sv39's
 RAM-alias window is 248 GiB; x86-64 uses four-level paging and the CPU's
 physical-address width. Unsupported capacity is rejected rather than
@@ -208,13 +208,15 @@ QEMU/OVMF. `bash scripts/riscv-smoke.sh` and `make x86-smoke` check normal,
 supervisor-read, RX-write, and NX-execute boots in debug and release builds.
 The x86 roundtrip also checks hostile user direction flags, kernel entry
 flags, and sanitized return flags with preserved arithmetic flags. The x86
-suite retains its deliberate invalid-opcode exception check. Both suites also
-include debug and release 8 GiB capacity probes that retain and release more
-than 4 GiB of distinct frames and exercise an actual frame above 4 GiB.
+suite retains its deliberate invalid-opcode exception check. Every ordinary
+boot checks the discovered RAM extents, permanent mappings, owned-page
+allocation and user copies, and accounting restoration without a RAM-size
+threshold or a separate capacity build.
 `bash scripts/x86-iso-smoke.sh` additionally boots a release-profile ISO
 through OVMF's CD-ROM path using the shared release packaging script. Its
 kernel enables only `qemu-debug-port` diagnostics for automated log capture;
-it is not byte-identical to the published kernel. CI runs all three suites.
+it is not byte-identical to the published kernel. CI runs all three suites and
+the host channel concurrency/allocation-failure regressions (`bash scripts/channel-tests.sh`).
 `scripts/x86-preview.sh`
 builds the actual bare-metal kernel and checks the ELF that the loader expects;
 see the [UEFI loader notes](boot/uefi/README.md) for build and packaging steps.
@@ -229,7 +231,8 @@ The resident ABI uses Linux-style argument registers with Wolfram syscall
 numbers: `0` is an immediate-return yield hint, `1` exits the resident thread,
 `2` closes a handle, `3` duplicates a handle, `4` inspects its type and
 rights, `5` derives a capability with equal or fewer rights, and `6` revokes a
-capability and its descendants. Attenuation requires `DUPLICATE`; revocation
+capability and its descendants. Calls `7`–`9` create channels and send/receive
+messages without blocking. Attenuation requires `DUPLICATE`; revocation
 requires `MANAGE`. Unknown numbers return `-38`. This is not musl compatibility.
 The probe process starts with zero handles, then receives explicitly delegated test
 capabilities. See the [syscall ABI](docs/syscall-abi.md) for rights, errors,

@@ -34,11 +34,27 @@ const OUTCOMES: [(usize, isize); 24] = [
     (SYS_CAP_REVOKE, -116),
 ];
 const _: () = assert!(OUTCOMES.len() < u32::BITS as usize);
+const CHANNEL_OUTCOMES: [(usize, isize); 13] = [
+    (SYS_CHAN_CREATE, 0),
+    (SYS_CHAN_CREATE, -14),
+    (SYS_CHAN_SEND, 0),
+    (SYS_CHAN_SEND, -14),
+    (SYS_CHAN_SEND, -22),
+    (SYS_CHAN_SEND, -13),
+    (SYS_CHAN_SEND, -32),
+    (SYS_CHAN_RECV, 0),
+    (SYS_CHAN_RECV, -11),
+    (SYS_CHAN_RECV, -90),
+    (SYS_CHAN_RECV, -14),
+    (SYS_CHAN_RECV, -13),
+    (SYS_CHAN_RECV, -32),
+];
 
 pub(super) struct Observer {
     calls: usize,
     valid: bool,
     outcomes: u32,
+    channel_outcomes: u32,
 }
 
 impl Observer {
@@ -47,6 +63,7 @@ impl Observer {
             calls: 0,
             valid: true,
             outcomes: 0,
+            channel_outcomes: 0,
         }
     }
 
@@ -66,7 +83,12 @@ impl Observer {
                 } else {
                     result
                 };
-            let observed_nr = if nr > SYS_CAP_REVOKE { 99 } else { nr };
+            for (index, &(expected_nr, expected_result)) in CHANNEL_OUTCOMES.iter().enumerate() {
+                if nr == expected_nr && result == expected_result {
+                    self.channel_outcomes |= 1 << index;
+                }
+            }
+            let observed_nr = if nr > SYS_CHAN_RECV { 99 } else { nr };
             for (index, &(expected_nr, expected_result)) in OUTCOMES.iter().enumerate() {
                 if observed_nr == expected_nr && normalized == expected_result {
                     self.outcomes |= 1 << index;
@@ -94,6 +116,11 @@ impl Observer {
             (1u32 << OUTCOMES.len()) - 1,
             "incomplete capability syscall coverage"
         );
+        assert_eq!(
+            self.channel_outcomes,
+            (1u32 << CHANNEL_OUTCOMES.len()) - 1,
+            "incomplete channel syscall coverage"
+        );
         assert_eq!(handles, 0, "user probe leaked handles");
     }
 }
@@ -105,7 +132,8 @@ pub(super) struct Fixtures {
 impl Fixtures {
     pub(super) fn delegate(process: &Process) -> Self {
         let object: Arc<dyn KernelObject> = Arc::new(Vmo::create(4096).expect("fixture VMO"));
-        let full = Rights::DUPLICATE | Rights::INSPECT | Rights::READ | Rights::MANAGE;
+        let full =
+            Rights::DUPLICATE | Rights::TRANSFER | Rights::INSPECT | Rights::READ | Rights::MANAGE;
         let nodes = [full, Rights::READ, full].map(|rights| {
             CAP_NODE_ALLOCATOR
                 .alloc_root(Arc::clone(&object), ObjectType::Vmo, rights)
@@ -165,7 +193,7 @@ pub(super) fn self_test() {
     assert_eq!(call(SYS_CAP_INSPECT, 0, BASE + 4092), 0);
     let mut bytes = [0; 8];
     backing.read(4092, &mut bytes).unwrap();
-    assert_eq!(bytes, [2, 0, 0, 0, 5, 3, 0, 0]);
+    assert_eq!(bytes, [2, 0, 0, 0, 7, 3, 0, 0]);
     for (handle, error) in [(1, -13), (2, -116), (256, -9)] {
         assert_eq!(
             call(SYS_CAP_INSPECT, handle, 0),
@@ -222,7 +250,7 @@ pub(super) fn self_test() {
     }
     assert_eq!(process.lock().handle_table().lock().count(), 256);
     let nodes_before = CAP_NODE_ALLOCATOR.live_count();
-    assert_eq!(call(SYS_CAP_ATTENUATE, 3, 0x305), -24);
+    assert_eq!(call(SYS_CAP_ATTENUATE, 3, 0x307), -24);
     assert_eq!(
         CAP_NODE_ALLOCATOR.live_count(),
         nodes_before,

@@ -121,7 +121,7 @@ x86_enter_user:
     jne 9f
 .endm
 
-.macro CHECK_INSPECT rights=0x305
+.macro CHECK_INSPECT rights=0x307
     cmp dword ptr [rsi], 2
     jne 9f
     cmp dword ptr [rsi + 4], \rights
@@ -244,7 +244,7 @@ x86_user_probe_start:
     jne 9f
     HANDLE_CALL {sys_handle_duplicate}, -13
     HANDLE_CALL {sys_cap_revoke}, -13
-    mov esi, 0x305
+    mov esi, 0x307
     HANDLE_CALL {sys_cap_attenuate}, -13
     mov rsi, {user_stack} + 128
     mov edi, 2
@@ -253,7 +253,7 @@ x86_user_probe_start:
     jne 9f
     HANDLE_CALL {sys_handle_duplicate}, -116
     HANDLE_CALL {sys_cap_revoke}, -116
-    mov esi, 0x305
+    mov esi, 0x307
     HANDLE_CALL {sys_cap_attenuate}, -116
     mov rsi, {user_stack} + 128
     HANDLE_CALL {sys_handle_close}, 0
@@ -313,7 +313,7 @@ x86_user_probe_start:
 
     # Equal rights still create a distinct branch; attenuation preserves its parent.
     xor edi, edi
-    mov esi, 0x305
+    mov esi, 0x307
     HANDLE_CALL {sys_cap_attenuate}, 2
     mov esi, 0x104
     HANDLE_CALL {sys_cap_attenuate}, 3
@@ -340,7 +340,7 @@ x86_user_probe_start:
         mov rsi, {user_stack} + 128
         HANDLE_CALL {sys_cap_inspect}, -116
         HANDLE_CALL {sys_handle_duplicate}, -116
-        mov esi, 0x305
+        mov esi, 0x307
         HANDLE_CALL {sys_cap_attenuate}, -116
         HANDLE_CALL {sys_cap_revoke}, -116
         HANDLE_CALL {sys_handle_close}, 0
@@ -363,7 +363,7 @@ x86_user_probe_start:
     cmp r12, 256
     jne .Lfill_handles
     HANDLE_CALL {sys_handle_duplicate}, -24
-    mov esi, 0x305
+    mov esi, 0x307
     HANDLE_CALL {sys_cap_attenuate}, -24
     mov rsi, {user_stack} + 128
     HANDLE_CALL {sys_cap_inspect}, 0
@@ -377,12 +377,116 @@ x86_user_probe_start:
 .Lclose_handles:
     HANDLE_CALL {sys_handle_close}, 0
     inc edi
-    cmp edi, 256
+    cmp edi, 255
     jne .Lclose_handles
     xor edi, edi
     HANDLE_CALL {sys_handle_close}, -9
     HANDLE_CALL {sys_handle_duplicate}, -9
     HANDLE_CALL {sys_cap_inspect}, -9
+    # One delegated VMO alias remains in slot 255 for transfer.
+    xor edi, edi
+    HANDLE_CALL {sys_chan_create}, -14
+    mov rdi, {user_stack} + 1024
+    HANDLE_CALL {sys_chan_create}, 0
+    mov rbx, {user_stack} + 1024
+    cmp dword ptr [rbx], 0
+    jne 9f
+    cmp dword ptr [rbx + 4], 1
+    jne 9f
+
+    .macro CHANNEL_RECV result, capacity=4, counts=({user_stack}+1088), endpoint=1
+    mov edi, \endpoint
+    mov rsi, {user_stack} + 1072
+    mov edx, \capacity
+    mov r10, {user_stack} + 1080
+    mov r8d, 1
+    mov r9, \counts
+    HANDLE_CALL {sys_chan_recv}, \result
+    .endm
+    CHANNEL_RECV -11
+    mov rbx, {user_stack} + 1056
+    mov dword ptr [rbx], 0x74c53819
+    mov dword ptr [rbx + 8], 255
+    xor edi, edi
+    xor esi, esi
+    mov edx, 4
+    mov r10, {user_stack} + 1064
+    mov r8d, 1
+    HANDLE_CALL {sys_chan_send}, -14
+    xor edi, edi
+    mov rsi, {user_stack} + 1056
+    HANDLE_CALL {sys_chan_send}, 0
+    mov edi, 255
+    HANDLE_CALL {sys_handle_close}, -9
+    CHANNEL_RECV -90, 3
+    CHANNEL_RECV -14, 4, 0
+    CHANNEL_RECV 0
+    mov rbx, {user_stack} + 1088
+    cmp dword ptr [rbx], 4
+    jne 9f
+    cmp dword ptr [rbx + 4], 1
+    jne 9f
+    mov rbx, {user_stack} + 1072
+    cmp dword ptr [rbx], 0x74c53819
+    jne 9f
+    cmp dword ptr [rbx + 8], 2
+    jne 9f
+    mov edi, 2
+    mov rsi, {user_stack} + 512
+    HANDLE_CALL {sys_cap_inspect}, 0
+    CHECK_INSPECT
+    HANDLE_CALL {sys_handle_close}, 0
+    mov rbx, {user_stack} + 1064
+    mov dword ptr [rbx], 0
+    xor edi, edi
+    xor esi, esi
+    xor edx, edx
+    mov r10, {user_stack} + 1064
+    mov r8d, 1
+    HANDLE_CALL {sys_chan_send}, -22
+    xor edi, edi
+    mov esi, 4
+    HANDLE_CALL {sys_cap_attenuate}, 2
+    mov edi, 2
+    xor esi, esi
+    xor edx, edx
+    xor r10d, r10d
+    xor r8d, r8d
+    HANDLE_CALL {sys_chan_send}, -13
+    HANDLE_CALL {sys_handle_close}, 0
+    mov edi, 1
+    mov esi, 8
+    HANDLE_CALL {sys_cap_attenuate}, 2
+    mov edi, 2
+    HANDLE_CALL {sys_chan_recv}, -13
+    HANDLE_CALL {sys_handle_close}, 0
+    xor edi, edi
+    xor esi, esi
+    xor edx, edx
+    xor r10d, r10d
+    xor r8d, r8d
+    HANDLE_CALL {sys_chan_send}, 0
+    CHANNEL_RECV 0, 0
+    mov rbx, {user_stack} + 1088
+    cmp qword ptr [rbx], 0
+    jne 9f
+    mov edi, 1
+    mov rsi, {user_stack} + 1056
+    mov edx, 4
+    xor r10d, r10d
+    xor r8d, r8d
+    HANDLE_CALL {sys_chan_send}, 0
+    mov edi, 1
+    HANDLE_CALL {sys_handle_close}, 0
+    CHANNEL_RECV 0, 4, ({user_stack}+1088), 0
+    CHANNEL_RECV -32, 4, ({user_stack}+1088), 0
+    xor edi, edi
+    xor esi, esi
+    xor edx, edx
+    xor r10d, r10d
+    xor r8d, r8d
+    HANDLE_CALL {sys_chan_send}, -32
+    HANDLE_CALL {sys_handle_close}, 0
     add rsp, 128
     xor edi, edi
     jmp 10f

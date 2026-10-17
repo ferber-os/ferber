@@ -391,7 +391,7 @@ riscv_user_probe_start:
     checked {sys_yield}, 0
     checked 100, -38
     checked 99, -38
-    .macro check_info address, rights=0x305, failure=.Luser_fail
+    .macro check_info address, rights=0x307, failure=.Luser_fail
     li t0, \address
     li t1, ((\rights << 32) | 2)
     li t2, 8
@@ -462,19 +462,19 @@ riscv_user_probe_start:
     check_info ({user_stack} + 512), \rights, .Lmutation_fail
     .endm
 .Lmutation_start:
-    mutate 256, 0x305, -9
+    mutate 256, 0x307, -9
     cap {sys_revoke}, 256, -9, .Lmutation_fail
-    mutate 0x100000003, 0x305, -9
+    mutate 0x100000003, 0x307, -9
     cap {sys_revoke}, 0x100000003, -9, .Lmutation_fail
     mutate 3, 0x400, -22
     mutate 3, 0x100000305, -22
     mutate 3, 0x30d, -13
     // Equal-right child, independently derived sibling, and grandchild.
-    mutate 3, 0x305, 0
+    mutate 3, 0x307, 0
     mutate 3, 0x104, 1
     mutate 0, 0x104, 2
     cap {sys_duplicate}, 0, 4, .Lmutation_fail
-    mutation_inspect 0, 0x305
+    mutation_inspect 0, 0x307
     mutation_inspect 1, 0x104
     mutation_inspect 2, 0x104
     // Revoking through an alias kills this branch, not its parent or sibling.
@@ -488,7 +488,7 @@ riscv_user_probe_start:
     cap {sys_revoke}, 0, -116, .Lmutation_fail
     cap {sys_revoke}, 4, -116, .Lmutation_fail
     cap {sys_revoke}, 2, -116, .Lmutation_fail
-    mutation_inspect 3, 0x305
+    mutation_inspect 3, 0x307
     mutation_inspect 1, 0x104
     cap {sys_revoke}, 1, -13, .Lmutation_fail
     // Empty authority is a valid child, with no rights to inspect or mutate it.
@@ -515,7 +515,7 @@ riscv_user_probe_start:
     li t0, 256
     blt s0, t0, .Lfill_handles
     cap {sys_duplicate}, 3, -24
-    li a1, 0x305
+    li a1, 0x307
     cap {sys_attenuate}, 3, -24
     cap {sys_close}, 255, 0
     cap {sys_duplicate}, 3, 255
@@ -524,9 +524,113 @@ riscv_user_probe_start:
     mv a0, s0
     checked {sys_close}, 0
     addi s0, s0, 1
-    li t0, 256
+    li t0, 255
     blt s0, t0, .Lclose_handles
+    // Keep one explicitly delegated VMO alias for the channel move test.
+    li a0, 0
+    checked {sys_chan_create}, -14
+    li a0, ({user_stack} + 1024)
+    checked {sys_chan_create}, 0
+    li t0, ({user_stack} + 1024)
+    lwu s0, 0(t0)
+    lwu s1, 4(t0)
+    bnez s0, .Luser_fail
+    li t1, 1
+    bne s1, t1, .Luser_fail
+
+    .macro channel_recv result, capacity=4, counts=({user_stack}+1088)
+    mv a0, s1
+    li a1, ({user_stack} + 1072)
+    li a2, \capacity
+    li a3, ({user_stack} + 1080)
+    li a4, 1
+    li a5, \counts
+    checked {sys_chan_recv}, \result
+    .endm
+    channel_recv -11
+    li t0, ({user_stack} + 1056)
+    li t1, 0x74c53819
+    sw t1, 0(t0)
+    li t1, 255
+    sw t1, 8(t0)
+    mv a0, s0
+    li a1, 0
+    li a2, 4
+    li a3, ({user_stack} + 1064)
+    li a4, 1
+    checked {sys_chan_send}, -14
+    mv a0, s0
+    li a1, ({user_stack} + 1056)
+    checked {sys_chan_send}, 0
     cap {sys_close}, 255, -9
+    channel_recv -90, 3
+    channel_recv -14, 4, 0
+    channel_recv 0
+    li t0, ({user_stack} + 1088)
+    lwu t1, 0(t0)
+    li t2, 4
+    bne t1, t2, .Luser_fail
+    lwu t1, 4(t0)
+    li t2, 1
+    bne t1, t2, .Luser_fail
+    li t0, ({user_stack} + 1072)
+    lwu t1, 0(t0)
+    li t2, 0x74c53819
+    bne t1, t2, .Luser_fail
+    lwu t1, 8(t0)
+    li t2, 2
+    bne t1, t2, .Luser_fail
+    li a1, ({user_stack} + 512)
+    cap {sys_inspect}, 2, 0
+    check_info ({user_stack} + 512)
+    cap {sys_close}, 2, 0
+    // Endpoint payloads are deferred until cyclic ownership is supported.
+    li t0, ({user_stack} + 1064)
+    sw s0, 0(t0)
+    mv a0, s0
+    li a1, 0
+    li a2, 0
+    li a3, ({user_stack} + 1064)
+    li a4, 1
+    checked {sys_chan_send}, -22
+    li a1, 4
+    cap {sys_attenuate}, 0, 2
+    li a1, 0
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    cap {sys_chan_send}, 2, -13
+    cap {sys_close}, 2, 0
+    li a1, 8
+    cap {sys_attenuate}, 1, 2
+    cap {sys_chan_recv}, 2, -13
+    cap {sys_close}, 2, 0
+    li a1, 0
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    cap {sys_chan_send}, 0, 0
+    channel_recv 0, 0
+    li t0, ({user_stack} + 1088)
+    ld t1, 0(t0)
+    bnez t1, .Luser_fail
+    // Queued data is delivered after closure, then both operations report closure.
+    mv a0, s1
+    li a1, ({user_stack} + 1056)
+    li a2, 4
+    li a3, 0
+    li a4, 0
+    checked {sys_chan_send}, 0
+    cap {sys_close}, 1, 0
+    mv s1, s0
+    channel_recv 0
+    channel_recv -32
+    li a1, 0
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    cap {sys_chan_send}, 0, -32
+    cap {sys_close}, 0, 0
     li a0, 0
     j .Luser_exit
     .globl riscv_user_probe_end
