@@ -1,4 +1,4 @@
-# Wolfram Architecture
+# Ferber Architecture
 
 Six locked decisions. These cannot be reversed.
 Everything else in the kernel is built on top of them.

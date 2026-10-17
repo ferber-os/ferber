@@ -3,9 +3,9 @@
 #![allow(dead_code)]
 extern crate alloc;
 
-#[path = "../wolfram/src/kernel/ipc/channel.rs"]
+#[path = "../ferber/src/kernel/ipc/channel.rs"]
 mod channel;
-#[path = "../wolfram/src/kernel/sync.rs"]
+#[path = "../ferber/src/kernel/sync.rs"]
 pub mod sync;
 
 // Only capability ownership is needed here; in-kernel tests use real CapNodes.

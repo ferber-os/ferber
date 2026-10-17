@@ -1,4 +1,4 @@
-//! Wolfram Kernel Panic Handler
+//! Ferber Kernel Panic Handler
 //!
 //! Informative. Honest. Occasionally funny.
 //! Always ends with a signoff.
@@ -15,7 +15,7 @@ pub fn kernel_panic(info: &core::panic::PanicInfo) -> ! {
 
     kprintln!();
     kprintln!("════════════════════════════════════════════");
-    kprintln!("  W O L F R A M   K E R N E L   P A N I C  ");
+    kprintln!("  F E R B E R   K E R N E L   P A N I C  ");
     kprintln!("════════════════════════════════════════════");
     kprintln!();
 
@@ -32,7 +32,7 @@ pub fn kernel_panic(info: &core::panic::PanicInfo) -> ! {
 
     kprintln!("  panic count: {} (including this one)", count);
     kprintln!();
-    kprintln!("  github.com/notvcto/wolfram-os/issues");
+    kprintln!("  github.com/notvcto/ferber/issues");
     kprintln!();
     kprintln!("  {}", sign_off(&s));
     kprintln!("════════════════════════════════════════════");

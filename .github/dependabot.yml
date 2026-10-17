@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: /wolfram
+    directory: /ferber
     schedule:
       interval: weekly
 

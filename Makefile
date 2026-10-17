@@ -1,11 +1,11 @@
-KERNEL := wolfram/target/riscv64gc-unknown-none-elf/debug/wolfram
+KERNEL := ferber/target/riscv64gc-unknown-none-elf/debug/ferber
 
 .PHONY: all build run debug x86-preview x86-smoke x86-iso clean
 
 all: build
 
 build:
-	cd wolfram && cargo build
+	cd ferber && cargo build
 
 run: build
 	qemu-system-riscv64 \
@@ -33,7 +33,7 @@ x86-smoke:
 x86-iso:
 	scripts/x86-preview.sh --release
 	cd boot/uefi && cargo +nightly build --release --target x86_64-unknown-uefi
-	bash scripts/build-iso.sh wolfram/target/x86_64-unknown-none/release/wolfram boot/uefi/target/x86_64-unknown-uefi/release/wolfram-uefi-loader.efi wolfram.iso
+	bash scripts/build-iso.sh ferber/target/x86_64-unknown-none/release/ferber boot/uefi/target/x86_64-unknown-uefi/release/ferber-uefi-loader.efi ferber.iso
 
 clean:
-	cd wolfram && cargo clean
+	cd ferber && cargo clean

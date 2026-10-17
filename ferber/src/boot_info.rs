@@ -3,7 +3,7 @@
 //! Physical reservation addresses and readable virtual pointers are separate.
 //! The provider retains the handoff and memory map through memory initialization.
 
-pub const BOOT_INFO_MAGIC: u64 = 0x574f_4c46_5241_4d21; // "WOLFRAM!"
+pub const BOOT_INFO_MAGIC: u64 = 0x574f_4c46_5241_4d21; // Stable loader/kernel handoff identifier.
 pub const BOOT_INFO_VERSION: u32 = 2;
 #[cfg(target_arch = "x86_64")]
 pub const BOOT_DATA_BASE: u64 = 0xffff_fffe_0000_0000;

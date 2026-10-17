@@ -1,4 +1,4 @@
-//! Wolfram Memory System
+//! Ferber Memory System
 //! VMO-everything. No anonymous memory. No implicit backing. Ever.
 
 pub mod bitmap;

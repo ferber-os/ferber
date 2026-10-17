@@ -1,6 +1,6 @@
 # Resident Syscall ABI
 
-Wolfram uses Linux-style argument registers with its own syscall numbers.
+Ferber uses Linux-style argument registers with its own syscall numbers.
 This ABI currently runs one resident task on one active CPU. It does not provide
 Linux or musl compatibility, scheduling, or complete task/exit reclamation.
 
@@ -193,10 +193,10 @@ coverage as a failed run, with a kernel panic rather than success markers.
 A successful normal boot emits exactly one of each marker:
 
 ```text
-[WOLFRAM_TEST] privilege_switch_roundtrip: PASS
-[WOLFRAM_TEST] handle_syscalls: PASS
-[WOLFRAM_TEST] capability_mutation: PASS
-[WOLFRAM_TEST] channel_syscalls: PASS
+[FERBER_TEST] privilege_switch_roundtrip: PASS
+[FERBER_TEST] handle_syscalls: PASS
+[FERBER_TEST] capability_mutation: PASS
+[FERBER_TEST] channel_syscalls: PASS
 ```
 
 Isolation, RX-write, and NX-execute probes remain separate builds without these

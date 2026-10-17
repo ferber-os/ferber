@@ -1,6 +1,6 @@
-# Wolfram Memory Model
+# Ferber Memory Model
 
-Wolfram is a "VMO-everything" system.
+Ferber is a "VMO-everything" system.
 
 ## Virtual Memory Objects (VMOs)
 Every region of virtual memory is backed by a named kernel object called a VMO.
@@ -59,7 +59,7 @@ Unknown device ranges do not become ordinary RAM aliases.
 
 ## Paging HAL & Architecture Parity
 
-Hardware page tables are managed through the architecture-agnostic `AddressSpace` trait (`wolfram/src/kernel/memory/paging.rs`). The kernel core never manipulates hardware page table entries directly.
+Hardware page tables are managed through the architecture-agnostic `AddressSpace` trait (`ferber/src/kernel/memory/paging.rs`). The kernel core never manipulates hardware page table entries directly.
 
 - **RISC-V 64 (Sv39):**
   - 3-level page table walk (`VPN[2..0]`).

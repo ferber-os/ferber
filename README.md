@@ -1,21 +1,24 @@
-<h1 align="center">Wolfram</h1>
+<h1 align="center">Ferber</h1>
+
+Ferber was previously called Wolfram.
+
 <p align="center">
   <em>A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch.</em>
 </p>
 
 <p align="center">
-  <a href="https://github.com/notvcto/wolfram-os/actions/workflows/ci.yml"><img src="https://github.com/notvcto/wolfram-os/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/notvcto/wolfram-os/releases"><img src="https://img.shields.io/github/v/release/notvcto/wolfram-os?include_prereleases&color=blue" alt="Release"></a>
-  <a href="https://github.com/notvcto/wolfram-os/stargazers"><img src="https://img.shields.io/github/stars/notvcto/wolfram-os?style=social" alt="Stars"></a>
-  <a href="https://github.com/notvcto/wolfram-os/network/members"><img src="https://img.shields.io/github/forks/notvcto/wolfram-os?style=social" alt="Forks"></a>
-  <a href="https://github.com/notvcto/wolfram-os/issues"><img src="https://img.shields.io/github/issues/notvcto/wolfram-os" alt="Issues"></a>
-  <a href="https://github.com/notvcto/wolfram-os/pulls"><img src="https://img.shields.io/github/issues-pr/notvcto/wolfram-os" alt="Pull Requests"></a>
+  <a href="https://github.com/notvcto/ferber/actions/workflows/ci.yml"><img src="https://github.com/notvcto/ferber/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/notvcto/ferber/releases"><img src="https://img.shields.io/github/v/release/notvcto/ferber?include_prereleases&color=blue" alt="Release"></a>
+  <a href="https://github.com/notvcto/ferber/stargazers"><img src="https://img.shields.io/github/stars/notvcto/ferber?style=social" alt="Stars"></a>
+  <a href="https://github.com/notvcto/ferber/network/members"><img src="https://img.shields.io/github/forks/notvcto/ferber?style=social" alt="Forks"></a>
+  <a href="https://github.com/notvcto/ferber/issues"><img src="https://img.shields.io/github/issues/notvcto/ferber" alt="Issues"></a>
+  <a href="https://github.com/notvcto/ferber/pulls"><img src="https://img.shields.io/github/issues-pr/notvcto/ferber" alt="Pull Requests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--2.0--only-blue" alt="License"></a>
 </p>
 
 <br>
 
-Wolfram is a microkernel operating system written in Rust. RISC-V 64 is its
+Ferber is a microkernel operating system written in Rust. RISC-V 64 is its
 current QEMU reference port; x86-64 UEFI is the next physical-hardware target.
 It is not a Linux distribution. It is not a fork. It is a kernel built from first principles around
 one idea: **programs should not have access to anything they weren't explicitly given.**
@@ -35,13 +38,13 @@ In most operating systems, security is a layer on top of the kernel.
 Permission bits, UIDs, ACLs, SELinux policies. All of these are answers to the question
 "should this process be allowed to do this?" asked after the process already named the resource.
 
-Wolfram asks a different question: **how did this process get a reference to that resource at all?**
+Ferber asks a different question: **how did this process get a reference to that resource at all?**
 
 If it doesn't have a handle, it can't name it. If it can't name it, the question never arises.
 Capability possession *is* the permission. There is no separate check.
 
 This is called capability-based security. It is not a new idea.
-Wolfram is a new implementation of it, in Rust, for modern hardware,
+Ferber is a new implementation of it, in Rust, for modern hardware,
 with zero legacy constraints and zero tolerance for ambient authority.
 
 ---
@@ -49,7 +52,7 @@ with zero legacy constraints and zero tolerance for ambient authority.
 ## Architecture
 
 ```
-Wolfram Kernel (microkernel)
+Ferber Kernel (microkernel)
 ├── Capability enforcement     — the core. handle tables, rights, attenuation, revocation.
 ├── Scheduler                  — jobs → processes → threads. no fork. no ambient inheritance.
 ├── IPC                        — async channels + FastCall. handle transfer is move semantics.
@@ -57,7 +60,7 @@ Wolfram Kernel (microkernel)
 └── HAL                        — architecture abstraction. RISC-V and x86-64 first.
 
 Ferrum (userspace foundation)
-├── libc port                  — musl-based, Wolfram syscall ABI
+├── libc port                  — musl-based, Ferber syscall ABI
 ├── VFS server                 — filesystem abstraction as a capability service
 ├── Driver framework           — userspace drivers, MMIO via Physical VMO
 └── Init                       — job tree root. everything descends from here.
@@ -112,7 +115,7 @@ The kernel catches everything else.
 
 ---
 
-## What Wolfram Is Not
+## What Ferber Is Not
 
 - Not a Linux distribution
 - Not a Linux replacement (yet)
@@ -123,7 +126,7 @@ The kernel catches everything else.
 
 ---
 
-## What Wolfram Will Be
+## What Ferber Will Be
 
 - A kernel you can understand completely
 - A security model that isn't bolted on
@@ -135,7 +138,7 @@ The kernel catches everything else.
 
 ## Versioning
 
-Wolfram uses element names for releases.
+Ferber uses element names for releases.
 
 | Tier | Elements | Meaning |
 |---|---|---|
@@ -170,8 +173,8 @@ Requirements:
 - A tolerance for triple faults
 
 ```bash
-git clone https://github.com/notvcto/wolfram-os
-cd wolfram-os
+git clone https://github.com/notvcto/ferber
+cd ferber
 make run     # boots in QEMU
 make debug   # boots with GDB server on :1234
 ```
@@ -182,14 +185,14 @@ capability mutation and nonblocking channel IPC, and exits through the kernel.
 A successful normal boot requires `memory_verification: PASS` and four resident
 markers: `privilege_switch_roundtrip: PASS`, `handle_syscalls: PASS`,
 `capability_mutation: PASS`, and `channel_syscalls: PASS`, each with the
-`[WOLFRAM_TEST]` prefix. It then halts until QEMU is stopped.
+`[FERBER_TEST]` prefix. It then halts until QEMU is stopped.
 The separate `user-isolation-probe` feature attempts a supervisor-memory read
 and expects a diagnosed user protection fault followed by
-`[WOLFRAM_TEST] privilege_isolation: PASS`.
+`[FERBER_TEST] privilege_isolation: PASS`.
 The separate `user-write-probe` and `user-execute-probe` features require a
 user protection fault when writing RX code or entering an NX code page,
 respectively. Their markers are `privilege_write_rx: PASS` and
-`privilege_execute_nx: PASS`, with the same `[WOLFRAM_TEST]` prefix. Run each
+`privilege_execute_nx: PASS`, with the same `[FERBER_TEST]` prefix. Run each
 fault probe separately.
 
 The physical allocator uses all eligible firmware-reported RAM ranges from
@@ -227,7 +230,7 @@ implementation on physical x86-64 hardware, reaching all three normal PASS
 markers and the expected halt. That run preceded the version metadata bump.
 Dedicated protection-fault builds remain validated in QEMU.
 
-The resident ABI uses Linux-style argument registers with Wolfram syscall
+The resident ABI uses Linux-style argument registers with Ferber syscall
 numbers: `0` is an immediate-return yield hint, `1` exits the resident thread,
 `2` closes a handle, `3` duplicates a handle, `4` inspects its type and
 rights, `5` derives a capability with equal or fewer rights, and `6` revokes a
@@ -278,8 +281,8 @@ Non-code contributions are also welcome.
 ## Special thanks to our contributors:
 
 <p align="center">
-  <a href="https://github.com/notvcto/wolfram-os/graphs/contributors">
-    <img src="https://contrib.rocks/image?repo=notvcto/wolfram-os" alt="Contributors" />
+  <a href="https://github.com/notvcto/ferber/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=notvcto/ferber" alt="Contributors" />
   </a>
 </p>
 

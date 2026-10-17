@@ -1,4 +1,4 @@
-//! Buddy Allocator for the Wolfram Kernel Heap.
+//! Buddy Allocator for the Ferber Kernel Heap.
 //!
 //! Provides dynamic memory for kernel objects (Capabilities, VMO structs, etc).
 //! Max buddy size is 4 KiB (1 page). Allocations > 4 KiB are forwarded directly

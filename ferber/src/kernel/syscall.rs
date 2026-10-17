@@ -1,5 +1,5 @@
-//! Wolfram syscall ABI. Object operations require explicit handles; yield and
-//! exit operate on the current task. Linux-style registers, Wolfram numbers.
+//! Ferber syscall ABI. Object operations require explicit handles; yield and
+//! exit operate on the current task. Linux-style registers, Ferber numbers.
 
 use crate::arch::{self, ArchAddressSpace};
 use crate::kernel::capabilities::{CapError, Rights};
@@ -323,10 +323,10 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
             let task = bootstrap.as_ref().unwrap();
             task.probe.finish(args[0], count, task.isolation);
         }
-        kprintln!("[WOLFRAM_TEST] privilege_switch_roundtrip: PASS");
-        kprintln!("[WOLFRAM_TEST] handle_syscalls: PASS");
-        kprintln!("[WOLFRAM_TEST] capability_mutation: PASS");
-        kprintln!("[WOLFRAM_TEST] channel_syscalls: PASS");
+        kprintln!("[FERBER_TEST] privilege_switch_roundtrip: PASS");
+        kprintln!("[FERBER_TEST] handle_syscalls: PASS");
+        kprintln!("[FERBER_TEST] capability_mutation: PASS");
+        kprintln!("[FERBER_TEST] channel_syscalls: PASS");
         halt()
     }
     let result = dispatch_for_process(&process, nr, args);
@@ -377,7 +377,7 @@ pub fn user_fault(pc: usize, addr: usize, cause: usize) -> ! {
     } else {
         "privilege_isolation"
     };
-    kprintln!("[WOLFRAM_TEST] {}: PASS", marker);
+    kprintln!("[FERBER_TEST] {}: PASS", marker);
     halt()
 }
 

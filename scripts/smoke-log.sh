@@ -3,10 +3,10 @@
 smoke_log_ok() {
     local log=$1 scenario=$2 expected line='' count=0 handle_count=0 mutation_count=0 memory_count=0 channel_count=0
     case "$scenario" in
-        normal) expected='[WOLFRAM_TEST] privilege_switch_roundtrip: PASS' ;;
-        isolation) expected='[WOLFRAM_TEST] privilege_isolation: PASS' ;;
-        write-rx) expected='[WOLFRAM_TEST] privilege_write_rx: PASS' ;;
-        execute-nx) expected='[WOLFRAM_TEST] privilege_execute_nx: PASS' ;;
+        normal) expected='[FERBER_TEST] privilege_switch_roundtrip: PASS' ;;
+        isolation) expected='[FERBER_TEST] privilege_isolation: PASS' ;;
+        write-rx) expected='[FERBER_TEST] privilege_write_rx: PASS' ;;
+        execute-nx) expected='[FERBER_TEST] privilege_execute_nx: PASS' ;;
         *) return 1 ;;
     esac
     if grep -Eiq 'FAIL|panic' "$log"; then
@@ -16,15 +16,15 @@ smoke_log_ok() {
         line=${line%$'\r'}
         if [[ "$line" == "$expected" ]]; then
             count=$((count + 1))
-        elif [[ "$scenario" == normal && "$line" == '[WOLFRAM_TEST] handle_syscalls: PASS' ]]; then
+        elif [[ "$scenario" == normal && "$line" == '[FERBER_TEST] handle_syscalls: PASS' ]]; then
             handle_count=$((handle_count + 1))
-        elif [[ "$scenario" == normal && "$line" == '[WOLFRAM_TEST] capability_mutation: PASS' ]]; then
+        elif [[ "$scenario" == normal && "$line" == '[FERBER_TEST] capability_mutation: PASS' ]]; then
             mutation_count=$((mutation_count + 1))
-        elif [[ "$scenario" == normal && "$line" == '[WOLFRAM_TEST] channel_syscalls: PASS' ]]; then
+        elif [[ "$scenario" == normal && "$line" == '[FERBER_TEST] channel_syscalls: PASS' ]]; then
             channel_count=$((channel_count + 1))
-        elif [[ "$line" == '[WOLFRAM_TEST] memory_verification: PASS' ]]; then
+        elif [[ "$line" == '[FERBER_TEST] memory_verification: PASS' ]]; then
             memory_count=$((memory_count + 1))
-        elif [[ "$line" == *'[WOLFRAM_TEST]'* ]]; then
+        elif [[ "$line" == *'[FERBER_TEST]'* ]]; then
             return 1
         fi
     done < "$log"
@@ -44,13 +44,13 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     trap 'rm -f -- "$test_log"' EXIT
     markers=(privilege_switch_roundtrip privilege_isolation privilege_write_rx privilege_execute_nx)
     scenarios=(normal isolation write-rx execute-nx)
-    handle_marker='[WOLFRAM_TEST] handle_syscalls: PASS'
-    mutation_marker='[WOLFRAM_TEST] capability_mutation: PASS'
-    memory_marker='[WOLFRAM_TEST] memory_verification: PASS'
-    channel_marker='[WOLFRAM_TEST] channel_syscalls: PASS'
+    handle_marker='[FERBER_TEST] handle_syscalls: PASS'
+    mutation_marker='[FERBER_TEST] capability_mutation: PASS'
+    memory_marker='[FERBER_TEST] memory_verification: PASS'
+    channel_marker='[FERBER_TEST] channel_syscalls: PASS'
     for index in "${!scenarios[@]}"; do
         scenario=${scenarios[index]}
-        expected="[WOLFRAM_TEST] ${markers[index]}: PASS"
+        expected="[FERBER_TEST] ${markers[index]}: PASS"
         valid="$memory_marker"$'\n'"$expected"$'\n'
         [[ "$scenario" != normal ]] || valid+="$handle_marker"$'\n'"$mutation_marker"$'\n'"$channel_marker"$'\n'
         printf '%s' "$valid" > "$test_log"
@@ -62,7 +62,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             "$valid$expected"$'\n' "$valid$handle_marker"$'\n' \
             "$valid$mutation_marker"$'\n' "$mutation_marker"$'\n' \
             "$valid$memory_marker"$'\n' "$valid$channel_marker"$'\n' \
-            "$handle_marker"$'\n' "$valid"$'[WOLFRAM_TEST] unknown: PASS\n'; do
+            "$handle_marker"$'\n' "$valid"$'[FERBER_TEST] unknown: PASS\n'; do
             printf '%s' "$text" > "$test_log"
             if smoke_log_ok "$test_log" "$scenario"; then
                 echo 'smoke log self-check accepted invalid output' >&2
@@ -80,7 +80,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         done
         for other in "${!markers[@]}"; do
             [[ "$index" != "$other" ]] || continue
-            printf '[WOLFRAM_TEST] %s: PASS\n' "${markers[other]}" > "$test_log"
+            printf '[FERBER_TEST] %s: PASS\n' "${markers[other]}" > "$test_log"
             if smoke_log_ok "$test_log" "$scenario"; then
                 echo 'smoke log self-check accepted the wrong scenario' >&2
                 exit 1

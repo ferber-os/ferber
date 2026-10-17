@@ -1,4 +1,4 @@
-//! Wolfram Kernel — entry point.
+//! Ferber Kernel — entry point.
 //!
 //! This is where the kernel starts. Everything before this
 //! was the bootloader's problem. Everything after this is ours.
@@ -50,7 +50,7 @@ fn kernel_start(
 ) -> ! {
     kprintln!("good morning. probably.");
     kprintln!();
-    kprintln!("Wolfram/{} (Uranium-238)", env!("CARGO_PKG_VERSION"));
+    kprintln!("Ferber/{} (Uranium-238)", env!("CARGO_PKG_VERSION"));
     kprintln!("capability-based microkernel — {}", board);
     kprintln!();
 

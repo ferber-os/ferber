@@ -32,14 +32,14 @@ trap 'rm -rf -- "$iso_work"' EXIT
 
 efi_img="$iso_work/efiboot.img"
 truncate -s "${img_kb}k" "$efi_img"
-mkfs.vfat -F 32 -n WOLFRAM "$efi_img" >/dev/null
+mkfs.vfat -F 32 -n FERBER "$efi_img" >/dev/null
 mmd -i "$efi_img" ::/EFI ::/EFI/BOOT
 mcopy -i "$efi_img" "$loader" ::/EFI/BOOT/BOOTX64.EFI
-mcopy -i "$efi_img" "$kernel" ::/WOLFRAM.ELF
+mcopy -i "$efi_img" "$kernel" ::/FERBER.ELF
 
 mkdir -p "$iso_work/iso/EFI/BOOT"
 cp "$efi_img" "$iso_work/iso/EFI/BOOT/efiboot.img"
-xorriso -as mkisofs -R -J -V WOLFRAM \
+xorriso -as mkisofs -R -J -V FERBER \
     -e EFI/BOOT/efiboot.img -no-emul-boot \
     -o "$output" "$iso_work/iso"
 

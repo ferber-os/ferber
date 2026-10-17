@@ -19,7 +19,7 @@ for command in qemu-system-x86_64 timeout rg; do
     fi
 done
 
-trial_dir=$(mktemp -d /tmp/wolfram-x86-iso-smoke.XXXXXX)
+trial_dir=$(mktemp -d /tmp/ferber-x86-iso-smoke.XXXXXX)
 smoke_passed=0
 cleanup() {
     if [[ "$smoke_passed" -eq 1 ]]; then
@@ -36,9 +36,9 @@ CARGO_TARGET_DIR="$trial_dir/kernel-target" \
 (cd "$repo_root/boot/uefi" && CARGO_TARGET_DIR="$trial_dir/loader-target" \
     cargo +nightly build --release --target x86_64-unknown-uefi)
 bash "$repo_root/scripts/build-iso.sh" \
-    "$trial_dir/kernel-target/x86_64-unknown-none/release/wolfram" \
-    "$trial_dir/loader-target/x86_64-unknown-uefi/release/wolfram-uefi-loader.efi" \
-    "$trial_dir/wolfram.iso"
+    "$trial_dir/kernel-target/x86_64-unknown-none/release/ferber" \
+    "$trial_dir/loader-target/x86_64-unknown-uefi/release/ferber-uefi-loader.efi" \
+    "$trial_dir/ferber.iso"
 cp -- "$ovmf_vars" "$trial_dir/OVMF_VARS.fd"
 
 log="$trial_dir/kernel.log"
@@ -48,7 +48,7 @@ timeout 12s qemu-system-x86_64 \
     -machine q35 -m 512M -smp 1 \
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
     -drive "if=pflash,format=raw,unit=1,file=$trial_dir/OVMF_VARS.fd" \
-    -cdrom "$trial_dir/wolfram.iso" -boot d \
+    -cdrom "$trial_dir/ferber.iso" -boot d \
     -vga std -display none -monitor none -serial none -no-reboot \
     -debugcon "file:$log" -global isa-debugcon.iobase=0xe9 \
     >"$qemu_log" 2>&1 || status=$?

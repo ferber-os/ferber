@@ -1,4 +1,4 @@
-# The Wolfram Capability Model
+# The Ferber Capability Model
 
 This is the most important document in the repository.
 Everything else is implementation. This is the idea.
@@ -18,10 +18,10 @@ Linux:
   authorization: UID/GID/ACL check  (kernel decides separately)
 ```
 
-In Wolfram:
+In Ferber:
 
 ```
-Wolfram:
+Ferber:
   name + authorization: the handle itself
   possession = permission. no separate check.
 ```
@@ -203,7 +203,7 @@ authorizes a cast: dispatch also checks the backing's runtime type.
 The hard problem of capability systems: once you give someone a handle,
 how do you take it back?
 
-Wolfram uses indirect capability nodes. Processes don't hold handles
+Ferber uses indirect capability nodes. Processes don't hold handles
 to objects directly — they hold handles to capability nodes that own object
 references. `sys_cap_revoke` requires `MANAGE` and invalidates the selected node
 with one Release store. Every lookup checks the node and its ancestors with
@@ -252,7 +252,7 @@ Linux:     open("/etc/passwd", O_RDONLY)
            kernel checks UID, GID, permission bits, ACLs, SELinux policy
            five separate layers asked "is this allowed"
 
-Wolfram:   file_read(passwd_handle)
+Ferber:   file_read(passwd_handle)
            kernel checks: does this process hold passwd_handle?
            does passwd_handle have READ rights?
            that's it. two checks. one data structure.

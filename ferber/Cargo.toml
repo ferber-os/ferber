@@ -1,11 +1,11 @@
 [package]
-name = "wolfram"
+name = "ferber"
 version = "0.2.4"
 edition = "2021"
 authors = ["notvcto <git@notvc.to>"]
-description = "Wolfram kernel — capability-based microkernel for RISC-V"
+description = "Ferber kernel — capability-based microkernel for RISC-V"
 license = "GPL-2.0-only"
-repository = "https://github.com/notvcto/wolfram-os"
+repository = "https://github.com/notvcto/ferber"
 
 [dependencies]
 bitflags = { version = "2.6", default-features = false }

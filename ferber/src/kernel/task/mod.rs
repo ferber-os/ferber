@@ -1,4 +1,4 @@
-//! Wolfram Task Subsystem
+//! Ferber Task Subsystem
 //!
 //! Implements the hierarchical Job -> Process -> Thread container model.
 

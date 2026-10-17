@@ -1,5 +1,5 @@
 [package]
-name = "wolfram-uefi-loader"
+name = "ferber-uefi-loader"
 version = "0.2.4"
 edition = "2021"
 publish = false

@@ -1,6 +1,6 @@
-# 🗺️ Wolfram OS Roadmap
+# 🗺️ Ferber OS Roadmap
 
-Wolfram is built from first principles around zero ambient authority: programs earn every resource they touch. Development is structured in sequential phases, maintaining strict 1:1 architectural parity across RISC-V 64 (`riscv64gc-unknown-none-elf`) and x86-64 (`x86_64-unknown-none` / UEFI).
+Ferber is built from first principles around zero ambient authority: programs earn every resource they touch. Development is structured in sequential phases, maintaining strict 1:1 architectural parity across RISC-V 64 (`riscv64gc-unknown-none-elf`) and x86-64 (`x86_64-unknown-none` / UEFI).
 
 ---
 
@@ -144,7 +144,7 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
   - [x] x86-64: Trusted syscall stack selected through `swapgs` before using user-controlled RSP
 - [x] Resident user probes on both architectures: returning yield/unknown syscalls, register/stack checks, exit, and separate supervisor-read, RX-write, and NX-execute fault tests
 - [ ] System call dispatch table:
-  - [x] Resident dispatcher: Wolfram numbers, six argument registers, and `-38` for unknown numbers, independent of probe bookkeeping
+  - [x] Resident dispatcher: Ferber numbers, six argument registers, and `-38` for unknown numbers, independent of probe bookkeeping
   - [x] Bootstrap task operations: immediate-return yield hint (`0`) and thread exit (`1`) followed by halt
   - [x] Capability metadata inspection: `sys_cap_inspect` requires `INSPECT` and copies type/rights to validated user memory
   - [x] Capability mutation: `sys_cap_attenuate` with `DUPLICATE`, validated rights subsets, and owned child nodes; `sys_cap_revoke` with `MANAGE` and descendant invalidation
@@ -164,7 +164,7 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
 *M1 (`Uranium-238-v0.2.0`) retains one bootstrap process and its VMO backing until
 halt. Secondary harts stay parked; interrupts, FP/vector user state, and
 preemptive scheduling are outside this milestone. Linux-style registers use
-custom Wolfram syscall numbers and do not provide musl compatibility.*
+custom Ferber syscall numbers and do not provide musl compatibility.*
 
 The resident handle-syscall path (`Uranium-238-v0.2.1`) extends M1 with
 explicitly delegated test capabilities, inspection, same-node duplication, and
@@ -190,8 +190,8 @@ See [the syscall ABI](docs/syscall-abi.md).
 
 ### C Runtime & Foundations
 - [ ] `musl` libc port:
-  - [ ] Wolfram architecture target definitions for `musl`
-  - [ ] System call stub mapping POSIX calls (`read`, `write`, `mmap`, `exit`) to Wolfram capability IPC
+  - [ ] Ferber architecture target definitions for `musl`
+  - [ ] System call stub mapping POSIX calls (`read`, `write`, `mmap`, `exit`) to Ferber capability IPC
   - [ ] Dynamic allocator integration (`malloc` / `free` backed by `sys_vmo_create` / `sys_vmo_map`)
 - [ ] Virtual Filesystem (VFS) Service:
   - [ ] Standalone userspace microkernel server
@@ -244,7 +244,7 @@ Phase 4 moves device drivers into userspace microkernel services with fine-grain
 
 ## Phase 5 — `fer` Complete
 
-Phase 5 completes the unified Wolfram management tool (`fer`), providing end-to-end operational visibility and administrative control over capabilities, processes, memory, and devices.
+Phase 5 completes the unified Ferber management tool (`fer`), providing end-to-end operational visibility and administrative control over capabilities, processes, memory, and devices.
 
 - [ ] `fer pkg`: Capability-verified package and service management
 - [ ] `fer drv`: Driver lifecycle, device attachment, and bus inspection
@@ -257,9 +257,9 @@ Phase 5 completes the unified Wolfram management tool (`fer`), providing end-to-
 
 ## Phase 6 — Daily Driver & Beyond
 
-The long-term roadmap toward running Wolfram as a daily operating system.
+The long-term roadmap toward running Ferber as a daily operating system.
 
-- [ ] Self-hosting Rust toolchain compiling the Wolfram kernel on Wolfram OS
+- [ ] Self-hosting Rust toolchain compiling the Ferber kernel on Ferber OS
 - [ ] Preemptive multi-core SMP scheduling with per-CPU runqueues and work stealing
 - [ ] Native NVMe block driver using the established block-device service
 - [ ] Capability-native on-disk filesystem building on the existing VFS and persistence interfaces

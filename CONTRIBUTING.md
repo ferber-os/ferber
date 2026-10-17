@@ -1,6 +1,6 @@
-# Contributing to Wolfram
+# Contributing to Ferber
 
-Wolfram is a kernel project. Your first contribution does not need to touch the kernel. Documentation, tests, CI and tooling, diagnostics, and localization all have useful entry points.
+Ferber is a kernel project. Your first contribution does not need to touch the kernel. Documentation, tests, CI and tooling, diagnostics, and localization all have useful entry points.
 
 ---
 
@@ -86,10 +86,10 @@ The capability model is the whole point. It needs to be correct.
 
 This is the one area where we will push back hard on PRs.
 
-The capability model is Wolfram's reason for existing. Every design decision
-in the kernel exists to serve it. If a change weakens the capability model
-adds ambient authority, bypasses handle checks, introduces a shortcut for
-"trusted" processes, it will not be merged.
+The capability model is Ferber's reason for existing. Every design decision
+in the kernel exists to serve it. Changes that weaken it, add ambient
+authority, bypass handle checks, or introduce a shortcut for "trusted"
+processes will not be merged.
 
 There are no trusted processes. That's the point.
 There is no root. That's the point.
@@ -110,19 +110,19 @@ They have a style guide. Follow it.
 
 ## Security Issues
 
-If you find a vulnerability in the capability model (e.x a way to escalate
-authority beyond what was granted, forge a handle, bypass a rights check),
+If you find a vulnerability in the capability model (e.g., a way to escalate
+authority beyond what was granted, forge a handle, or bypass a rights check),
 that's the most important kind of issue you can report.
 
 Open an issue titled `[SECURITY] <brief description>`.
 Be detailed. Include a reproduction case if possible.
-We'll respond fast. This is the core of what Wolfram is.
+We'll respond fast. This is the core of what Ferber is.
 
 ---
 
 ## The Tone
 
-Wolfram has a voice. It's dry, honest, occasionally funny, always precise.
+Ferber has a voice. It's dry, honest, occasionally funny, always precise.
 Error messages, panic screens, CLI output, comments. They all sound like
 the same person wrote them. A person who cares deeply about the project
 and has a dark sense of humor about kernel development.
@@ -135,7 +135,7 @@ Match the tone.
 ## Credit
 
 Everyone who contributes gets credited. In the repo, in release notes,
-in the model card if we ever train something on Wolfram's codebase.
+in the model card if we ever train something on Ferber's codebase.
 
 You built part of a kernel. That should be on your GitHub forever.
 

@@ -17,7 +17,7 @@ Detailed steps. Include code if possible.
 
 ---
 
-The capability model is Wolfram's reason for existing.
+The capability model is Ferber's reason for existing.
 Security issues here are the most important kind.
 We will respond fast.
 

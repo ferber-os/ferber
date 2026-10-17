@@ -1,4 +1,4 @@
-//! Virtual Memory Object (VMO) — Wolfram's fundamental memory primitive.
+//! Virtual Memory Object (VMO) — Ferber's fundamental memory primitive.
 //! Every region of virtual memory is backed by a VMO.
 //! No anonymous memory. No implicit backing. Ever.
 

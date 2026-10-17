@@ -4,7 +4,7 @@ set -euo pipefail
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repo_dir/scripts/smoke-log.sh"
-trial_dir=$(mktemp -d /tmp/wolfram-riscv-smoke.XXXXXX)
+trial_dir=$(mktemp -d /tmp/ferber-riscv-smoke.XXXXXX)
 smoke_passed=0
 cleanup() {
     if [[ "$smoke_passed" -eq 1 ]]; then
@@ -26,8 +26,8 @@ run_case() {
         write-rx) cargo_args+=(--features user-write-probe) ;;
         execute-nx) cargo_args+=(--features user-execute-probe) ;;
     esac
-    (cd "$repo_dir/wolfram" && cargo build --quiet "${cargo_args[@]}")
-    local kernel="$repo_dir/wolfram/target/riscv64gc-unknown-none-elf/$profile/wolfram"
+    (cd "$repo_dir/ferber" && cargo build --quiet "${cargo_args[@]}")
+    local kernel="$repo_dir/ferber/target/riscv64gc-unknown-none-elf/$profile/ferber"
     local status=0
     timeout "${limit}s" qemu-system-riscv64 \
         -machine virt -smp "$harts" -display none -bios default \

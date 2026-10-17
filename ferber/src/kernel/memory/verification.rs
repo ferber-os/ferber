@@ -70,7 +70,7 @@ pub fn self_test() {
         stats.free_pages,
         stats.extent_count
     );
-    kprintln!("[WOLFRAM_TEST] memory_verification: PASS");
+    kprintln!("[FERBER_TEST] memory_verification: PASS");
 }
 
 fn allocated_frame() {

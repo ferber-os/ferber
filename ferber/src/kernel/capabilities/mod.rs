@@ -1,4 +1,4 @@
-//! Wolfram Capability System
+//! Ferber Capability System
 //!
 //! This is the core of the kernel. Everything else exists to serve this.
 //!

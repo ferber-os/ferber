@@ -1,4 +1,4 @@
-//! Wolfram IPC
+//! Ferber IPC
 //! Channels (async, bytes + handles) + FastCall (sync, registers, ~50-150 cycles).
 //! Handle transfer is move semantics. Sender loses handle on send.
 

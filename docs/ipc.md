@@ -1,6 +1,6 @@
-# Wolfram IPC
+# Ferber IPC
 
-Wolfram provides two inter-process communication primitives. Both are strictly capability-controlled.
+Ferber provides two inter-process communication primitives. Both are strictly capability-controlled.
 
 ## Channels
 

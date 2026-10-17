@@ -1,4 +1,4 @@
-name: Wolfram OS
+name: Ferber OS
 
 on:
   push:
@@ -27,19 +27,19 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y qemu-system-misc qemu-system-x86 ovmf ripgrep xorriso dosfstools mtools
 
       - name: Build (RISC-V)
-        working-directory: wolfram
+        working-directory: ferber
         run: cargo build --target riscv64gc-unknown-none-elf
 
       - name: Build (x86-64)
-        working-directory: wolfram
+        working-directory: ferber
         run: cargo build --target x86_64-unknown-none
 
       - name: Clippy (RISC-V)
-        working-directory: wolfram
+        working-directory: ferber
         run: cargo clippy --target riscv64gc-unknown-none-elf -- -D warnings
 
       - name: Clippy (x86-64)
-        working-directory: wolfram
+        working-directory: ferber
         run: cargo clippy --target x86_64-unknown-none -- -D warnings
 
       - name: Clippy (UEFI loader)
@@ -47,7 +47,7 @@ jobs:
         run: cargo +nightly clippy --release --target x86_64-unknown-uefi -- -D warnings
 
       - name: Clippy (user probes)
-        working-directory: wolfram
+        working-directory: ferber
         run: |
           for feature in user-isolation-probe user-write-probe user-execute-probe; do
             cargo clippy --target riscv64gc-unknown-none-elf --features "$feature" -- -D warnings
@@ -101,7 +101,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xorriso dosfstools mtools
 
       - name: Build kernel (x86-64)
-        working-directory: wolfram
+        working-directory: ferber
         run: cargo build --release --target x86_64-unknown-none
 
       - name: Build UEFI bootloader
@@ -111,9 +111,9 @@ jobs:
       - name: Build UEFI ISO
         run: |
           bash scripts/build-iso.sh \
-            wolfram/target/x86_64-unknown-none/release/wolfram \
-            boot/uefi/target/x86_64-unknown-uefi/release/wolfram-uefi-loader.efi \
-            wolfram.iso
+            ferber/target/x86_64-unknown-none/release/ferber \
+            boot/uefi/target/x86_64-unknown-uefi/release/ferber-uefi-loader.efi \
+            ferber.iso
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
@@ -122,4 +122,4 @@ jobs:
           name: ${{ github.ref_name }}
           body_path: docs/releases/${{ github.ref_name }}.md
           prerelease: true
-          files: wolfram.iso
+          files: ferber.iso

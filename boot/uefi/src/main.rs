@@ -21,15 +21,14 @@ const PAGE_SIZE: u64 = 4096;
 const STACK_PAGES: usize = 16;
 static EXIT_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 static BOOT_STAGE: AtomicUsize = AtomicUsize::new(0);
-const KERNEL_PATH: [u16; 13] = [
+const KERNEL_PATH: [u16; 12] = [
     b'\\' as u16,
-    b'W' as u16,
-    b'O' as u16,
-    b'L' as u16,
     b'F' as u16,
+    b'E' as u16,
     b'R' as u16,
-    b'A' as u16,
-    b'M' as u16,
+    b'B' as u16,
+    b'E' as u16,
+    b'R' as u16,
     b'.' as u16,
     b'E' as u16,
     b'L' as u16,
@@ -56,7 +55,7 @@ pub unsafe extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemT
     }
     let status = unsafe { boot(image, system_table) };
     if status != uefi::SUCCESS && !EXIT_ATTEMPTED.load(Ordering::Relaxed) {
-        unsafe { print((*system_table).console_out, "Wolfram loader ") };
+        unsafe { print((*system_table).console_out, "Ferber loader ") };
         unsafe {
             print(
                 (*system_table).console_out,
@@ -137,7 +136,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
     if services.is_null() {
         return uefi::LOAD_ERROR;
     }
-    print((*table).console_out, "Wolfram UEFI loader\r\n");
+    print((*table).console_out, "Ferber UEFI loader\r\n");
 
     let mut loaded: *mut c_void = ptr::null_mut();
     let status = (*services).handle_protocol(image, &uefi::LOADED_IMAGE_GUID, &mut loaded);

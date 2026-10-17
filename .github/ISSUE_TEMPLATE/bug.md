@@ -12,7 +12,7 @@ labels: bug
 **Reproduction**
 
 **Environment**
-- Wolfram version:
+- Ferber version:
 - QEMU version:
 - Host OS:
 

@@ -1,5 +1,5 @@
 target/
-wolfram/target/
+ferber/target/
 .DS_Store
 *.swp
 *.swo

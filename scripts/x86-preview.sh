@@ -4,7 +4,7 @@
 set -euo pipefail
 
 kernel_repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-cd "$kernel_repo_root/wolfram"
+cd "$kernel_repo_root/ferber"
 
 target=x86_64-unknown-none
 if ! rustup target list --installed --toolchain nightly | rg -qx "$target"; then
@@ -18,7 +18,7 @@ if [[ " $* " == *" --release "* ]]; then
     profile=release
 fi
 target_dir=${CARGO_TARGET_DIR:-target}
-image="$target_dir/$target/$profile/wolfram"
+image="$target_dir/$target/$profile/ferber"
 
 readelf -h "$image" | rg -q 'Type:.*DYN'
 readelf -h "$image" | rg -q 'Machine:.*X86-64'

@@ -5,7 +5,7 @@ the version 2 handoff and permanent high-half kernel mappings described in
 [the memory model](memory.md); the original single-bank allocator and
 identity mappings below describe the earlier milestone.
 
-Wolfram needs two boot paths into one kernel core. RISC-V 64 under QEMU/OpenSBI
+Ferber needs two boot paths into one kernel core. RISC-V 64 under QEMU/OpenSBI
 is the working reference. x86-64 UEFI is the next hardware target because the
 available test machine is an MSI B650M-A PRO WIFI. The first x86-64 milestone is
 to boot from a USB stick, print diagnostics on that machine, and reach the same
@@ -17,9 +17,9 @@ defines the order of work and what counts as evidence for each step.
 
 ## 1. Preserve the RISC-V baseline
 
-- Keep `cargo build` from `wolfram/` and the existing QEMU boot working while
+- Keep `cargo build` from `ferber/` and the existing QEMU boot working while
   adding another target. A build from the repository root does not pick up
-  `wolfram/.cargo/config.toml` automatically.
+  `ferber/.cargo/config.toml` automatically.
 - Capture the detected RAM range, free frame count, and expected panic in a
   repeatable QEMU smoke check. Exercise at least two RAM sizes.
 - Fix and exercise the RISC-V trap path before calling its boot reliable. Give
@@ -84,14 +84,14 @@ visual polish items; they do not block this milestone.
 Package the loader as a UEFI removable-media application (`EFI/BOOT/BOOTX64.EFI`)
 with its kernel image on a FAT32 USB partition. Use the board's UEFI boot menu;
 the firmware may require Secure Boot to be configured for the image. This step
-does not require Wolfram to contain a USB driver: UEFI reads the files before
+does not require Ferber to contain a USB driver: UEFI reads the files before
 the kernel takes control.
 
 The board firmware version and exact boot result should be recorded with the
 test notes. Compare the memory map and reserved ranges with the QEMU path as
 follow-up work; keep board-specific policy out of the kernel core.
 
-**Done:** USB boot on the MSI board displayed Wolfram's memory diagnostics,
+**Done:** USB boot on the MSI board displayed Ferber's memory diagnostics,
 allocated memory, and reached the expected panic. This is the Phase 1
 real-hardware milestone, not a daily-driver milestone.
 

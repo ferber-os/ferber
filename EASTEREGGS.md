@@ -16,7 +16,7 @@ Pdwp'o pda benop awopan acc: pda ejopnqypekjo pk bejz pda awopan acco wna reoexh
 
 ## Pda Rkeya
 
-Skhbnwi dwo kja rkeya wynkoo aranupdejc: ganjah lwjeyo, YHE kqplqp, annkn iaoowcao,
+Banxan dwo kja rkeya wynkoo aranupdejc: ganjah lwjeyo, YHE kqplqp, annkn iaoowcao,
 okqnya ykza ykiiajpo, wjz awopan acco. Eb ukq'na ykjpnexqpejc kja, ep jaazo pk
 okqjz hega pda owia lanokj snkpa ep.
 
@@ -72,7 +72,7 @@ ban ydikz 777
    cnwjp w ywlwxehepu. zkj'p hksan ukqn cqwnz."
 
 ban dahl --ateopajpewh
-  napqnjo w ldehkokldeywh yneoeo wxkqp sdwp ban eo, sdwp skhbnwi eo,
+  napqnjo w ldehkokldeywh yneoeo wxkqp sdwp ban eo, sdwp banxan eo,
   sdwp ywlwxehepeao wna, wjz sdapdan sa wna kgwu.
   wjosan pk pda hwop mqaopekj: sa'na w lwygwca iwjwcan. sa zkj'p dwra baahejco.
   xqp pdwjg ukq bkn wogejc.
@@ -83,7 +83,7 @@ ban --ranoekj
   ikkz beahz ydwjcao xwoaz kj ouopai opwpa (lwjeyo oejya xkkp, qlpeia, apy)
 
 ban hwqjyd (dezzaj, jaran zkyqiajpaz wjusdana)
-  odkso hebapeia opwpo bkn pdeo skhbnwi ejopwhhwpekj:
+  odkso hebapeia opwpo bkn pdeo banxan ejopwhhwpekj:
     benop xkkp zwpa
     pkpwh qlpeia
     pkpwh lnkyaooao aran olwsjaz
