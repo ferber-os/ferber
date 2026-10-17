@@ -123,3 +123,13 @@ jobs:
           body_path: docs/releases/${{ github.ref_name }}.md
           prerelease: true
           files: ferber.iso
+
+      - name: Remove legacy Wolfram ISO asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.id')
+          asset_id=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[] | select(.name == "wolfram.iso") | .id')
+          if [ -n "$asset_id" ]; then
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+          fi

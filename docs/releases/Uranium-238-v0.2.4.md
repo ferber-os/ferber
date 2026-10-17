@@ -1,6 +1,10 @@
 # Uranium-238 v0.2.4
 
-*Userspace can create paired channel endpoints, send bounded messages, and receive messages with explicitly transferred capabilities on RISC-V 64 and x86-64. Failed sends preserve sender handles; failed receives preserve the queued message and user outputs. The new channel syscall probe passed on physical x86-64 hardware with 32 GiB installed. One CPU still does all the work. Uranium has time.*
+*Userspace can create paired channel endpoints, send bounded messages, and receive messages with explicitly transferred capabilities on RISC-V 64 and x86-64. Failed sends preserve sender handles; failed receives preserve the queued message and user outputs. The original v0.2.4 build's channel syscall probe passed on physical x86-64 hardware with 32 GiB installed. One CPU still does all the work. Uranium has time.*
+
+Ferber was previously called Wolfram. This re-release rebuilds v0.2.4 with the
+Ferber project, kernel, loader, and ISO names. Kernel behavior is unchanged;
+physical-hardware evidence below belongs to the original build.
 
 ## Nonblocking channel syscalls cross the userspace boundary
 
@@ -55,11 +59,12 @@ targets, probe configurations, and the UEFI loader pass Clippy with
 `-D warnings`. Smoke-log parser checks, shell syntax checks, and debug/release
 x86 ELF validation pass.
 
-The user booted the new release ISO on physical x86-64 hardware with 32 GiB
-installed. Firmware memory discovery reported 31.46 GiB managed across 23
-extents. Memory verification, privilege switching, handle syscalls, capability
-mutation, and channel syscalls all passed before the kernel halted as designed.
-No physical RISC-V run is claimed. Hosted CI is the remaining post-push check.
+The original Wolfram-branded v0.2.4 ISO was booted on physical x86-64 hardware
+with 32 GiB installed. Firmware memory discovery reported 31.46 GiB managed
+across 23 extents. Memory verification, privilege switching, handle syscalls,
+capability mutation, and channel syscalls all passed before the kernel halted as
+designed. No physical RISC-V run is claimed. Hosted CI is the remaining
+post-push check.
 
 ## Scheduling and general capability graphs remain unfinished
 
