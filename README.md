@@ -32,7 +32,7 @@ But the architecture is right, and that matters more than being finished.
 ## The Model
 
 In most operating systems, security is a layer on top of the kernel.
-Permission bits, UIDs, ACLs, SELinux policies — all of these are answers to the question
+Permission bits, UIDs, ACLs, SELinux policies. All of these are answers to the question
 "should this process be allowed to do this?" asked after the process already named the resource.
 
 Wolfram asks a different question: **how did this process get a reference to that resource at all?**
