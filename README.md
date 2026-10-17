@@ -1,6 +1,7 @@
 <h1 align="center">Ferber</h1>
-
-Ferber was previously called Wolfram.
+<p align="center">
+  <sub>Ferber was previously called Wolfram.</sub>
+</p>
 
 <p align="center">
   <em>A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch.</em>
