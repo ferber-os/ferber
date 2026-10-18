@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.5
 
-*Resident user tasks now yield to one another, wait for channel messages, and exit without halting surviving tasks on RISC-V 64 and x86-64. A permanent-root dispatcher reclaims exited task resources after leaving their stacks and address spaces. The maintainer confirmed the new scheduling, blocking-receive, and reclamation markers on physical x86-64 hardware. Uranium remains cooperative.*
+*Resident user tasks now yield to one another, wait for channel messages, and exit without halting surviving tasks on RISC-V 64 and x86-64. A permanent-root dispatcher reclaims exited task resources after leaving their stacks and address spaces. I confirmed the new scheduling, blocking-receive, and reclamation markers on physical x86-64 hardware. Uranium remains cooperative.*
 
 ## Yield lets another resident task run
 
@@ -59,9 +59,9 @@ prefix: `memory_verification`, `privilege_switch_roundtrip`, `handle_syscalls`,
 
 ## Validation includes a new physical x86-64 boot
 
-The maintainer supplied a screenshot from the sprint ISO on a physical x86-64
-machine with 32 GiB installed. It shows all eight verification markers passing,
-followed by the intended clean halt. This validates the normal resident path.
+I booted the sprint ISO on physical x86-64 hardware with 32 GiB installed. The
+screenshot shows all eight verification markers passing, followed by the
+intended clean halt. This validates the normal resident path.
 That boot preceded the final `CR4.PKE` hardening and version metadata bump; the
 final CPU-state setup was checked in QEMU. No physical RISC-V run or physical
 fault/deadlock probe is claimed.
