@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.5
 
-*Resident user tasks now yield to one another, wait for channel messages, and exit without halting surviving tasks on RISC-V 64 and x86-64. A permanent-root dispatcher reclaims exited task resources after leaving their stacks and address spaces. I confirmed the new scheduling, blocking-receive, and reclamation markers on physical x86-64 hardware. Uranium remains cooperative.*
+*Resident user tasks now yield to one another, wait for channel messages, and exit without halting surviving tasks on RISC-V 64 and x86-64. A permanent-root dispatcher reclaims exited task resources after leaving their stacks and address spaces. The new scheduling, blocking-receive, and reclamation markers have been confirmed on physical x86-64 hardware. Uranium remains cooperative.*
 
 ## Yield lets another resident task run
 
