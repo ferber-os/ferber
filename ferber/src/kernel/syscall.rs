@@ -9,8 +9,9 @@ use crate::kernel::memory::{
     paging::{AddressSpace, MapFlags},
     Vmo,
 };
+use crate::kernel::scheduler;
 use crate::kernel::sync::SpinLock;
-use crate::kernel::task::{Job, Process, ProcessState, Thread, ThreadState};
+use crate::kernel::task::{Job, Process, Thread};
 use crate::kprintln;
 use alloc::sync::Arc;
 
@@ -30,6 +31,7 @@ pub(crate) const SYS_CAP_REVOKE: usize = 6;
 pub(crate) const SYS_CHAN_CREATE: usize = 7;
 pub(crate) const SYS_CHAN_SEND: usize = 8;
 pub(crate) const SYS_CHAN_RECV: usize = 9;
+pub(crate) const SYS_CHAN_RECV_WAIT: usize = 10;
 
 #[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
 compile_error!("user-write-probe and user-execute-probe must run separately");
@@ -38,96 +40,162 @@ pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
 pub(crate) const USER_STACK: usize = 0x0000_0020_0000_0000;
 pub(crate) const STACK_SIZE: usize = 16384;
 
-struct Bootstrap {
-    _root: Arc<SpinLock<Job>>,
-    process: Arc<SpinLock<Process>>,
-    thread: Arc<SpinLock<Thread>>,
-    _code: Vmo,
-    probe: probe::Observer,
+struct ProbeState {
+    observer: probe::Observer,
     _fixtures: Option<probe::Fixtures>,
     isolation: bool,
 }
 
-// shortcut: one resident task, replace with per-CPU current-task state before multitask scheduling.
-static BOOTSTRAP: SpinLock<Option<Bootstrap>> = SpinLock::new(None);
+static PROBE: SpinLock<Option<ProbeState>> = SpinLock::new(None);
+
+fn create_task(
+    root: &Arc<SpinLock<Job>>,
+    name: &'static str,
+    bytes: &[u8],
+    flags: MapFlags,
+    role: Option<u64>,
+) -> (Arc<SpinLock<Process>>, Arc<SpinLock<Thread>>) {
+    let process = root
+        .lock()
+        .create_process(name)
+        .expect("create user process");
+    let thread = process
+        .lock()
+        .create_named_thread(name, USER_PC, STACK_SIZE)
+        .expect("create user thread");
+    let mut code = Vmo::create(bytes.len()).expect("allocate user code");
+    code.write(0, bytes).expect("copy user code");
+    let mut stack = Vmo::create(STACK_SIZE).expect("allocate user stack");
+    if let Some(role) = role {
+        stack.write(0, &role.to_le_bytes()).unwrap();
+        stack
+            .write(16, &(0x7400_0000u64 | role).to_le_bytes())
+            .unwrap();
+    }
+    {
+        let mut proc = process.lock();
+        assert_eq!(proc.handle_table().lock().count(), 0, "empty birth table");
+        unsafe {
+            proc.address_space_mut()
+                .map_vmo(USER_PC, code.frames(), flags)
+                .expect("map user code");
+            proc.address_space_mut()
+                .map_vmo(USER_STACK, stack.frames(), MapFlags::user_rw())
+                .expect("map user stack");
+        }
+        proc.retain_backing(code);
+    }
+    {
+        let mut task = thread.lock();
+        task.set_user_stack(stack);
+        task.set_user_stack_mapping(USER_STACK);
+    }
+    (process, thread)
+}
+
+fn cooperative_batch(root: &Arc<SpinLock<Job>>) -> scheduler::Stats {
+    use crate::kernel::capabilities::{ObjectType, CAP_NODE_ALLOCATOR};
+    use crate::kernel::ipc::channel::Channel;
+    {
+        let (first, second) = Channel::create().expect("cooperative channel");
+        for (role, endpoint) in [first, second].into_iter().enumerate() {
+            let (process, thread) = create_task(
+                root,
+                "cooperative",
+                arch::cooperative_probe(),
+                MapFlags::user_rx(),
+                Some(if cfg!(feature = "cooperative-deadlock-probe") {
+                    0
+                } else {
+                    role as u64
+                }),
+            );
+            let node = CAP_NODE_ALLOCATOR
+                .alloc_root(endpoint, ObjectType::Channel, channel::ENDPOINT_RIGHTS)
+                .expect("cooperative endpoint");
+            assert_eq!(
+                process
+                    .lock()
+                    .handle_table()
+                    .lock()
+                    .insert(node)
+                    .unwrap_or_else(|_| panic!("delegate endpoint")),
+                0
+            );
+            scheduler::admit(process, thread).expect("admit cooperative task");
+        }
+    }
+    scheduler::run()
+}
 
 pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     address_space_lifecycle(memory);
     probe::self_test();
     channel::self_test();
-    let process = root
-        .lock()
-        .create_process("user_probe")
-        .expect("create user process");
-    let thread = process
-        .lock()
-        .create_named_thread("user_probe/main", USER_PC, STACK_SIZE)
-        .expect("create user thread");
+    scheduler::init();
+    scheduler::self_test(&root);
     let isolation = cfg!(feature = "user-isolation-probe");
-    let probe = if isolation {
-        arch::isolation_probe()
-    } else {
-        arch::user_probe()
-    };
-    let mut code = Vmo::create(probe.len()).expect("allocate user code");
-    code.write(0, probe).expect("copy user probe");
-    let stack = Vmo::create(STACK_SIZE).expect("allocate user stack");
-    let kernel_sp = {
-        let mut task = thread.lock();
-        let physical = task.kernel_stack().frames().get(0).unwrap();
-        let top = crate::kernel::memory::phys_map::phys_to_virt(physical)
-            .expect("kernel stack alias")
-            + task.kernel_stack().size();
-        task.set_user_stack(stack);
-        task.set_state(ThreadState::Running);
-        top
-    };
-    let mut proc = process.lock();
-    assert_eq!(proc.handle_table().lock().count(), 0);
-    let fixtures = if isolation {
-        None
-    } else {
-        Some(probe::Fixtures::delegate(&proc))
-    };
-    proc.set_state(ProcessState::Running);
-    let space = proc.address_space_mut();
-    unsafe {
-        let code_flags = if cfg!(feature = "user-execute-probe") {
+    {
+        let bytes = if isolation {
+            arch::isolation_probe()
+        } else {
+            arch::user_probe()
+        };
+        let flags = if cfg!(feature = "user-execute-probe") {
             MapFlags::user_ro()
         } else {
             MapFlags::user_rx()
         };
-        space
-            .map_vmo(USER_PC, code.frames(), code_flags)
-            .expect("map user code");
-        let task = thread.lock();
-        space
-            .map_vmo(
-                USER_STACK,
-                task.user_stack().unwrap().frames(),
-                MapFlags::user_rw(),
-            )
-            .expect("map user stack");
+        let (process, thread) = create_task(&root, "user_probe", bytes, flags, None);
+        let fixtures = if isolation {
+            None
+        } else {
+            Some(probe::Fixtures::delegate(&process.lock()))
+        };
+        *PROBE.lock() = Some(ProbeState {
+            observer: probe::Observer::new(),
+            _fixtures: fixtures,
+            isolation,
+        });
+        scheduler::admit(process, thread).expect("admit user probe");
     }
-    drop(proc);
-    *BOOTSTRAP.lock() = Some(Bootstrap {
-        _root: root,
-        process: process.clone(),
-        thread,
-        _code: code,
-        probe: probe::Observer::new(),
-        _fixtures: fixtures,
-        isolation,
-    });
     kprintln!(
         "[user] entering {} probe",
         if isolation { "isolation" } else { "roundtrip" }
     );
-    unsafe {
-        process.lock().address_space().activate();
+    let legacy = scheduler::run();
+    assert_eq!(legacy.reaped, 1);
+    kprintln!("[FERBER_TEST] privilege_switch_roundtrip: PASS");
+    kprintln!("[FERBER_TEST] handle_syscalls: PASS");
+    kprintln!("[FERBER_TEST] capability_mutation: PASS");
+    kprintln!("[FERBER_TEST] channel_syscalls: PASS");
+    // Warm persistent registry/queue capacity before checking exact task reclamation.
+    cooperative_batch(&root);
+    let frames = bitmap::stats().free_pages;
+    let nodes = crate::kernel::capabilities::CAP_NODE_ALLOCATOR.live_count();
+    let processes = root.lock().process_count();
+    for _ in 0..3 {
+        let stats = cooperative_batch(&root);
+        assert!(stats.yields >= 8 && stats.switches > stats.yields);
+        assert!(stats.parks >= 4 && stats.wakes >= 4);
+        assert_eq!(stats.reaped, 2);
+        assert_eq!(scheduler::task_count(), 0);
+        assert_eq!(scheduler::ready_count(), 0);
+        assert_eq!(root.lock().process_count(), processes);
+        assert_eq!(
+            crate::kernel::capabilities::CAP_NODE_ALLOCATOR.live_count(),
+            nodes
+        );
+        assert_eq!(
+            bitmap::stats().free_pages,
+            frames,
+            "resident task frame leak"
+        );
     }
-    // All owners remain in BOOTSTRAP and no lock survives the privilege switch.
-    unsafe { arch::drop_to_user(USER_PC, USER_STACK + STACK_SIZE, kernel_sp) }
+    kprintln!("[FERBER_TEST] cooperative_scheduling: PASS");
+    kprintln!("[FERBER_TEST] blocking_channel_receive: PASS");
+    kprintln!("[FERBER_TEST] task_reclamation: PASS");
+    halt()
 }
 
 fn address_space_lifecycle(memory: bitmap::MemoryStats) {
@@ -206,6 +274,8 @@ pub(crate) fn dispatch_for_process(
                 Ok(node) => {
                     // Last owners can destroy objects that acquire other kernel locks.
                     drop(node);
+                    let process_id = process.lock().id();
+                    scheduler::cancel_closed(process_id, args[0]);
                     0
                 }
                 Err(error) => cap_errno(error),
@@ -301,46 +371,68 @@ pub(crate) fn dispatch_for_process(
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn observe_x86_flags(nr: usize, flags: u64) {
-    let bootstrap = BOOTSTRAP.lock();
-    if let Some(task) = bootstrap.as_ref() {
-        task.probe.x86_flags(nr, flags);
+    if let Some(probe) = PROBE.lock().as_ref() {
+        probe.observer.x86_flags(nr, flags);
     }
 }
 
 pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
-    let (process, thread) = {
-        let bootstrap = BOOTSTRAP.lock();
-        let task = bootstrap
-            .as_ref()
-            .expect("syscall without current user task");
-        (Arc::clone(&task.process), Arc::clone(&task.thread))
-    };
     if nr == SYS_EXIT {
-        thread.lock().set_state(ThreadState::Dead);
-        let count = process.lock().handle_table().lock().count();
         {
-            let bootstrap = BOOTSTRAP.lock();
-            let task = bootstrap.as_ref().unwrap();
-            task.probe.finish(args[0], count, task.isolation);
+            let process = scheduler::current_process();
+            let handles = process.lock().handle_table().lock().count();
+            let state = PROBE.lock().take();
+            if let Some(state) = state {
+                state.observer.finish(args[0], handles, state.isolation);
+            } else {
+                assert_eq!(args[0], 0, "cooperative user probe failed");
+            }
         }
-        kprintln!("[FERBER_TEST] privilege_switch_roundtrip: PASS");
-        kprintln!("[FERBER_TEST] handle_syscalls: PASS");
-        kprintln!("[FERBER_TEST] capability_mutation: PASS");
-        kprintln!("[FERBER_TEST] channel_syscalls: PASS");
-        halt()
+        scheduler::exit()
     }
-    let result = dispatch_for_process(&process, nr, args);
-    {
-        let mut bootstrap = BOOTSTRAP.lock();
-        let task = bootstrap.as_mut().unwrap();
-        task.probe.observe(nr, args, result, task.isolation);
+    let result = if nr == SYS_YIELD {
+        scheduler::sched_yield();
+        0
+    } else if nr == SYS_CHAN_RECV_WAIT {
+        loop {
+            if let Some(error) = scheduler::wait_error() {
+                scheduler::finish_wait();
+                break error;
+            }
+            let (attempt, generation) = {
+                let (token, generation) = match scheduler::prepare_wait() {
+                    Ok(wait) => wait,
+                    Err(error) => break error,
+                };
+                let process = scheduler::current_process();
+                (
+                    channel::blocking_attempt(&process, args, &token, generation),
+                    generation,
+                )
+            };
+            match attempt {
+                channel::ReceiveAttempt::Complete(result) => {
+                    scheduler::finish_wait();
+                    break result;
+                }
+                channel::ReceiveAttempt::Park { node, registration } => {
+                    scheduler::park(args[0], generation, node, registration)
+                }
+            }
+        }
+    } else {
+        let process = scheduler::current_process();
+        dispatch_for_process(&process, nr, args)
+    };
+    if let Some(probe) = PROBE.lock().as_mut() {
+        probe.observer.observe(nr, args, result, probe.isolation);
     }
     result
 }
 
 pub fn user_fault(pc: usize, addr: usize, cause: usize) -> ! {
-    let bootstrap = BOOTSTRAP.lock();
-    let task = bootstrap.as_ref().expect("fault without current user task");
+    let state = PROBE.lock();
+    let task = state.as_ref().expect("fault without current user task");
     assert!(
         task.isolation,
         "unexpected user fault pc={pc:#x} address={addr:#x}"
@@ -367,9 +459,15 @@ pub fn user_fault(pc: usize, addr: usize, cause: usize) -> ! {
     {
         assert_eq!(cause, 14);
     }
-    assert_eq!(task.process.lock().handle_table().lock().count(), 0);
-    task.thread.lock().set_state(ThreadState::Dead);
-    drop(bootstrap);
+    assert_eq!(
+        scheduler::current_process()
+            .lock()
+            .handle_table()
+            .lock()
+            .count(),
+        0
+    );
+    drop(state);
     let marker = if cfg!(feature = "user-write-probe") {
         "privilege_write_rx"
     } else if cfg!(feature = "user-execute-probe") {

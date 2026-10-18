@@ -152,11 +152,12 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.4** adds nonblocking capability-based
-channel syscalls on RISC-V 64 and x86-64, with transactional message and
-capability transfer. It passed the resident userspace checks on physical
-x86-64 hardware with 32 GiB installed.
-Scheduling, ELF loading, and init remain pending.
+Current milestone: **Uranium-238-v0.2.5** adds cooperative resident scheduling,
+blocking channel receive, and resident thread/process reclamation on RISC-V 64
+and x86-64. The maintainer confirmed all normal verification markers and the
+final halt on physical x86-64 hardware with 32 GiB installed. Execution remains
+single-CPU and integer-only, with interrupts disabled. ELF loading, init,
+preemption, and userspace task creation remain pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---
@@ -181,13 +182,15 @@ make run     # boots in QEMU
 make debug   # boots with GDB server on :1234
 ```
 
-`make run` executes the in-kernel checks, enters a resident user-mode probe,
-returns through yield and unknown syscalls, exercises handle operations and
-capability mutation and nonblocking channel IPC, and exits through the kernel.
-A successful normal boot requires `memory_verification: PASS` and four resident
-markers: `privilege_switch_roundtrip: PASS`, `handle_syscalls: PASS`,
-`capability_mutation: PASS`, and `channel_syscalls: PASS`, each with the
-`[FERBER_TEST]` prefix. It then halts until QEMU is stopped.
+`make run` executes the in-kernel checks and resident user-mode probes. It checks
+returning syscalls, handle operations, capability mutation, transactional channel
+IPC, cooperative scheduling between isolated tasks, blocking receive, and exit
+reclamation. A successful normal boot requires `memory_verification: PASS` and
+seven resident markers: `privilege_switch_roundtrip: PASS`, `handle_syscalls: PASS`,
+`capability_mutation: PASS`, `channel_syscalls: PASS`, `cooperative_scheduling: PASS`,
+`blocking_channel_receive: PASS`, and `task_reclamation: PASS`, each with the
+`[FERBER_TEST]` prefix. After all tasks exit and reclamation checks finish, it
+halts until QEMU is stopped.
 The separate `user-isolation-probe` feature attempts a supervisor-memory read
 and expects a diagnosed user protection fault followed by
 `[FERBER_TEST] privilege_isolation: PASS`.
@@ -213,7 +216,13 @@ QEMU/OVMF. `bash scripts/riscv-smoke.sh` and `make x86-smoke` check normal,
 supervisor-read, RX-write, and NX-execute boots in debug and release builds.
 The x86 roundtrip also checks hostile user direction flags, kernel entry
 flags, and sanitized return flags with preserved arithmetic flags. The x86
-suite retains its deliberate invalid-opcode exception check. Every ordinary
+suite retains its deliberate invalid-opcode exception check. Each architecture
+also runs a debug `cooperative-deadlock-probe` build where both tasks wait for
+messages without a runnable sender. It requires the exact diagnosed panic
+`cooperative deadlock: live tasks with no runnable producer` and forbids the
+three cooperative success markers. A timeout or an unrelated panic is not a
+passing deadlock test. The suites contain 11 RISC-V and 10 x86 cases, plus the
+separate release ISO boot. Every ordinary
 boot checks the discovered RAM extents, permanent mappings, owned-page
 allocation and user copies, and accounting restoration without a RAM-size
 threshold or a separate capacity build.
@@ -233,11 +242,14 @@ markers and the expected halt. That run preceded the version metadata bump.
 Dedicated protection-fault builds remain validated in QEMU.
 
 The resident ABI uses Linux-style argument registers with Ferber syscall
-numbers: `0` is an immediate-return yield hint, `1` exits the resident thread,
-`2` closes a handle, `3` duplicates a handle, `4` inspects its type and
+numbers: `0` yields cooperatively, `1` exits the calling thread while surviving
+tasks continue, `2` closes a handle, `3` duplicates a handle, `4` inspects its type and
 rights, `5` derives a capability with equal or fewer rights, and `6` revokes a
 capability and its descendants. Calls `7`–`9` create channels and send/receive
-messages without blocking. Attenuation requires `DUPLICATE`; revocation
+messages without blocking. Call `10` receives with blocking and requires both
+`READ` and `WAIT`; channel creation grants `WAIT`. Closing a suspended receive's
+source slot cancels it, and revocation cancels waits through that node or its
+ancestors. Attenuation requires `DUPLICATE`; revocation
 requires `MANAGE`. Unknown numbers return `-38`. This is not musl compatibility.
 The probe process starts with zero handles, then receives explicitly delegated test
 capabilities. See the [syscall ABI](docs/syscall-abi.md) for rights, errors,
@@ -249,9 +261,11 @@ user-copy helpers preflight page permissions before copying through
 supervisor physical aliases. See [the memory model](docs/memory.md) for their
 caller contract and permanent kernel mappings.
 
-The current path runs one active CPU with integer-only resident probes. Interrupt-driven
-scheduling, init/ELF loading, concurrent user tasks, and complete exit
-reclamation remain future work.
+The current path cooperatively schedules integer-only resident tasks on one
+active CPU with interrupts disabled. A VMO-backed dispatcher stack on the
+permanent kernel root permits safe cleanup after switching away from exited
+tasks. Interrupt-driven scheduling, SMP, FP/vector state, init/ELF loading,
+userspace task creation, and VMO syscalls remain future work.
 
 ---
 

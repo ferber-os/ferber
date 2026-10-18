@@ -28,9 +28,9 @@ impl CpuContext {
     /// Creates a new context whose kernel stack has been initialized such that
     /// when `switch_context` restores `rsp` and executes `ret`, it jumps to `entry`.
     pub fn new(entry: usize, kstack_top: usize) -> Self {
-        // kstack_top must be 16-byte aligned. We reserve 8 bytes to push `entry` as return address.
+        // `ret` must leave RSP at 8 mod 16, as a System V function entry requires.
         let aligned_top = kstack_top & !0xf;
-        let sp = aligned_top - 8;
+        let sp = aligned_top - 16;
         unsafe {
             (sp as *mut usize).write(entry);
         }

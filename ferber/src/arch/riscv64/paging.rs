@@ -16,6 +16,21 @@ use crate::kernel::memory::{bitmap, phys_map};
 use core::sync::atomic::{AtomicUsize, Ordering};
 static KERNEL_ROOT: AtomicUsize = AtomicUsize::new(0);
 
+/// Switch to the retained permanent root before reclaiming a task's page tables.
+///
+/// # Safety
+/// The permanent root must be installed and the current stack supervisor-mapped.
+pub unsafe fn activate_kernel_address_space() {
+    let root = KERNEL_ROOT.load(Ordering::Acquire);
+    assert_ne!(root, 0, "permanent kernel root unavailable");
+    core::arch::asm!(
+        "csrw satp, {satp}",
+        "sfence.vma zero, zero",
+        satp = in(reg) ((8usize << 60) | (root >> 12)),
+        options(nostack)
+    );
+}
+
 fn table(paddr: usize) -> *mut u64 {
     phys_map::phys_to_virt(paddr).expect("page table physical alias") as *mut u64
 }

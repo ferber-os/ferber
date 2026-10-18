@@ -524,6 +524,155 @@ x86_user_probe_start:
     ud2
 x86_user_probe_end:
 
+.global x86_cooperative_probe_start
+.global x86_cooperative_probe_end
+x86_cooperative_probe_start:
+    mov r12, {user_stack}
+    mov r12, [r12]
+    cmp r12, 1
+    ja 9f
+    mov ebx, 0x74000000
+    or rbx, r12
+    mov rax, {user_stack} + 16
+    cmp [rax], rbx
+    jne 9f
+    push rbx
+    mov ebp, 0x23456789
+    mov r13d, 0x3456789a
+    mov r14d, 4
+    mov r15d, 0x56789abc
+.Lcoop_yield:
+    mov eax, {sys_yield}
+    call .Lcoop_call
+    test rax, rax
+    jne 9f
+    dec r14
+    jne .Lcoop_yield
+    mov r14d, 1
+.Lcoop_round:
+    test r12, r12
+    jne .Lcoop_sender
+    call .Lcoop_recv
+    test rax, rax
+    jne 9f
+    cmp dword ptr [rsi], r14d
+    jne 9f
+    mov eax, r14d
+    add eax, 0x100
+    mov [rsi], eax
+    call .Lcoop_send
+    test rax, rax
+    jne 9f
+    mov eax, {sys_yield}
+    call .Lcoop_call
+    test rax, rax
+    jne 9f
+    jmp .Lcoop_next
+.Lcoop_sender:
+    mov eax, {sys_yield}
+    call .Lcoop_call
+    test rax, rax
+    jne 9f
+    mov rsi, {user_stack} + 128
+    mov [rsi], r14d
+    call .Lcoop_send
+    test rax, rax
+    jne 9f
+    call .Lcoop_recv
+    test rax, rax
+    jne 9f
+    mov ecx, r14d
+    add ecx, 0x100
+    cmp [rsi], ecx
+    jne 9f
+.Lcoop_next:
+    inc r14d
+    cmp r14d, 5
+    jne .Lcoop_round
+    test r12, r12
+    jne .Lcoop_exit
+    # Exit cleanup of the peer's last endpoint must wake this final wait.
+    xor edi, edi
+    mov rsi, {user_stack} + 128
+    mov edx, 4
+    xor r10d, r10d
+    xor r8d, r8d
+    mov r9, {user_stack} + 136
+    mov eax, {sys_chan_recv_wait}
+    call .Lcoop_call
+    cmp rax, -32
+    jne 9f
+    mov eax, {sys_handle_close}
+    call .Lcoop_call
+    test rax, rax
+    jne 9f
+.Lcoop_exit:
+    xor edi, edi
+    jmp 10f
+.Lcoop_send:
+    xor edi, edi
+    mov rsi, {user_stack} + 128
+    mov edx, 4
+    xor r10d, r10d
+    xor r8d, r8d
+    mov eax, {sys_chan_send}
+    jmp .Lcoop_call
+.Lcoop_recv:
+    xor edi, edi
+    mov rsi, {user_stack} + 128
+    mov edx, 4
+    xor r10d, r10d
+    xor r8d, r8d
+    mov r9, {user_stack} + 136
+    mov eax, {sys_chan_recv_wait}
+    call .Lcoop_call
+    test rax, rax
+    jne 9f
+    cmp qword ptr [r9], 4
+    jne 9f
+    ret
+.Lcoop_call:
+    push rdi
+    push rsi
+    push rdx
+    push r10
+    push r8
+    push r9
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    PROBE_SYSCALL
+    .irp reg, r15, r14, r13, r12, rbp, rbx, r9, r8, r10, rdx, rsi, rdi
+        pop rcx
+        cmp \reg, rcx
+        jne 9f
+    .endr
+    mov rcx, {user_stack} + 16
+    cmp [rcx], rbx
+    jne 9f
+    # Receive has one extra helper return address beneath the syscall wrapper.
+    mov rcx, {user_stack} + {stack_size} - 16
+    cmp rsp, rcx
+    je .Lcoop_stack_checked
+    sub rcx, 8
+    cmp rsp, rcx
+    jne 9f
+.Lcoop_stack_checked:
+    mov rcx, {user_stack} + {stack_size} - 8
+    cmp [rcx], rbx
+    jne 9f
+    ret
+9:
+    mov edi, 1
+10:
+    mov eax, {sys_exit}
+    syscall
+    ud2
+x86_cooperative_probe_end:
+
 .section .data.rel.ro, "aw"
 .global x86_isolation_start
 .global x86_isolation_fault

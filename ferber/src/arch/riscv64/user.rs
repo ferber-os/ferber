@@ -3,6 +3,16 @@
 use core::arch::global_asm;
 
 global_asm!(
+    include_str!("cooperative.S"),
+    sys_yield = const crate::kernel::syscall::SYS_YIELD,
+    sys_exit = const crate::kernel::syscall::SYS_EXIT,
+    sys_close = const crate::kernel::syscall::SYS_HANDLE_CLOSE,
+    sys_chan_send = const crate::kernel::syscall::SYS_CHAN_SEND,
+    sys_chan_recv_wait = const crate::kernel::syscall::SYS_CHAN_RECV_WAIT,
+    user_stack = const crate::kernel::syscall::USER_STACK,
+);
+
+global_asm!(
     include_str!("user.S"),
     sys_yield = const crate::kernel::syscall::SYS_YIELD,
     sys_exit = const crate::kernel::syscall::SYS_EXIT,
@@ -27,6 +37,16 @@ extern "C" {
     static riscv_isolation_probe_start: u8;
     static riscv_isolation_probe_end: u8;
     static riscv_isolation_fault: u8;
+    static riscv_cooperative_probe_start: u8;
+    static riscv_cooperative_probe_end: u8;
+}
+
+pub fn cooperative_probe() -> &'static [u8] {
+    unsafe {
+        let start = &riscv_cooperative_probe_start as *const u8;
+        let len = (&riscv_cooperative_probe_end as *const u8 as usize) - start as usize;
+        core::slice::from_raw_parts(start, len)
+    }
 }
 
 /// Drop to U-mode. Does not return.

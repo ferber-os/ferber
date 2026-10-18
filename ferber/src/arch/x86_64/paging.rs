@@ -146,6 +146,16 @@ pub struct Pml4AddressSpace {
 
 static BOOT_ROOT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+/// Restore the permanent supervisor root before reclaiming a task's tables.
+///
+/// # Safety
+/// Execution must be on a retained supervisor stack mapped by the permanent root.
+pub unsafe fn activate_kernel_address_space() {
+    let root = BOOT_ROOT.load(core::sync::atomic::Ordering::SeqCst);
+    assert_ne!(root, 0, "permanent root not initialized");
+    core::arch::asm!("mov cr3, {}", in(reg) root, options(nostack));
+}
+
 /// Capture the loader-owned tables before a process root can become active.
 pub fn init() {
     let root: usize;

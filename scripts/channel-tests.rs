@@ -132,3 +132,226 @@ fn failed_receive_retries_and_closed_peer_drains() {
     assert_eq!(second.recv().unwrap_err(), ChannelError::PeerClosed);
     assert_eq!(second.signals(), SIGNAL_PEER_CLOSED);
 }
+
+#[test]
+fn receive_wait_wakes_all_and_old_generations_are_inert() {
+    use channel::WaitToken;
+    let (sender, receiver) = Channel::create().unwrap();
+    let first = Arc::new(WaitToken::new());
+    let second = Arc::new(WaitToken::new());
+    first.start(1);
+    second.start(1);
+    assert!(receiver.register_wait(&first, 1).unwrap());
+    assert!(receiver.register_wait(&first, 1).unwrap());
+    assert!(receiver.register_wait(&second, 1).unwrap());
+    first.start(2);
+    assert!(receiver.register_wait(&first, 2).unwrap());
+    sender
+        .send(ChannelMessage::new(vec![9], Vec::new()))
+        .unwrap();
+    assert!(first.is_notified(2));
+    assert!(second.is_notified(1));
+    first.notify(1);
+    assert!(first.is_notified(2));
+    assert!(!receiver.register_wait(&first, 2).unwrap());
+    assert_eq!(receiver.recv().unwrap().bytes, [9]);
+    first.start(3);
+    first.notify(2);
+    assert!(!first.is_notified(3));
+    assert!(receiver.register_wait(&first, 3).unwrap());
+    drop(sender);
+    assert!(first.is_notified(3));
+    assert!(!receiver.register_wait(&first, 3).unwrap());
+    assert_eq!(receiver.recv().unwrap_err(), ChannelError::PeerClosed);
+}
+
+#[test]
+fn send_registration_race_never_loses_readiness() {
+    use channel::WaitToken;
+    for _ in 0..128 {
+        let (sender, receiver) = Channel::create().unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let gate = Arc::clone(&barrier);
+        let sender_thread = std::thread::spawn(move || {
+            gate.wait();
+            sender
+                .send(ChannelMessage::new(Vec::new(), Vec::new()))
+                .unwrap();
+            sender
+        });
+        let token = Arc::new(WaitToken::new());
+        token.start(1);
+        barrier.wait();
+        let registered = receiver.register_wait(&token, 1).unwrap();
+        let sender = sender_thread.join().unwrap();
+        assert!(!registered || token.is_notified(1));
+        assert_eq!(receiver.recv().unwrap().bytes.len(), 0);
+        drop(sender);
+    }
+}
+
+#[test]
+fn wait_storage_failure_is_transactional_and_tickets_do_not_retain_tasks() {
+    use channel::WaitToken;
+    let (sender, receiver) = Channel::create().unwrap();
+    let token = Arc::new(WaitToken::new());
+    token.start(1);
+    FAIL_AFTER.set(Some(0));
+    let result = receiver.register_wait(&token, 1);
+    FAIL_AFTER.set(None);
+    assert_eq!(result, Err(ChannelError::OutOfMemory));
+    assert!(!token.is_notified(1));
+    assert_eq!(receiver.queue_len(), 0);
+    assert!(receiver.register_wait(&token, 1).unwrap());
+    assert_eq!(Arc::strong_count(&token), 1);
+    let weak = Arc::downgrade(&token);
+    drop(token);
+    assert!(weak.upgrade().is_none());
+    sender
+        .send(ChannelMessage::new(Vec::new(), Vec::new()))
+        .unwrap();
+    assert!(receiver.recv().is_ok());
+}
+
+#[test]
+fn failed_send_does_not_notify_and_wake_needs_no_allocation() {
+    use channel::WaitToken;
+    let (sender, receiver) = Channel::create_with_limits(1, 1, 0).unwrap();
+    sender
+        .send(ChannelMessage::new(vec![1], Vec::new()))
+        .unwrap();
+    receiver.recv().unwrap();
+    let token = Arc::new(WaitToken::new());
+    token.start(1);
+    assert!(receiver.register_wait(&token, 1).unwrap());
+    let rejected = sender.send(ChannelMessage::new(vec![1, 2], Vec::new()));
+    assert_eq!(rejected.unwrap_err().0, ChannelError::MessageTooLarge);
+    assert!(!token.is_notified(1));
+    FAIL_AFTER.set(Some(0));
+    let result = sender.send(ChannelMessage::new(Vec::new(), Vec::new()));
+    FAIL_AFTER.set(None);
+    assert!(result.is_ok());
+    assert!(token.is_notified(1));
+}
+
+#[test]
+fn closure_registration_race_never_loses_closed_state() {
+    use channel::WaitToken;
+    for _ in 0..128 {
+        let (sender, receiver) = Channel::create().unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let gate = Arc::clone(&barrier);
+        let closer = std::thread::spawn(move || {
+            gate.wait();
+            drop(sender);
+        });
+        let token = Arc::new(WaitToken::new());
+        token.start(1);
+        barrier.wait();
+        let registered = receiver.register_wait(&token, 1).unwrap();
+        closer.join().unwrap();
+        assert!(!registered || token.is_notified(1));
+        assert_eq!(receiver.recv().unwrap_err(), ChannelError::PeerClosed);
+    }
+}
+
+#[test]
+fn canceled_registration_is_removed_without_canceling_new_generation() {
+    use channel::WaitToken;
+    let (sender, receiver) = Channel::create().unwrap();
+    let token = Arc::new(WaitToken::new());
+    token.start(1);
+    assert!(receiver.register_wait(&token, 1).unwrap());
+    receiver.unregister_wait(&token, 1);
+    assert_eq!(Arc::weak_count(&token), 0);
+    sender
+        .send(ChannelMessage::new(Vec::new(), Vec::new()))
+        .unwrap();
+    assert!(!token.is_notified(1));
+    receiver.recv().unwrap();
+    token.start(2);
+    assert!(receiver.register_wait(&token, 2).unwrap());
+    receiver.unregister_wait(&token, 1);
+    drop(sender);
+    assert!(token.is_notified(2));
+    assert!(!token.is_notified(0));
+}
+
+#[test]
+fn registration_cancel_survives_original_owner_without_retaining_pair() {
+    use channel::WaitToken;
+    let (sender, receiver) = Channel::create().unwrap();
+    let alias = Arc::clone(&receiver);
+    let token = Arc::new(WaitToken::new());
+    token.start(1);
+    let registration = receiver.wait_registration();
+    assert_eq!(Arc::strong_count(&receiver), 2);
+    assert!(receiver.register_wait(&token, 1).unwrap());
+    drop(receiver);
+    registration.unregister(&token, 1);
+    assert_eq!(Arc::weak_count(&token), 0);
+    assert!(!token.is_notified(1));
+    assert!(alias.register_wait(&token, 1).unwrap());
+    drop(alias);
+    assert!(token.is_notified(1));
+    assert_eq!(Arc::weak_count(&token), 0);
+    drop(sender);
+    registration.unregister(&token, 1);
+    drop(registration);
+}
+
+#[test]
+fn failed_send_preserves_registration_and_teardown_needs_no_allocation() {
+    use channel::WaitToken;
+    let (sender, receiver) = Channel::create().unwrap();
+    let token = Arc::new(WaitToken::new());
+    token.start(1);
+    assert!(receiver.register_wait(&token, 1).unwrap());
+    let message = ChannelMessage::new(vec![74], Vec::new());
+    FAIL_AFTER.set(Some(0));
+    let result = sender.send(message);
+    FAIL_AFTER.set(None);
+    let (error, returned) = result.unwrap_err();
+    assert_eq!(error, ChannelError::OutOfMemory);
+    assert_eq!(returned.bytes, [74]);
+    assert!(!token.is_notified(1));
+    assert_eq!(Arc::weak_count(&token), 1);
+    assert_eq!(receiver.queue_len(), 0);
+    sender.send(returned).unwrap();
+    assert!(token.is_notified(1));
+    assert_eq!(receiver.recv().unwrap().bytes, [74]);
+    token.start(2);
+    assert!(receiver.register_wait(&token, 2).unwrap());
+    let registration = receiver.wait_registration();
+    FAIL_AFTER.set(Some(0));
+    drop(sender);
+    assert!(token.is_notified(2));
+    registration.unregister(&token, 2);
+    drop(receiver);
+    registration.unregister(&token, 2);
+    drop(registration);
+    FAIL_AFTER.set(None);
+    assert_eq!(Arc::weak_count(&token), 0);
+}
+
+#[test]
+fn repeated_wait_generations_release_all_weak_registrations() {
+    use channel::WaitToken;
+    let (sender, receiver) = Channel::create().unwrap();
+    let token = Arc::new(WaitToken::new());
+    for generation in 1..2048 {
+        token.start(generation);
+        assert!(receiver.register_wait(&token, generation).unwrap());
+        receiver.unregister_wait(&token, generation - 1);
+        assert_eq!(Arc::weak_count(&token), 1);
+        receiver.unregister_wait(&token, generation);
+        assert_eq!(Arc::weak_count(&token), 0);
+        token.notify(generation - 1);
+        assert!(!token.is_notified(generation));
+    }
+    token.start(2048);
+    assert!(receiver.register_wait(&token, 2048).unwrap());
+    drop(sender);
+    assert!(token.is_notified(2048));
+    assert_eq!(Arc::weak_count(&token), 0);
+}

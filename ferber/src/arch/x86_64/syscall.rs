@@ -9,6 +9,7 @@ global_asm!(
     sys_chan_create = const crate::kernel::syscall::SYS_CHAN_CREATE,
     sys_chan_send = const crate::kernel::syscall::SYS_CHAN_SEND,
     sys_chan_recv = const crate::kernel::syscall::SYS_CHAN_RECV,
+    sys_chan_recv_wait = const crate::kernel::syscall::SYS_CHAN_RECV_WAIT,
     user_stack = const crate::kernel::syscall::USER_STACK,
     stack_size = const crate::kernel::syscall::STACK_SIZE,
     sys_yield = const crate::kernel::syscall::SYS_YIELD,
@@ -80,6 +81,20 @@ pub fn init() {
                     == ((1 << 20) | (1 << 11)),
             "x86 privilege boundary requires NX and SYSCALL"
         );
+        // Unsaved user bases and FP/SIMD registers must not pass between tasks.
+        let mut cr0: u64;
+        let mut cr4: u64;
+        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack));
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
+        cr0 |= 1 << 3; // TS: unsupported x87/MMX/SIMD operations trap.
+        cr4 &= !((1 << 16) | (1 << 22)); // No unsaved user FS/GS or PKRU state.
+        asm!("mov cr0, {}", in(reg) cr0, options(nostack));
+        asm!("mov cr4, {}", in(reg) cr4, options(nostack));
+        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack));
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
+        assert_ne!(cr0 & (1 << 3), 0, "integer-only user state requires CR0.TS");
+        assert_eq!(cr4 & (1 << 16), 0, "unsaved user FS/GS bases must be disabled");
+        assert_eq!(cr4 & (1 << 22), 0, "unsaved user PKRU state must be disabled");
         write_msr(0xc000_0080, read_msr(0xc000_0080) | 1 | (1 << 11));
         write_msr(0xc000_0081, (0x10u64 << 48) | (0x08u64 << 32));
         write_msr(0xc000_0082, x86_syscall_entry as *const () as u64);
@@ -95,6 +110,8 @@ unsafe extern "C" {
     fn x86_enter_user(pc: usize, sp: usize) -> !;
     static x86_user_probe_start: u8;
     static x86_user_probe_end: u8;
+    static x86_cooperative_probe_start: u8;
+    static x86_cooperative_probe_end: u8;
     static x86_isolation_start: u8;
     static x86_isolation_end: u8;
     static x86_isolation_fault: u8;
@@ -139,16 +156,34 @@ extern "C" fn x86_syscall_handler(frame: &mut SyscallFrame, entry_flags: u64) {
 /// The active root must retain the kernel and executable user mappings; the
 /// supplied user and kernel stacks must remain allocated and correctly aligned.
 pub unsafe fn drop_to_user(user_pc: usize, user_sp: usize, kernel_sp: usize) -> ! {
-    assert_eq!(kernel_sp & 15, 0);
+    bind_user_kernel_stack(kernel_sp);
     assert_eq!(user_sp & 15, 0);
-    super::trap::set_kernel_stack(kernel_sp);
-    CPU.kernel_sp = kernel_sp;
     CPU.user_sp = 0;
     asm!("xor eax, eax", "mov fs, ax", "mov gs, ax", out("eax") _, options(nostack));
     write_msr(0xc000_0100, 0);
     write_msr(0xc000_0101, (&raw mut CPU) as u64);
     write_msr(0xc000_0102, 0);
     x86_enter_user(user_pc, user_sp)
+}
+
+/// Bind both trusted entry paths to the selected task's retained kernel stack.
+///
+/// # Safety
+/// Called on the sole active CPU with interrupts masked and a live supervisor stack.
+pub unsafe fn bind_user_kernel_stack(kernel_sp: usize) {
+    assert_eq!(kernel_sp & 15, 0);
+    super::trap::set_kernel_stack(kernel_sp);
+    CPU.kernel_sp = kernel_sp;
+}
+
+pub fn cooperative_probe() -> &'static [u8] {
+    unsafe {
+        core::slice::from_raw_parts(
+            &raw const x86_cooperative_probe_start,
+            (&raw const x86_cooperative_probe_end as usize)
+                - (&raw const x86_cooperative_probe_start as usize),
+        )
+    }
 }
 
 pub fn user_probe() -> &'static [u8] {

@@ -100,6 +100,7 @@ pub(super) fn run() {
         ENDPOINT_RIGHTS.bits()
     );
     assert_eq!(receive(&process, second), -11);
+    blocking_receive_checks(&process, first, second);
     assert_eq!(
         call(&process, SYS_CHAN_SEND, [usize::MAX, 0, 0, 0, 0, 0]),
         -9
@@ -388,4 +389,57 @@ fn table_and_node_exhaustion(process: &Arc<SpinLock<Process>>, first: u32, secon
     assert_eq!(process.lock().handle_table().lock().count(), 2);
     drop(held);
     drop(source);
+}
+
+fn blocking_receive_checks(process: &Arc<SpinLock<Process>>, first: u32, second: u32) {
+    let token = Arc::new(WaitToken::new());
+    token.start(1);
+    let args = [second as usize, DATA, 64, IDS, 64, COUNTS];
+    write(process, COUNTS, &[0xc7; 8]);
+    let parked = blocking_attempt(process, args, &token, 1);
+    assert!(matches!(parked, ReceiveAttempt::Park { node, .. } if node.upgrade().is_some()));
+    assert!(!token.is_notified(1));
+    assert_eq!(read::<8>(process, COUNTS), [0xc7; 8]);
+    assert_eq!(send(process, first, 0, 0), 0);
+    assert!(token.is_notified(1));
+
+    let read_only = {
+        let process = process.lock();
+        let table = process.handle_table().lock();
+        Arc::clone(table.lookup(second).unwrap())
+    };
+    let read_only = read_only.attenuate(Rights::READ).unwrap();
+    let denied = insert(process, read_only);
+    let mut denied_args = args;
+    denied_args[0] = denied as usize;
+    assert!(matches!(
+        blocking_attempt(process, denied_args, &token, 1),
+        ReceiveAttempt::Complete(-13)
+    ));
+    assert!(matches!(
+        blocking_attempt(process, args, &token, 1),
+        ReceiveAttempt::Complete(0)
+    ));
+    assert_eq!(read::<8>(process, COUNTS), [0; 8]);
+    close(process, denied);
+
+    token.start(2);
+    assert!(matches!(
+        blocking_attempt(process, args, &token, 2),
+        ReceiveAttempt::Park { .. }
+    ));
+    write(process, DATA, &[0xa5]);
+    assert_eq!(send(process, first, 1, 0), 0);
+    let mut short = args;
+    short[2] = 0;
+    assert!(matches!(
+        blocking_attempt(process, short, &token, 2),
+        ReceiveAttempt::Complete(-90)
+    ));
+    assert_eq!(read::<8>(process, COUNTS), [0; 8]);
+    assert!(matches!(
+        blocking_attempt(process, args, &token, 2),
+        ReceiveAttempt::Complete(0)
+    ));
+    assert_eq!(read::<1>(process, DATA), [0xa5]);
 }

@@ -5,7 +5,7 @@
 
 extern crate alloc;
 use alloc::collections::VecDeque;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -51,9 +51,77 @@ pub const DEFAULT_MAX_QUEUE_DEPTH: usize = 64;
 pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 65536;
 pub const DEFAULT_MAX_HANDLES: usize = 64;
 
+/// One reusable ticket per task; stale notifications cannot signal a later wait.
+pub struct WaitToken {
+    state: AtomicU64,
+}
+
+impl WaitToken {
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicU64::new(0),
+        }
+    }
+
+    pub fn start(&self, generation: u64) {
+        assert!(
+            generation != 0 && generation <= u64::MAX >> 1,
+            "invalid wait generation"
+        );
+        self.state.store(generation << 1, Ordering::Release);
+    }
+
+    pub fn notify(&self, generation: u64) {
+        if generation == 0 || generation > u64::MAX >> 1 {
+            return;
+        }
+        let pending = generation << 1;
+        let _ =
+            self.state
+                .compare_exchange(pending, pending | 1, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    pub fn is_notified(&self, generation: u64) -> bool {
+        generation != 0
+            && generation <= u64::MAX >> 1
+            && self.state.load(Ordering::Acquire) == (generation << 1 | 1)
+    }
+}
+
+struct Waiter {
+    token: Weak<WaitToken>,
+    generation: u64,
+}
+
+fn notify(waiters: VecDeque<Waiter>) {
+    for waiter in waiters {
+        if let Some(token) = waiter.token.upgrade() {
+            token.notify(waiter.generation);
+        }
+    }
+}
+
 struct PairState {
     queues: [VecDeque<ChannelMessage>; 2],
+    waiters: [VecDeque<Waiter>; 2],
     open: [bool; 2],
+}
+
+/// Cancellation remains possible after the original capability node disappears.
+#[derive(Clone)]
+pub struct WaitRegistration {
+    pair: Weak<SpinLock<PairState>>,
+    side: usize,
+}
+
+impl WaitRegistration {
+    pub fn unregister(&self, token: &Arc<WaitToken>, generation: u64) {
+        if let Some(pair) = self.pair.upgrade() {
+            let target = Arc::downgrade(token);
+            pair.lock().waiters[self.side]
+                .retain(|waiter| waiter.generation != generation || !waiter.token.ptr_eq(&target));
+        }
+    }
 }
 
 pub struct ChannelEndpoint {
@@ -87,6 +155,7 @@ impl ChannelEndpoint {
     ) -> Result<(Arc<Self>, Arc<Self>), ChannelError> {
         let pair = Arc::try_new(SpinLock::new(PairState {
             queues: [VecDeque::new(), VecDeque::new()],
+            waiters: [VecDeque::new(), VecDeque::new()],
             open: [true, true],
         }))
         .map_err(|_| ChannelError::OutOfMemory)?;
@@ -140,7 +209,51 @@ impl ChannelEndpoint {
             (bytes, handles)
         );
         queue.push_back(message);
+        let waiters = core::mem::take(&mut pair.waiters[peer]);
+        drop(pair);
+        notify(waiters);
         Ok(())
+    }
+
+    /// Queue inspection and registration share a lock, closing the empty-check race.
+    pub fn register_wait(
+        &self,
+        token: &Arc<WaitToken>,
+        generation: u64,
+    ) -> Result<bool, ChannelError> {
+        let mut pair = self.pair.lock();
+        if !pair.queues[self.side].is_empty() || !pair.open[1 - self.side] {
+            return Ok(false);
+        }
+        let waiters = &mut pair.waiters[self.side];
+        waiters.retain(|waiter| {
+            waiter.token.upgrade().is_some_and(|ticket| {
+                ticket.state.load(Ordering::Acquire) == waiter.generation << 1
+            })
+        });
+        if !waiters.iter().any(|waiter| {
+            waiter.generation == generation && waiter.token.ptr_eq(&Arc::downgrade(token))
+        }) {
+            waiters
+                .try_reserve(1)
+                .map_err(|_| ChannelError::OutOfMemory)?;
+            waiters.push_back(Waiter {
+                token: Arc::downgrade(token),
+                generation,
+            });
+        }
+        Ok(true)
+    }
+
+    pub fn unregister_wait(&self, token: &Arc<WaitToken>, generation: u64) {
+        self.wait_registration().unregister(token, generation);
+    }
+
+    pub fn wait_registration(&self) -> WaitRegistration {
+        WaitRegistration {
+            pair: Arc::downgrade(&self.pair),
+            side: self.side,
+        }
     }
 
     /// On rejection the caller retains the message and drops it after unlocking.
@@ -220,11 +333,17 @@ impl ChannelEndpoint {
 
 impl Drop for ChannelEndpoint {
     fn drop(&mut self) {
-        let discarded = {
+        let (discarded, waiters) = {
             let mut pair = self.pair.lock();
             pair.open[self.side] = false;
-            core::mem::take(&mut pair.queues[self.side])
+            (
+                core::mem::take(&mut pair.queues[self.side]),
+                core::mem::take(&mut pair.waiters),
+            )
         };
+        for queue in waiters {
+            notify(queue);
+        }
         drop(discarded);
     }
 }

@@ -3,7 +3,9 @@
 #![allow(dead_code)]
 
 extern crate alloc;
+use alloc::borrow::Cow;
 use alloc::sync::Weak;
+use core::cell::UnsafeCell;
 use crate::arch::CpuContext;
 use crate::kernel::capabilities::KernelObject;
 use crate::kernel::memory::vmo::Vmo;
@@ -20,12 +22,13 @@ pub enum ThreadState {
 
 pub struct Thread {
     id: u64,
-    name: &'static str,
+    name: Cow<'static, str>,
     process: Option<Weak<SpinLock<Process>>>,
     state: ThreadState,
-    pub context: CpuContext,
+    context: UnsafeCell<CpuContext>,
     kernel_stack: Vmo,
     user_stack: Option<Vmo>,
+    user_stack_base: Option<usize>,
 }
 
 unsafe impl Send for Thread {}
@@ -40,7 +43,7 @@ impl KernelObject for Thread {
 impl Thread {
     pub fn new(
         id: u64,
-        name: &'static str,
+        name: impl Into<Cow<'static, str>>,
         entry: usize,
         kstack: Vmo,
         kstack_top: usize,
@@ -48,12 +51,13 @@ impl Thread {
     ) -> Self {
         Self {
             id,
-            name,
+            name: name.into(),
             process,
             state: ThreadState::Ready,
-            context: CpuContext::new(entry, kstack_top),
+            context: UnsafeCell::new(CpuContext::new(entry, kstack_top)),
             kernel_stack: kstack,
             user_stack: None,
+            user_stack_base: None,
         }
     }
 
@@ -61,8 +65,8 @@ impl Thread {
         self.id
     }
 
-    pub fn name(&self) -> &'static str {
-        self.name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn state(&self) -> ThreadState {
@@ -85,11 +89,37 @@ impl Thread {
         &self.kernel_stack
     }
 
+    pub fn kernel_stack_top(&self) -> usize {
+        let physical = self.kernel_stack.frames().get(0).expect("kernel stack frame");
+        crate::kernel::memory::phys_map::phys_to_virt(physical)
+            .expect("kernel stack alias")
+            + self.kernel_stack.size()
+    }
+
+    pub(crate) fn initialize_context(&mut self, entry: usize) {
+        *self.context.get_mut() = CpuContext::new(entry, self.kernel_stack_top());
+    }
+
+    /// # Safety
+    /// The sole active CPU must retain this thread, release its lock before
+    /// switching, and ensure no other execution accesses the saved context.
+    pub(crate) unsafe fn context_ptr(&self) -> *mut CpuContext {
+        self.context.get()
+    }
+
     pub fn user_stack(&self) -> Option<&Vmo> {
         self.user_stack.as_ref()
     }
 
     pub fn set_user_stack(&mut self, ustack: Vmo) {
         self.user_stack = Some(ustack);
+    }
+
+    pub fn set_user_stack_mapping(&mut self, base: usize) {
+        self.user_stack_base = Some(base);
+    }
+
+    pub fn user_stack_mapping(&self) -> Option<(usize, usize)> {
+        Some((self.user_stack_base?, self.user_stack.as_ref()?.size()))
     }
 }

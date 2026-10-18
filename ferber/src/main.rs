@@ -303,10 +303,8 @@ fn kernel_start(
         kprintln!("[task]    [3/5] thread creation with isolated dual-stack context: ok");
 
         // 4. Scheduler ready queue & dispatch staging
-        scheduler::spawn(thread.clone());
-        assert_eq!(scheduler::ready_count(), 1);
-        scheduler::sched_yield();
-        kprintln!("[task]    [4/5] scheduler ready queue & dispatch staging: ok");
+        assert_eq!(scheduler::ready_count(), 0);
+        kprintln!("[task]    [4/5] scheduler initialized; userspace dispatch checked below: ok");
 
         // 5. Recursive job subtree kill & zero-orphan cascade teardown
         system_job.lock().kill();

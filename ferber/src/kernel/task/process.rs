@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 extern crate alloc;
+use alloc::borrow::Cow;
 use super::job::Job;
 use super::thread::{Thread, ThreadState};
 use super::TaskError;
@@ -38,6 +39,7 @@ pub struct Process {
     state: ProcessState,
     address_space: ArchAddressSpace,
     handle_table: SpinLock<HandleTable>,
+    backing: Vec<Vmo>,
     threads: Vec<Arc<SpinLock<Thread>>>,
     self_weak: Option<Weak<SpinLock<Process>>>,
 }
@@ -65,6 +67,7 @@ impl Process {
             state: ProcessState::Created,
             address_space,
             handle_table: SpinLock::new(HandleTable::new()),
+            backing: Vec::new(),
             threads: Vec::new(),
             self_weak: None,
         }
@@ -75,15 +78,13 @@ impl Process {
         entry: usize,
         kstack_size: usize,
     ) -> Result<Arc<SpinLock<Thread>>, TaskError> {
-        let name = alloc::boxed::Box::leak(
-            alloc::format!("{}/thread_{}", self.name, self.threads.len()).into_boxed_str(),
-        );
+        let name = alloc::format!("{}/thread_{}", self.name, self.threads.len());
         self.create_named_thread(name, entry, kstack_size)
     }
 
     pub fn create_named_thread(
         &mut self,
-        name: &'static str,
+        name: impl Into<Cow<'static, str>>,
         entry: usize,
         kstack_size: usize,
     ) -> Result<Arc<SpinLock<Thread>>, TaskError> {
@@ -137,6 +138,19 @@ impl Process {
 
     pub fn handle_table(&self) -> &SpinLock<HandleTable> {
         &self.handle_table
+    }
+
+    pub fn take_handles(&mut self) -> HandleTable {
+        core::mem::replace(&mut *self.handle_table.lock(), HandleTable::new())
+    }
+
+    pub fn retain_backing(&mut self, vmo: Vmo) {
+        self.backing.push(vmo);
+    }
+
+    pub fn detach_thread(&mut self, id: u64) -> Option<Arc<SpinLock<Thread>>> {
+        let index = self.threads.iter().position(|thread| thread.lock().id() == id)?;
+        Some(self.threads.remove(index))
     }
 
     pub fn thread_count(&self) -> usize {

@@ -151,11 +151,12 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
   - [x] Handle operations: `sys_handle_close`, `sys_handle_duplicate` with `DUPLICATE` enforcement and shared-node aliases
   - [x] Nonblocking channel IPC: `sys_chan_create`, `sys_chan_send`, `sys_chan_recv`; validated user buffers, transactional VMO/leaf Resource capability moves, bounded queues, and peer closure
   - [ ] Ownership-cycle policy for transferring channel endpoints and other graph-owning capabilities
-  - [ ] Channel wait-queue integration: blocking `sys_chan_recv` with scheduler-backed thread parking and wakeup
+  - [x] Resident channel wait-queue integration: blocking receive (`10`) requires `READ | WAIT`, parks threads, and wakes on message arrival, final peer closure, or authority cancellation; nonblocking receive (`9`) remains unchanged
   - [ ] FastCall IPC: `sys_fastcall` register transfer
   - [ ] VMO operations: `sys_vmo_create`, `sys_vmo_read`, `sys_vmo_write`, `sys_vmo_map`, `sys_vmo_unmap`
   - [ ] Task creation: `sys_process_create`, `sys_thread_create`
-  - [ ] Scheduled yield and complete thread/process exit reclamation
+  - [x] Cooperative resident yield and thread/last-thread process exit reclamation on a permanent-root dispatcher stack; repeated-run frame/node baselines and empty registry checks
+  - [ ] Extend scheduling and exit reclamation to user-created tasks
 - [x] Resident user memory safety validation:
   - [x] Canonical user ranges, checked arithmetic, and effective user/read/write page permissions
   - [x] `copy_from_user` / `copy_to_user`: whole-range preflight and physical-alias copies under an unsafe stable-mapping/nonaliasing caller contract
@@ -176,6 +177,16 @@ revocation, reference-owned nodes/backing, and a 1,024-node live/reserved quota.
 additional `capability_mutation: PASS` marker. This extends the resident path;
 it does not add scheduling, init, VMO-mapping revocation, or complete exit cleanup.
 See [the syscall ABI](docs/syscall-abi.md).
+
+The cooperative resident path (`Uranium-238-v0.2.5`) runs isolated tasks on one
+active CPU with interrupts disabled. Yield switches ready tasks; blocking channel receive parks
+until message arrival, peer closure, or cancellation. Final thread/process
+resources are released outside locks after switching to the permanent-root
+VMO-backed dispatcher stack. Normal boots additionally require
+`cooperative_scheduling: PASS`, `blocking_channel_receive: PASS`, and
+`task_reclamation: PASS`. Graph-owning capability transfer remains rejected;
+its lifetime policy is still open. This path does not add ELF/init, userspace
+task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
 
 ### Userspace Binary Loading & Execution
 - [ ] Userspace ELF loader (`elf_loader.rs`):

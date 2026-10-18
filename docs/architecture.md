@@ -36,6 +36,14 @@ Spawn requires explicit capability handoff — pass exactly what the child needs
 
 Jobs form a tree. Killing a job kills everything in it recursively. No orphans.
 
+Resident tasks cooperate through yield, blocking receive, and exit on one active
+CPU with interrupts disabled. Existing architecture contexts preserve stackful
+kernel continuations. A retained VMO-backed dispatcher stack runs on the
+permanent kernel root; final task/process drops happen there outside locks after
+switching away from the retired stack and address space. The last resident task
+returns control to the kernel harness for reclamation checks. This does not add
+preemption, FP/vector state, ELF loading, init, or task-creation syscalls.
+
 ## 4. IPC
 
 Channels: async, bidirectional, bytes + handles, bounded queue, move semantics.
@@ -52,8 +60,10 @@ publishing any result. Failed operations preserve table entries, queued
 messages, and user output. Discarding a message releases its references without
 revoking aliases. Payload backing is limited to checked VMOs and the current leaf
 Resource object; channels and task objects need a separate ownership-cycle
-design before transfer. Blocking receive and
-scheduler integration remain planned. See the [resident ABI](syscall-abi.md).
+design before transfer. Blocking receive requires `READ | WAIT` and parks a
+resident thread until message arrival, peer closure, or authority cancellation.
+The dispatcher rechecks wait authority at cooperative boundaries. See the
+[resident ABI](syscall-abi.md).
 
 ## 5. Memory
 

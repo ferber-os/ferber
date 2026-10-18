@@ -10,7 +10,8 @@ pub mod trap;
 mod user;
 
 pub use user::{
-    drop_to_user, isolation_address, isolation_fault_offset, isolation_probe, user_probe,
+    cooperative_probe, drop_to_user, isolation_address, isolation_fault_offset, isolation_probe,
+    user_probe,
 };
 
 #[allow(unused_imports)]
@@ -22,5 +23,17 @@ pub fn init() {
 }
 
 pub use paging::{
-    bootstrap_aliases, finalize_kernel_space, physical_kernel_bounds, runtime_physical_base,
+    activate_kernel_address_space, bootstrap_aliases, finalize_kernel_space, physical_kernel_bounds,
+    runtime_physical_base,
 };
+
+/// Check supervisor trap state before switching a kernel continuation.
+///
+/// # Safety
+/// Call only in supervisor mode with interrupts disabled and a retained stack.
+pub unsafe fn bind_user_kernel_stack(kernel_sp: usize) {
+    assert_eq!(kernel_sp & 15, 0);
+    let scratch: usize;
+    core::arch::asm!("csrr {}, sscratch", out(reg) scratch, options(nostack));
+    assert_eq!(scratch, 0, "scheduler entered with a user trap stack armed");
+}

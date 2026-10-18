@@ -1,18 +1,19 @@
-//! Nonblocking channel operations. The process lock pins all user mappings.
+//! Transactional channel operations. The process lock pins all user mappings.
 
 use super::{cap_errno, SYS_CHAN_CREATE, SYS_CHAN_RECV, SYS_CHAN_SEND};
 use crate::kernel::capabilities::{
     CapNode, HandleTable, ObjectType, Resource, Rights, CAP_NODE_ALLOCATOR,
 };
 use crate::kernel::ipc::channel::{
-    Channel, ChannelError, ChannelMessage, DEFAULT_MAX_HANDLES, DEFAULT_MAX_MESSAGE_BYTES,
+    Channel, ChannelError, ChannelMessage, WaitRegistration, WaitToken, DEFAULT_MAX_HANDLES,
+    DEFAULT_MAX_MESSAGE_BYTES,
 };
 use crate::kernel::memory::paging::AddressSpace;
 use crate::kernel::memory::user_mem::{copy_from_user, copy_to_user, preflight};
 use crate::kernel::memory::Vmo;
 use crate::kernel::sync::SpinLock;
 use crate::kernel::task::Process;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
 #[path = "syscall_channel_tests.rs"]
@@ -33,7 +34,8 @@ impl From<ChannelError> for Error {
     }
 }
 
-const ENDPOINT_RIGHTS: Rights = Rights::READ
+pub(super) const ENDPOINT_RIGHTS: Rights = Rights::READ
+    .union(Rights::WAIT)
     .union(Rights::WRITE)
     .union(Rights::TRANSFER)
     .union(Rights::DUPLICATE)
@@ -171,50 +173,111 @@ fn recv(process: &Arc<SpinLock<Process>>, args: [usize; 6]) -> Result<(), Error>
         let channel = node
             .object_ref::<Channel>()
             .expect("checked channel backing");
-        let (_, message) = channel.recv_with(|message| {
-            let bytes_len = message.bytes.len();
-            let handles_len = message.handles.len();
-            if args[2] < bytes_len || args[4] < handles_len {
-                return Err(Error(-90));
-            }
-            let mut slots = [0; DEFAULT_MAX_HANDLES];
-            table
-                .free_slots(handles_len, &mut slots)
-                .map_err(|error| Error(cap_errno(error)))?;
-            let spans = [
-                (args[1], bytes_len),
-                (args[3], handles_len * 4),
-                (args[5], 8),
-            ];
-            validate_outputs(process.address_space(), &spans)?;
-            let mut encoded = [0; DEFAULT_MAX_HANDLES * 4];
-            for (index, slot) in slots[..handles_len].iter().enumerate() {
-                encoded[index * 4..index * 4 + 4].copy_from_slice(&slot.to_le_bytes());
-            }
-            let mut counts = [0; 8];
-            counts[..4].copy_from_slice(&(bytes_len as u32).to_le_bytes());
-            counts[4..].copy_from_slice(&(handles_len as u32).to_le_bytes());
-            unsafe {
-                copy_to_user(process.address_space(), args[1], &message.bytes)
-                    .expect("stable channel bytes output");
-                copy_to_user(
-                    process.address_space(),
-                    args[3],
-                    &encoded[..handles_len * 4],
-                )
-                .expect("stable channel handles output");
-                copy_to_user(process.address_space(), args[5], &counts)
-                    .expect("stable channel counts output");
-            }
-            for (slot, node) in slots.iter().copied().zip(message.handles.drain(..)) {
-                table.insert_at(slot, node);
-            }
-            Ok::<_, Error>(())
-        })?;
-        message
+        recv_message(&process, &mut table, channel, args)?
     };
     drop(message);
     Ok(())
+}
+
+fn recv_message(
+    process: &Process,
+    table: &mut HandleTable,
+    channel: &Channel,
+    args: [usize; 6],
+) -> Result<ChannelMessage, Error> {
+    let (_, message) = channel.recv_with(|message| {
+        let bytes_len = message.bytes.len();
+        let handles_len = message.handles.len();
+        if args[2] < bytes_len || args[4] < handles_len {
+            return Err(Error(-90));
+        }
+        let mut slots = [0; DEFAULT_MAX_HANDLES];
+        table
+            .free_slots(handles_len, &mut slots)
+            .map_err(|error| Error(cap_errno(error)))?;
+        let spans = [
+            (args[1], bytes_len),
+            (args[3], handles_len * 4),
+            (args[5], 8),
+        ];
+        validate_outputs(process.address_space(), &spans)?;
+        let mut encoded = [0; DEFAULT_MAX_HANDLES * 4];
+        for (index, slot) in slots[..handles_len].iter().enumerate() {
+            encoded[index * 4..index * 4 + 4].copy_from_slice(&slot.to_le_bytes());
+        }
+        let mut counts = [0; 8];
+        counts[..4].copy_from_slice(&(bytes_len as u32).to_le_bytes());
+        counts[4..].copy_from_slice(&(handles_len as u32).to_le_bytes());
+        unsafe {
+            copy_to_user(process.address_space(), args[1], &message.bytes)
+                .expect("stable channel bytes output");
+            copy_to_user(
+                process.address_space(),
+                args[3],
+                &encoded[..handles_len * 4],
+            )
+            .expect("stable channel handles output");
+            copy_to_user(process.address_space(), args[5], &counts)
+                .expect("stable channel counts output");
+        }
+        for (slot, node) in slots.iter().copied().zip(message.handles.drain(..)) {
+            table.insert_at(slot, node);
+        }
+        Ok::<_, Error>(())
+    })?;
+    Ok(message)
+}
+
+pub(super) enum ReceiveAttempt {
+    Complete(isize),
+    Park {
+        node: Weak<CapNode>,
+        registration: WaitRegistration,
+    },
+}
+
+pub(super) fn blocking_attempt(
+    process: &Arc<SpinLock<Process>>,
+    args: [usize; 6],
+    token: &Arc<WaitToken>,
+    generation: u64,
+) -> ReceiveAttempt {
+    loop {
+        let outcome = (|| {
+            let process = process.lock();
+            let mut table = process.handle_table().lock();
+            let node = endpoint(&table, args[0], Rights::READ | Rights::WAIT)?;
+            let channel = node
+                .object_ref::<Channel>()
+                .expect("checked channel backing");
+            match recv_message(&process, &mut table, channel, args) {
+                Ok(message) => Ok((ReceiveAttempt::Complete(0), Some(message))),
+                Err(Error(-11)) => {
+                    if channel.register_wait(token, generation)? {
+                        Ok((
+                            ReceiveAttempt::Park {
+                                node: Arc::downgrade(&node),
+                                registration: channel.wait_registration(),
+                            },
+                            None,
+                        ))
+                    } else {
+                        // A send/close between inspection and registration requires a fresh receive.
+                        Err(Error(-11))
+                    }
+                }
+                Err(error) => Err(error),
+            }
+        })();
+        match outcome {
+            Ok((attempt, message)) => {
+                drop(message);
+                return attempt;
+            }
+            Err(Error(-11)) => continue,
+            Err(error) => return ReceiveAttempt::Complete(error.0),
+        }
+    }
 }
 
 /// Output spans must be disjoint even when different virtual pages alias RAM.

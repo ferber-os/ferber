@@ -155,4 +155,9 @@ impl Job {
     pub fn processes(&self) -> &[Arc<SpinLock<Process>>] {
         &self.processes
     }
+
+    pub fn detach_process(&mut self, id: u64) -> Option<Arc<SpinLock<Process>>> {
+        let index = self.processes.iter().position(|process| process.lock().id() == id)?;
+        Some(self.processes.remove(index))
+    }
 }

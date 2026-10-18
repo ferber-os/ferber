@@ -1,8 +1,9 @@
 # Resident Syscall ABI
 
 Ferber uses Linux-style argument registers with its own syscall numbers.
-This ABI currently runs one resident task on one active CPU. It does not provide
-Linux or musl compatibility, scheduling, or complete task/exit reclamation.
+This ABI cooperatively schedules resident user tasks on one active CPU with
+interrupts disabled. It does not provide Linux or musl compatibility, preemption,
+userspace task creation, ELF loading, or init.
 
 ## Calling Convention
 
@@ -14,14 +15,18 @@ Linux or musl compatibility, scheduling, or complete task/exit reclamation.
 Enter through `ecall` on RISC-V and `syscall` on x86-64. Unused arguments are
 ignored. Returning calls preserve general registers other than the result and
 the x86 `syscall` architectural clobbers (`rcx`, `r11`). x86 return flags are
-sanitized. FP/vector state is outside the resident ABI.
+sanitized. FP/vector state is outside the resident ABI. x86-64 clears
+`CR4.FSGSBASE` and `CR4.PKE`, and sets `CR0.TS` before user execution. This
+prevents unsaved FS/GS bases and PKRU state from passing between tasks, and
+traps FP/SIMD instructions. Unsupported instructions follow the resident
+harness's fatal exception path.
 
 ## Operations
 
 | Number | Name | Arguments | Successful result |
 | --- | --- | --- | --- |
-| `0` | Yield hint | None | `0`, immediately |
-| `1` | Thread exit | Exit status | Does not return; marks the thread Dead and halts |
+| `0` | Cooperative yield | None | `0`, when the task resumes |
+| `1` | Thread exit | Exit status | Does not return; retires the calling thread |
 | `2` | Handle close | Handle | `0` |
 | `3` | Handle duplicate | Handle | New handle number |
 | `4` | Capability inspect | Handle, output address | `0` |
@@ -30,6 +35,7 @@ sanitized. FP/vector state is outside the resident ABI.
 | `7` | Channel create | Pair output address | `0`; writes two handles |
 | `8` | Channel send | Endpoint handle, bytes address, byte count, handles address, handle count | `0` |
 | `9` | Channel receive | Endpoint handle, bytes address, byte capacity, handles address, handle capacity, counts output address | `0` |
+| `10` | Blocking channel receive | Same six arguments as `9` | `0` |
 
 Every handle is resolved through the trusted calling process's table. Processes
 are born with zero handles; delegation is explicit. Handle zero is valid.
@@ -90,12 +96,12 @@ uses fallible heap storage and checked `u64` IDs; failed allocations release
 reserved quota. Closing handles can make quota available again. ID exhaustion
 is permanent, and IDs are not exposed through inspection.
 
-## Nonblocking Channel IPC
+## Channel IPC
 
 Create writes an eight-byte record containing two little-endian `u32` endpoint
 handles. No input handle is required. Both endpoints are created and published
-together. Their rights are `READ`, `WRITE`, `TRANSFER`, `DUPLICATE`, `INSPECT`,
-and `MANAGE`; memory and execution rights are absent. Failure leaves the table
+together. Their rights are `READ`, `WRITE`, `WAIT`, `TRANSFER`, `DUPLICATE`,
+`INSPECT`, and `MANAGE`; memory and execution rights are absent. Failure leaves the table
 and output unchanged.
 
 Send copies at most 65,536 bytes and 64 little-endian `u32` handle numbers into
@@ -108,7 +114,7 @@ object, with both their type tag and actual backing checked. Channel, Process,
 Job, Thread, and other backing return `-22`, including aliases and descendants.
 Graph-owning payloads need a lifetime policy before queues can retain them safely.
 
-Receive requires `READ` and consumes the oldest message only when the supplied
+Nonblocking receive (`9`) requires `READ` and consumes the oldest message only when the supplied
 buffers and handle table have room. Its eight-byte counts record contains the
 received byte count followed by handle count, both little-endian `u32` values.
 The handles buffer receives little-endian `u32` destination slots; unused output
@@ -125,29 +131,64 @@ slots, and counts together under the resident stable-mapping contract. Every
 failed receive leaves user outputs, the queue, and the table unchanged. Every
 failed send preserves the sender's exact source slots and queue contents.
 
-Each incoming queue holds up to 64 messages. Full queues and empty open queues
-return `-11`. Send to a closed peer returns `-32`; receive drains already queued
+Each incoming queue holds up to 64 messages. Send to a full queue and
+nonblocking receive from an empty open queue return `-11`. Send to a closed peer returns `-32`; receive drains already queued
 messages before returning `-32` for an empty closed queue. Endpoint closure is
 observed after its last backing owner is released. Discarded messages release
 node references without revoking shared aliases or descendants. Queue state
 uses one lock per endpoint pair; discarded messages are destroyed after that
 lock is released. Endpoint, message, and queue allocations are fallible.
 
-These calls do not park threads, wait for readiness, or schedule another task.
-Blocking receive and wait queues remain separate work.
+Blocking receive (`10`) requires both `READ` and `WAIT`, including when a message
+is already queued. It uses the same capacities, buffer validation, publication,
+and retry rules as `9`. An empty open queue parks the calling thread. Message
+arrival or final peer closure makes the waiter runnable; readiness is rechecked
+before consuming a message, so another receiver may win and the caller may park
+again. There is no timeout and no blocking send.
+
+A suspended receive retains its original capability identity. Closing its source
+slot cancels it with `-9`, even if a readiness notification already occurred;
+reusing the numeric slot cannot retarget the wait. Revocation of that node or an
+ancestor cancels it with `-116`. The dispatcher scans waits at cooperative
+boundaries and revalidates authority before resumed delivery. Cancellation does
+not change user outputs or consume a message. Revocation denies authority; it
+does not itself close the endpoint. Endpoint closure still requires release of
+its final backing owner.
+
+## Cooperative Scheduling and Exit
+
+Yield places a running thread behind other ready threads and returns `0` when
+it resumes. With no other runnable task, it resumes itself. Kernel continuations
+use the architecture's existing callee-saved `CpuContext`; each task retains its
+trap/syscall frame on its VMO-backed kernel stack. Address-space and trusted
+kernel-entry stack state are selected before entering that task's userspace.
+
+Exit marks the calling thread Dead and never resumes its continuation. The
+permanent-root dispatcher runs on a retained VMO-backed stack, so the exited
+thread's active stack and tables are not freed while in use. Final thread and
+last-thread process resources are detached and destroyed outside scheduler,
+process, handle-table, and channel locks. This includes handles whose destruction
+closes endpoints or discards queued messages. Surviving tasks continue running.
+When all resident tasks exit, the scheduler returns to the kernel harness, which
+checks reclamation before halting. Live tasks all blocked without a runnable
+wake source are diagnosed as deadlock, not successful completion.
+
+Scheduling remains cooperative, single-CPU, and integer-only. Interrupt-driven
+wakeup, preemption, SMP, concurrent unmapping, FP/vector state, and user-created
+tasks remain outside this ABI.
 
 ## Errors and Validation Order
 
 | Result | Meaning |
 | --- | --- |
-| `-9` | Invalid handle, including nonzero bits above bit 31 |
+| `-9` | Invalid handle, including nonzero bits above bit 31, or suspended receive cancelled by source-slot close |
 | `-11` | Channel queue is full, or empty with its peer still open |
 | `-12` | Capability-node, endpoint, message, or queue allocation failed |
 | `-13` | Required right is absent |
 | `-14` | User buffer range is invalid or lacks the required user permissions |
 | `-22` | Invalid rights mask, endpoint backing/type, repeated transfer slot, unsupported payload backing/type, or overlapping receive outputs |
 | `-24` | Handle table is full |
-| `-28` | Live/reserved node quota or node IDs exhausted |
+| `-28` | Live/reserved node quota, node IDs, or wait generations exhausted |
 | `-32` | Channel peer is closed and no queued message can be received |
 | `-38` | Unknown syscall number |
 | `-90` | Message exceeds limits or receive buffers are too small |
@@ -180,7 +221,10 @@ ancestor/sibling survival, retained ancestry, and allocation limits/recovery.
 Channel checks cover nonblocking message exchange and capability moves, rights
 denial, malformed buffers, retry after short buffers, bounded queues, peer
 closure, and failed-operation preservation. Probe bookkeeping is separate from
-runtime dispatch.
+runtime dispatch. Scheduling probes run isolated resident tasks through repeated
+yields and blocking receive, including peer closure and cancellation. Repeated
+runs must restore the physical-frame and capability-node baselines and leave
+the scheduler registry empty after all tasks exit.
 
 `bash scripts/channel-tests.sh` runs host regressions against the channel core
 for opposite-direction sends, deterministic allocation failures, full-queue
@@ -190,14 +234,27 @@ checks use real capability nodes to cover ownership and destructor reentrancy.
 The resident test observer diagnoses a nonzero exit status or incomplete
 coverage as a failed run, with a kernel panic rather than success markers.
 
-A successful normal boot emits exactly one of each marker:
+A successful normal boot also requires `memory_verification: PASS` and emits
+exactly one of each resident marker:
 
 ```text
 [FERBER_TEST] privilege_switch_roundtrip: PASS
 [FERBER_TEST] handle_syscalls: PASS
 [FERBER_TEST] capability_mutation: PASS
 [FERBER_TEST] channel_syscalls: PASS
+[FERBER_TEST] cooperative_scheduling: PASS
+[FERBER_TEST] blocking_channel_receive: PASS
+[FERBER_TEST] task_reclamation: PASS
 ```
 
 Isolation, RX-write, and NX-execute probes remain separate builds without these
 handle fixtures. Their existing protection-fault markers remain unchanged.
+
+The separate debug `cooperative-deadlock-probe` build runs two receivers without
+a runnable producer. It must diagnose
+`cooperative deadlock: live tasks with no runnable producer` with a kernel panic;
+it must not emit `cooperative_scheduling`, `blocking_channel_receive`, or
+`task_reclamation` success markers. Earlier memory and legacy syscall checks
+may complete before the deliberate deadlock. Both architecture smoke suites
+check the diagnostic rather than treating a timeout or an arbitrary panic as
+success; the log parser rejects missing, duplicate, and truncated evidence.

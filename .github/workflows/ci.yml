@@ -49,7 +49,7 @@ jobs:
       - name: Clippy (user probes)
         working-directory: ferber
         run: |
-          for feature in user-isolation-probe user-write-probe user-execute-probe; do
+          for feature in user-isolation-probe user-write-probe user-execute-probe cooperative-deadlock-probe; do
             cargo clippy --target riscv64gc-unknown-none-elf --features "$feature" -- -D warnings
             cargo clippy --target x86_64-unknown-none --features "qemu-debug-port,$feature" -- -D warnings
           done

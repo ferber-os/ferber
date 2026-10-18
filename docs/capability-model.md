@@ -101,8 +101,9 @@ number can later name a different capability. Tables, typed handles, and message
 own `Arc<CapNode>` references. Nodes own their parent and object, so descendants
 retain their ancestry and backing. Nodes and objects are reclaimed after their
 final owners disappear; closing the last numeric handle need not remove every
-owner. Unshared ancestry chains are dropped iteratively. Complete task/exit
-reclamation remains future work.
+owner. Unshared ancestry chains are dropped iteratively. Resident thread exit
+reclaims the retired thread and, after its last thread exits, its process.
+Final drops happen outside locks on the permanent-root dispatcher stack.
 
 The global factory limits live and reserved nodes to 1,024. Roots and derived
 children consume quota; duplicate aliases do not. Fallible allocation and checked
@@ -183,7 +184,8 @@ Capabilities move across processes with strict linear ownership semantics:
 
 The resident channel syscalls move up to 64 capabilities per message. Send
 requires `WRITE` on the endpoint and `TRANSFER` on every payload capability;
-receive requires `READ`. A rejected send preserves every source slot. A rejected
+nonblocking receive requires `READ`, while blocking receive requires `READ | WAIT`
+even when data is ready. A rejected send preserves every source slot. A rejected
 receive leaves the message queued, the receiver table unchanged, and all user
 output unchanged. Repeated source slot numbers are invalid, while distinct
 slots aliasing one node can be moved together. Queued nodes that become revoked
@@ -195,6 +197,14 @@ can retain queues directly or through handle tables, so they are rejected until
 graph-owning transfers have a complete lifetime policy. The same restrictions
 apply to attenuated or duplicated aliases. A capability's type tag alone never
 authorizes a cast: dispatch also checks the backing's runtime type.
+
+Blocking receive retains the original capability identity across suspension.
+Closing its source slot cancels the wait with an invalid-handle error, including
+after a readiness notification; slot reuse cannot change its authority.
+Revoking the node or an ancestor cancels it as revoked. Dispatcher safe points
+revalidate waits before resumed delivery. Neither cancellation nor revocation
+consumes a message or changes user output. Revocation does not destroy the
+endpoint; only its final backing-owner release closes that side of the pair.
 
 ---
 
