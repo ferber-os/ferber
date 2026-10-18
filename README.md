@@ -167,106 +167,26 @@ See [ROADMAP.md](ROADMAP.md).
 
 ---
 
-## Building the RISC-V reference port
+## Building
 
-Requirements:
-- Rust nightly (we use features that aren't stable yet — appropriate for a kernel)
-- RISC-V target: `rustup target add riscv64gc-unknown-none-elf`
-- QEMU: `qemu-system-riscv64`
-- A tolerance for triple faults
+Install Rust nightly and the targets you need:
 
 ```bash
-git clone https://github.com/notvcto/ferber
-cd ferber
-make run     # boots in QEMU
-make debug   # boots with GDB server on :1234
+rustup toolchain install nightly
+rustup target add riscv64gc-unknown-none-elf x86_64-unknown-none x86_64-unknown-uefi --toolchain nightly
+export RUSTUP_TOOLCHAIN=nightly
 ```
 
-`make run` executes the in-kernel checks and resident user-mode probes. It checks
-returning syscalls, handle operations, capability mutation, transactional channel
-IPC, cooperative scheduling between isolated tasks, blocking receive, and exit
-reclamation. A successful normal boot requires `memory_verification: PASS` and
-seven resident markers: `privilege_switch_roundtrip: PASS`, `handle_syscalls: PASS`,
-`capability_mutation: PASS`, `channel_syscalls: PASS`, `cooperative_scheduling: PASS`,
-`blocking_channel_receive: PASS`, and `task_reclamation: PASS`, each with the
-`[FERBER_TEST]` prefix. After all tasks exit and reclamation checks finish, it
-halts until QEMU is stopped.
-The separate `user-isolation-probe` feature attempts a supervisor-memory read
-and expects a diagnosed user protection fault followed by
-`[FERBER_TEST] privilege_isolation: PASS`.
-The separate `user-write-probe` and `user-execute-probe` features require a
-user protection fault when writing RX code or entering an NX code page,
-respectively. Their markers are `privilege_write_rx: PASS` and
-`privilege_execute_nx: PASS`, with the same `[FERBER_TEST]` prefix. Run each
-fault probe separately.
+Install QEMU to run the kernel. ISO builds also require xorriso, dosfstools, and mtools.
 
-The physical allocator uses all eligible firmware-reported RAM ranges from
-the RISC-V device tree or x86-64 UEFI map, including discontiguous ranges.
-Reserved ranges, the kernel image, boot data, and allocator metadata remain
-unavailable for allocation. Both ports run the kernel in the
-high half with permanent supervisor mappings and packed RAM aliases. Sv39's
-RAM-alias window is 248 GiB; x86-64 uses four-level paging and the CPU's
-physical-address width. Unsupported capacity is rejected rather than
-truncated. The heap still limits one allocation to 128 MiB. See
-[the memory model](docs/memory.md) for exact boundaries. Init remains planned
-for Phase 3.
-
-The x86-64 kernel and UEFI loader exercise the same user-mode contract in
-QEMU/OVMF. `bash scripts/riscv-smoke.sh` and `make x86-smoke` check normal,
-supervisor-read, RX-write, and NX-execute boots in debug and release builds.
-The x86 roundtrip also checks hostile user direction flags, kernel entry
-flags, and sanitized return flags with preserved arithmetic flags. The x86
-suite retains its deliberate invalid-opcode exception check. Each architecture
-also runs a debug `cooperative-deadlock-probe` build where both tasks wait for
-messages without a runnable sender. It requires the exact diagnosed panic
-`cooperative deadlock: live tasks with no runnable producer` and forbids the
-three cooperative success markers. A timeout or an unrelated panic is not a
-passing deadlock test. The suites contain 11 RISC-V and 10 x86 cases, plus the
-separate release ISO boot. Every ordinary
-boot checks the discovered RAM extents, permanent mappings, owned-page
-allocation and user copies, and accounting restoration without a RAM-size
-threshold or a separate capacity build.
-`bash scripts/x86-iso-smoke.sh` additionally boots a release-profile ISO
-through OVMF's CD-ROM path using the shared release packaging script. Its
-kernel enables only `qemu-debug-port` diagnostics for automated log capture;
-it is not byte-identical to the published kernel. CI runs all three suites and
-the host channel concurrency/allocation-failure regressions (`bash scripts/channel-tests.sh`).
-`scripts/x86-preview.sh`
-builds the actual bare-metal kernel and checks the ELF that the loader expects;
-see the [UEFI loader notes](boot/uefi/README.md) for build and packaging steps.
-The MSI B650M-A PRO WIFI previously booted the Phase 1 path from USB,
-initialized the physical allocator, and reached its expected diagnosed panic.
-The user booted a release-profile ISO of the v0.2.2 capability-mutation
-implementation on physical x86-64 hardware, reaching all three normal PASS
-markers and the expected halt. That run preceded the version metadata bump.
-Dedicated protection-fault builds remain validated in QEMU.
-
-The resident ABI uses Linux-style argument registers with Ferber syscall
-numbers: `0` yields cooperatively, `1` exits the calling thread while surviving
-tasks continue, `2` closes a handle, `3` duplicates a handle, `4` inspects its type and
-rights, `5` derives a capability with equal or fewer rights, and `6` revokes a
-capability and its descendants. Calls `7`–`9` create channels and send/receive
-messages without blocking. Call `10` receives with blocking and requires both
-`READ` and `WAIT`; channel creation grants `WAIT`. Closing a suspended receive's
-source slot cancels it, and revocation cancels waits through that node or its
-ancestors. Attenuation requires `DUPLICATE`; revocation
-requires `MANAGE`. Unknown numbers return `-38`. This is not musl compatibility.
-The probe process starts with zero handles, then receives explicitly delegated test
-capabilities. See the [syscall ABI](docs/syscall-abi.md) for rights, errors,
-and inspection output. Nodes own their ancestry and object backing; close
-releases ownership, and final owners reclaim the nodes and backing. Revocation
-does not remove existing VMO mappings. Code and both stacks are VMO-backed;
-the RX code VMO spans as many pages as the resident probe needs. Resident
-user-copy helpers preflight page permissions before copying through
-supervisor physical aliases. See [the memory model](docs/memory.md) for their
-caller contract and permanent kernel mappings.
-
-The current path cooperatively schedules integer-only resident tasks on one
-active CPU with interrupts disabled. A VMO-backed dispatcher stack on the
-permanent kernel root permits safe cleanup after switching away from exited
-tasks. Interrupt-driven scheduling, SMP, FP/vector state, init/ELF loading,
-userspace task creation, and VMO syscalls remain future work.
-
+```bash
+make build                         # RISC-V kernel
+make run                           # boot in QEMU
+make debug                         # boot with GDB on :1234
+make x86-preview                   # build and check the x86 kernel
+make x86-iso                       # build a bootable x86 ISO
+make x86-iso USERSPACE_ELF_PROBE=1 # include the ELF userspace probe
+```
 ---
 
 ## Contributing
