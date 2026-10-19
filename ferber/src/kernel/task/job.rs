@@ -90,14 +90,18 @@ impl Job {
         if self.state == JobState::Killed {
             return Err(TaskError::JobKilled);
         }
+        self.processes
+            .try_reserve(1)
+            .map_err(|_| TaskError::OutOfMemory)?;
         let address_space = ArchAddressSpace::new().map_err(|_| TaskError::OutOfMemory)?;
         let proc_id = super::process::next_process_id();
-        let process = Arc::new(SpinLock::new(Process::new(
+        let process = Arc::try_new(SpinLock::new(Process::new(
             proc_id,
             name,
             address_space,
             self.self_weak.clone(),
-        )));
+        )))
+        .map_err(|_| TaskError::OutOfMemory)?;
         process.lock().set_self_weak(Arc::downgrade(&process));
         self.processes.push(Arc::clone(&process));
         Ok(process)

@@ -26,6 +26,7 @@ pub struct Thread {
     process: Option<Weak<SpinLock<Process>>>,
     state: ThreadState,
     context: UnsafeCell<CpuContext>,
+    user_entry: usize,
     kernel_stack: Vmo,
     user_stack: Option<Vmo>,
     user_stack_base: Option<usize>,
@@ -55,6 +56,7 @@ impl Thread {
             process,
             state: ThreadState::Ready,
             context: UnsafeCell::new(CpuContext::new(entry, kstack_top)),
+            user_entry: entry,
             kernel_stack: kstack,
             user_stack: None,
             user_stack_base: None,
@@ -87,6 +89,10 @@ impl Thread {
 
     pub fn kernel_stack(&self) -> &Vmo {
         &self.kernel_stack
+    }
+
+    pub fn user_entry(&self) -> usize {
+        self.user_entry
     }
 
     pub fn kernel_stack_top(&self) -> usize {

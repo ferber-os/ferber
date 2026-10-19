@@ -115,9 +115,11 @@ compact physical VMO backing.
 New process roots have empty lower halves and shared permanent upper halves.
 Map/unmap/protect reject modifications to shared upper entries. Teardown
 frees private user tables and roots while retaining kernel tables and leaf
-backing. The resident task retains its Job, process, thread, code and stack
-VMOs through halt. Exit still marks the bootstrap thread Dead and halts;
-active task reclamation and SMP remain separate work.
+backing. Cooperative exit switches to the permanent-root dispatcher stack
+before retiring the thread and, for its last thread, the process. Code and
+stack VMOs are released outside scheduler/process locks after their mappings
+and active execution no longer need them. The dedicated fatal fault probes
+retain their backing through halt. SMP remains separate work.
 
 `memory_verification: PASS` checks high code/stack permissions, absence of
 the low kernel alias, shared-upper mutation rejection, and accounting. It walks
@@ -132,6 +134,24 @@ capacity build is required. Host memory/FDT tests run with
 `bash scripts/memory-tests.sh`.
 The current x86-64 release ISO has also passed these checks on physical
 hardware with 32 GiB installed: 8,240,704 managed frames across 23 extents.
+
+## ELF segments retain their own VMO backing
+
+The opt-in static ELF loader validates the entire image before creating a
+process. Each `PT_LOAD` gets a separate zeroed VMO rounded outward to pages;
+file bytes are copied at the segment's in-page offset, leaving BSS and page
+padding zero. Mappings allow only user R-X, R--, or RW- permissions. Segments
+cannot share a rounded mapping page or overlap the fixed stack/guard range.
+Process-owned VMOs retain segment backing until teardown; page tables still
+never own leaf frames.
+
+The thread retains a separate zeroed 16 KiB user stack at
+`0x0000_0020_0000_0000`, mapped RW/NX, with the preceding page unmapped. Entry
+starts at the aligned stack top without arguments, environment, or auxiliary
+vector. Partial construction is never runnable and is detached from the Job
+on failure. The ELF probe repeats execution after warming allocator capacities
+and checks frame, capability-node, Job process-count, and scheduler baselines.
+See [the ELF loading contract](elf-loading.md) for limits and delivery.
 
 ## Resident user copies preflight the whole range
 

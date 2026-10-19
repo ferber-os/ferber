@@ -189,15 +189,24 @@ its lifetime policy is still open. This path does not add ELF/init, userspace
 task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
 
 ### Userspace Binary Loading & Execution
-- [ ] Userspace ELF loader (`elf_loader.rs`):
-  - [ ] 64-bit ELF executable parsing (`ELF64_HDR`, `Phdr`)
-  - [ ] VMO allocation for ELF segments (`LOAD` headers)
-  - [ ] Memory mapping with strict permissions: `PT_LOAD` `.text` mapped R-X, `.rodata` mapped R--, `.data`/`.bss` mapped RW-
+- [ ] Userspace ELF loader (`ferber/src/kernel/elf.rs`, `elf_load.rs`):
+  - [x] Bounded static ELF64 `ET_EXEC` parsing with architecture, range, alignment, entry, resource-limit, and unsupported-feature validation
+  - [x] VMO allocation for ELF segments (`PT_LOAD` headers), initialized file bytes, and zero-filled BSS/page tails
+  - [x] Memory mapping with strict permissions: `PT_LOAD` `.text` mapped R-X, `.rodata` mapped R--, `.data`/`.bss` mapped RW-
+  - [x] Checkpoint A: separately compiled RISC-V/x86-64 ELF fixture, kernel-constructed zero-handle process, guarded stack, syscall return/yield/exit, and repeated reclamation checks
   - [ ] Stack VMO allocation and user stack initialization with auxiliary vector (`auxv`), arguments (`argc`/`argv`), and environment
+- [ ] Checkpoint B: define userspace startup protocol and explicitly delegate an initial bootstrap channel to the loaded executable
 - [ ] Init Process (`init`):
   - [ ] Root userspace process spawned under root `Job`
   - [ ] Injected initial bootstrap channel handle pointing to kernel control service
   - [ ] Spawns root namespace and system servers
+
+Checkpoint A is an unreleased opt-in `userspace-elf-probe` build. The kernel
+embeds independently linked bytes; it does not yet consume a boot payload or
+initramfs. Its 16 KiB stack is empty and zeroed, with an unmapped guard page
+below it. The startup ABI, bootstrap channel, and service-launching init remain
+unchecked. No task-creation or VMO syscall is required for this kernel-created
+fixture. See [the ELF loading contract](docs/elf-loading.md).
 
 ### C Runtime & Foundations
 - [ ] `musl` libc port:

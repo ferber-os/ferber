@@ -34,6 +34,7 @@ smoke_log_ok() {
         isolation) expected='[FERBER_TEST] privilege_isolation: PASS' ;;
         write-rx) expected='[FERBER_TEST] privilege_write_rx: PASS' ;;
         execute-nx) expected='[FERBER_TEST] privilege_execute_nx: PASS' ;;
+        elf) expected='[FERBER_TEST] userspace_elf: PASS' ;;
         *) return 1 ;;
     esac
     if grep -Eiq 'FAIL|panic' "$log"; then
@@ -77,8 +78,8 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     [[ "${1:-}" == --self-test ]] || exit 2
     test_log=$(mktemp)
     trap 'rm -f -- "$test_log"' EXIT
-    markers=(privilege_switch_roundtrip privilege_isolation privilege_write_rx privilege_execute_nx)
-    scenarios=(normal isolation write-rx execute-nx)
+    markers=(privilege_switch_roundtrip privilege_isolation privilege_write_rx privilege_execute_nx userspace_elf)
+    scenarios=(normal isolation write-rx execute-nx elf)
     handle_marker='[FERBER_TEST] handle_syscalls: PASS'
     mutation_marker='[FERBER_TEST] capability_mutation: PASS'
     memory_marker='[FERBER_TEST] memory_verification: PASS'

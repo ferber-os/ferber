@@ -4,6 +4,11 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repo_root/scripts/smoke-log.sh"
+scenario=${1:-normal}
+case "$scenario" in
+    normal|elf) ;;
+    *) echo "usage: $0 [normal|elf]" >&2; exit 2 ;;
+esac
 ovmf_code=${OVMF_CODE:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}
 ovmf_vars=${OVMF_VARS:-/usr/share/edk2/x64/OVMF_VARS.4m.fd}
 for required in "$ovmf_code" "$ovmf_vars"; do
@@ -30,9 +35,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The release kernel gets only debug-port diagnostics for automated log capture.
+cargo_args=(--release --features qemu-debug-port)
+if [[ "$scenario" == elf ]]; then
+    export FERBER_USER_ELF
+    FERBER_USER_ELF=$("$repo_root/scripts/build-user-elf.sh" x86_64-unknown-none release)
+    cargo_args+=(--features userspace-elf-probe)
+fi
+# Debug-port diagnostics are used only for automated log capture.
 CARGO_TARGET_DIR="$trial_dir/kernel-target" \
-    "$repo_root/scripts/x86-preview.sh" --release --features qemu-debug-port
+    "$repo_root/scripts/x86-preview.sh" "${cargo_args[@]}"
 (cd "$repo_root/boot/uefi" && CARGO_TARGET_DIR="$trial_dir/loader-target" \
     cargo +nightly build --release --target x86_64-unknown-uefi)
 bash "$repo_root/scripts/build-iso.sh" \
@@ -59,10 +70,10 @@ if [[ "$status" -ne 124 ]]; then
 fi
 if ! rg -Fq '[mem]   physical allocator: ok' "$log" \
     || ! rg -Fq 'Phase 1 boot checks complete.' "$log" \
-    || ! smoke_log_ok "$log" normal; then
+    || ! smoke_log_ok "$log" "$scenario"; then
     cat "$log" >&2
     echo 'missing successful user-mode probe from ISO boot' >&2
     exit 1
 fi
 smoke_passed=1
-echo 'x86 QEMU ISO smoke passed: release normal, 512 MiB'
+echo "x86 QEMU ISO smoke passed: release $scenario, 512 MiB"

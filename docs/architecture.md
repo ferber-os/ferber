@@ -42,7 +42,17 @@ kernel continuations. A retained VMO-backed dispatcher stack runs on the
 permanent kernel root; final task/process drops happen there outside locks after
 switching away from the retired stack and address space. The last resident task
 returns control to the kernel harness for reclamation checks. This does not add
-preemption, FP/vector state, ELF loading, init, or task-creation syscalls.
+preemption, FP/vector state, init, or task-creation syscalls.
+
+The opt-in ELF checkpoint constructs a fresh process under the root Job and
+loads a separately compiled static executable into VMO-backed user mappings.
+The thread owns its entry PC and stack; the same dispatcher handles first entry,
+yield, and exit. The handle table stays empty throughout this fixture. Image
+validation finishes before task construction, and a failed construction is
+killed and detached from the Job before returning. The embedded image is a
+test-delivery mechanism; startup arguments, bootstrap capability delegation,
+and production image handoff remain separate work. See
+[the ELF loading contract](elf-loading.md).
 
 ## 4. IPC
 

@@ -26,6 +26,11 @@ run_case() {
         write-rx) cargo_args+=(--features user-write-probe) ;;
         execute-nx) cargo_args+=(--features user-execute-probe) ;;
         deadlock) cargo_args+=(--features cooperative-deadlock-probe) ;;
+        elf)
+            cargo_args+=(--features userspace-elf-probe)
+            export FERBER_USER_ELF
+            FERBER_USER_ELF=$("$repo_dir/scripts/build-user-elf.sh" riscv64gc-unknown-none-elf "$profile")
+            ;;
     esac
     (cd "$repo_dir/ferber" && cargo build --quiet "${cargo_args[@]}")
     local kernel="$repo_dir/ferber/target/riscv64gc-unknown-none-elf/$profile/ferber"
@@ -51,6 +56,7 @@ for profile in debug release; do
     run_case "$profile" isolation 128 1
     run_case "$profile" write-rx 128 1
     run_case "$profile" execute-nx 128 1
+    run_case "$profile" elf 128 1
 done
 run_case debug deadlock 128 1
 smoke_passed=1

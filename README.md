@@ -152,12 +152,13 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.5** adds cooperative resident scheduling,
-blocking channel receive, and resident thread/process reclamation on RISC-V 64
-and x86-64. All normal verification markers and the final halt on
-physical x86-64 hardware with 32 GiB installed. Execution remains
-single-CPU and integer-only, with interrupts disabled. ELF loading, init,
-preemption, and userspace task creation remain pending.
+Current milestone: **Uranium-238-v0.2.6** implements static ELF loading
+Checkpoint A on RISC-V 64 and x86-64. A separately linked executable runs in a
+fresh zero-handle process through syscall return, yield, exit, and reclamation.
+I verified the ELF-probe ISO on physical x86-64 hardware. The release ISO runs
+this checkpoint; ordinary builds retain the resident suite. Execution remains
+single-CPU and integer-only with interrupts disabled. Init, preemption, and
+userspace task creation remain pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---

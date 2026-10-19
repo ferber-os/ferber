@@ -35,6 +35,12 @@ pub(crate) const SYS_CHAN_RECV_WAIT: usize = 10;
 
 #[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
 compile_error!("user-write-probe and user-execute-probe must run separately");
+#[cfg(all(feature = "userspace-elf-probe", any(
+    feature = "user-isolation-probe",
+    feature = "cooperative-deadlock-probe",
+    feature = "x86-exception-probe",
+)))]
+compile_error!("userspace-elf-probe must run separately from other probe scenarios");
 
 pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
 pub(crate) const USER_STACK: usize = 0x0000_0020_0000_0000;
@@ -134,6 +140,11 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     channel::self_test();
     scheduler::init();
     scheduler::self_test(&root);
+    if cfg!(feature = "userspace-elf-probe") {
+        #[cfg(feature = "userspace-elf-probe")]
+        super::elf_probe::run(&root);
+        halt();
+    }
     let isolation = cfg!(feature = "user-isolation-probe");
     {
         let bytes = if isolation {
@@ -381,6 +392,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
         {
             let process = scheduler::current_process();
             let handles = process.lock().handle_table().lock().count();
+            #[cfg(feature = "userspace-elf-probe")]
+            super::elf_probe::finish(args[0], handles);
             let state = PROBE.lock().take();
             if let Some(state) = state {
                 state.observer.finish(args[0], handles, state.isolation);
@@ -427,6 +440,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
     if let Some(probe) = PROBE.lock().as_mut() {
         probe.observer.observe(nr, args, result, probe.isolation);
     }
+    #[cfg(feature = "userspace-elf-probe")]
+    super::elf_probe::observe(nr, result);
     result
 }
 

@@ -46,6 +46,11 @@ run_case() {
         write-rx) cargo_args+=(--features user-write-probe) ;;
         execute-nx) cargo_args+=(--features user-execute-probe) ;;
         deadlock) cargo_args+=(--features cooperative-deadlock-probe) ;;
+        elf)
+            cargo_args+=(--features userspace-elf-probe)
+            export FERBER_USER_ELF
+            FERBER_USER_ELF=$("$repo_root/scripts/build-user-elf.sh" x86_64-unknown-none "$profile")
+            ;;
     esac
     if [[ "$scenario" == exception ]]; then
         cargo_args=(--features x86-exception-probe --release)
@@ -107,4 +112,6 @@ run_case release write-rx 512
 run_case debug execute-nx 512
 run_case release execute-nx 512
 run_case debug deadlock 512
+run_case debug elf 512
+run_case release elf 512
 smoke_passed=1

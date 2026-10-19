@@ -1,9 +1,9 @@
 # Resident Syscall ABI
 
 Ferber uses Linux-style argument registers with its own syscall numbers.
-This ABI cooperatively schedules resident user tasks on one active CPU with
-interrupts disabled. It does not provide Linux or musl compatibility, preemption,
-userspace task creation, ELF loading, or init.
+This ABI cooperatively schedules resident user tasks and opt-in static ELF
+fixtures on one active CPU with interrupts disabled. It does not provide Linux
+or musl compatibility, preemption, userspace task creation, or init.
 
 ## Calling Convention
 
@@ -175,7 +175,8 @@ wake source are diagnosed as deadlock, not successful completion.
 
 Scheduling remains cooperative, single-CPU, and integer-only. Interrupt-driven
 wakeup, preemption, SMP, concurrent unmapping, FP/vector state, and user-created
-tasks remain outside this ABI.
+tasks remain outside this ABI. The separately compiled ELF fixture uses this
+same syscall table; ELF loading adds no syscall numbers.
 
 ## Errors and Validation Order
 
@@ -249,6 +250,18 @@ exactly one of each resident marker:
 
 Isolation, RX-write, and NX-execute probes remain separate builds without these
 handle fixtures. Their existing protection-fault markers remain unchanged.
+
+The separate `userspace-elf-probe` build runs the kernel-constructed static ELF
+fixture instead of the resident userspace suite. It checks initialized data,
+multi-page zeroed BSS, stack alignment, a returning unknown syscall (`-38`),
+yield (`0`), preserved register/stack/data contents, and exit syscall `1` with
+status `0`.
+After one warmup and three measured runs, frame/node/process baselines must be
+restored and the scheduler must be empty. A successful ELF scenario emits
+exactly `memory_verification: PASS` and `userspace_elf: PASS`, each with the
+`[FERBER_TEST]` prefix. These markers do not claim resident handle/channel
+coverage or protection-fault containment. See
+[the ELF loading contract](elf-loading.md).
 
 The separate debug `cooperative-deadlock-probe` build runs two receivers without
 a runnable producer. It must diagnose

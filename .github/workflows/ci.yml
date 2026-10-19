@@ -55,9 +55,16 @@ jobs:
           done
           cargo clippy --target x86_64-unknown-none --features x86-exception-probe -- -D warnings
 
+      - name: Clippy (separately compiled userspace ELF)
+        run: |
+          for target in riscv64gc-unknown-none-elf x86_64-unknown-none; do
+            image=$(scripts/build-user-elf.sh "$target" debug)
+            (cd ferber && FERBER_USER_ELF="$image" cargo clippy --target "$target" --features userspace-elf-probe -- -D warnings)
+          done
+
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/elf-tests.sh scripts/elf-load-tests.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
@@ -67,6 +74,11 @@ jobs:
 
       - name: Test channel concurrency and allocation failures
         run: bash scripts/channel-tests.sh
+
+      - name: Test userspace ELF validation
+        run: |
+          bash scripts/elf-tests.sh
+          bash scripts/elf-load-tests.sh
 
       - name: Smoke test (RISC-V)
         run: bash scripts/riscv-smoke.sh
@@ -81,7 +93,9 @@ jobs:
         env:
           OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
           OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
-        run: bash scripts/x86-iso-smoke.sh
+        run: |
+          bash scripts/x86-iso-smoke.sh
+          bash scripts/x86-iso-smoke.sh elf
 
   release:
     name: Release
@@ -102,7 +116,9 @@ jobs:
 
       - name: Build kernel (x86-64)
         working-directory: ferber
-        run: cargo build --release --target x86_64-unknown-none
+        run: |
+          image=$(../scripts/build-user-elf.sh x86_64-unknown-none release)
+          FERBER_USER_ELF="$image" cargo build --release --target x86_64-unknown-none --features userspace-elf-probe
 
       - name: Build UEFI bootloader
         working-directory: boot/uefi

@@ -91,21 +91,25 @@ impl Process {
         if self.state == ProcessState::Dead {
             return Err(TaskError::ProcessDead);
         }
+        self.threads
+            .try_reserve(1)
+            .map_err(|_| TaskError::OutOfMemory)?;
         let kstack = Vmo::create_contiguous(kstack_size).map_err(|_| TaskError::OutOfMemory)?;
         let kstack_base = crate::kernel::memory::phys_map::phys_to_virt(
             kstack.frames().get(0).ok_or(TaskError::OutOfMemory)?,
         )
         .ok_or(TaskError::OutOfMemory)?;
-        let kstack_top = kstack_base + kstack_size;
+        let kstack_top = kstack_base + kstack.size();
         let thread_id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
-        let thread = Arc::new(SpinLock::new(Thread::new(
+        let thread = Arc::try_new(SpinLock::new(Thread::new(
             thread_id,
             name,
             entry,
             kstack,
             kstack_top,
             self.self_weak.clone(),
-        )));
+        )))
+        .map_err(|_| TaskError::OutOfMemory)?;
         self.threads.push(Arc::clone(&thread));
         Ok(thread)
     }
@@ -146,6 +150,12 @@ impl Process {
 
     pub fn retain_backing(&mut self, vmo: Vmo) {
         self.backing.push(vmo);
+    }
+
+    pub fn reserve_backing(&mut self, additional: usize) -> Result<(), TaskError> {
+        self.backing
+            .try_reserve(additional)
+            .map_err(|_| TaskError::OutOfMemory)
     }
 
     pub fn detach_thread(&mut self, id: u64) -> Option<Arc<SpinLock<Thread>>> {

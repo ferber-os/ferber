@@ -18,11 +18,12 @@ struct Fixture {
 
 impl Fixture {
     fn new(root: &Arc<SpinLock<Job>>) -> Self {
+        const ENTRY: usize = 0x20_0040;
         let process = root.lock().create_process("scheduler_test").unwrap();
         process.lock().set_state(ProcessState::Running);
         let thread = process
             .lock()
-            .create_named_thread("scheduler_test/main", 0, 4096)
+            .create_named_thread("scheduler_test/main", ENTRY, 4096)
             .unwrap();
         let (endpoint, peer) = Channel::create().unwrap();
         let node = CAP_NODE_ALLOCATOR
@@ -39,6 +40,7 @@ impl Fixture {
             .insert(node.clone())
             .unwrap();
         admit(process.clone(), thread.clone()).unwrap();
+        assert_eq!(thread.lock().user_entry(), ENTRY, "admission lost user entry");
         let index = RUNTIME
             .lock()
             .tasks
@@ -230,11 +232,31 @@ fn sibling_thread_lifetime(root: &Arc<SpinLock<Job>>) {
     fixture.dispose();
 }
 
+fn failed_task_construction(root: &Arc<SpinLock<Job>>) {
+    let process = root.lock().create_process("failed_task_test").unwrap();
+    {
+        let mut process = process.lock();
+        assert_eq!(process.reserve_backing(usize::MAX), Err(TaskError::OutOfMemory));
+        assert!(matches!(
+            process.create_named_thread("failed_task_test/main", 0x20_0040, 0),
+            Err(TaskError::OutOfMemory)
+        ));
+        assert_eq!(process.thread_count(), 0);
+        assert_eq!(process.handle_table().lock().count(), 0);
+    }
+    let weak = Arc::downgrade(&process);
+    let id = process.lock().id();
+    drop(root.lock().detach_process(id).unwrap());
+    drop(process);
+    assert!(weak.upgrade().is_none(), "failed construction retained process");
+}
+
 pub(super) fn run(root: &Arc<SpinLock<Job>>) {
     assert_eq!(task_count(), 0);
     assert!(RUNTIME.lock().current.is_none());
     let processes = root.lock().process_count();
     let nodes = CAP_NODE_ALLOCATOR.live_count();
+    failed_task_construction(root);
     notified_close_reuse(root);
     ancestor_revocation(root);
     killed_waiter(root);

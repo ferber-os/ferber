@@ -507,7 +507,7 @@ extern "C" fn first_entry() -> ! {
         let thread = thread.lock();
         let (base, size) = thread.user_stack_mapping().expect("user task stack");
         (
-            crate::kernel::syscall::USER_PC,
+            thread.user_entry(),
             base + size,
             thread.kernel_stack_top(),
         )
@@ -515,7 +515,7 @@ extern "C" fn first_entry() -> ! {
     unsafe { arch::drop_to_user(pc, sp, kernel_sp) }
 }
 
-/// Run admitted resident tasks until every task has exited and been reaped.
+/// Run admitted tasks until every task has exited and been reaped.
 pub fn run() -> Stats {
     {
         let mut runtime = RUNTIME.lock();
