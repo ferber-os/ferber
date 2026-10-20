@@ -24,6 +24,37 @@ _start:
     syscall
     cmp rax, -38
     jne fail
+    mov eax, 9
+    xor edi, edi
+    lea rsi, [rip + probe_message]
+    mov edx, 16
+    lea r10, [rip + probe_handles]
+    xor r8d, r8d
+    lea r9, [rip + probe_counts]
+    syscall
+    test rax, rax
+    jnz fail
+    cmp dword ptr [rip + probe_counts], 8
+    jne fail
+    cmp dword ptr [rip + probe_counts + 4], 0
+    jne fail
+    mov rbx, 0x313a726562726566
+    cmp qword ptr [rip + probe_message], rbx
+    jne fail
+    mov eax, 8
+    xor edi, edi
+    lea rsi, [rip + probe_reply]
+    mov edx, 8
+    lea r10, [rip + probe_handles]
+    xor r8d, r8d
+    syscall
+    test rax, rax
+    jnz fail
+    mov eax, 2
+    xor edi, edi
+    syscall
+    test rax, rax
+    jnz fail
     xor eax, eax
     syscall
     test rax, rax
@@ -56,3 +87,10 @@ probe_data: .quad 0x12345678
 .section .bss,"aw",@nobits
 .balign 8
 probe_bss: .zero 8192
+.balign 8
+probe_message: .zero 16
+probe_handles: .zero 8
+probe_counts: .zero 8
+.section .rodata,"a"
+.balign 8
+probe_reply: .ascii "ready-v1"

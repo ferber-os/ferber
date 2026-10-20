@@ -30,6 +30,10 @@ struct Resources {
 }
 thread_local! { static RESOURCES: RefCell<Resources> = RefCell::new(Resources::default()); }
 
+pub mod capabilities {
+    pub struct CapNode;
+}
+
 fn fallible(label: &'static str) -> Result<(), ()> {
     RESOURCES.with_borrow_mut(|r| {
         r.steps.push(label);
@@ -45,6 +49,7 @@ fn fallible(label: &'static str) -> Result<(), ()> {
 }
 
 mod kernel {
+    pub use crate::capabilities;
     pub(crate) use crate::sync;
     pub mod memory {
         use crate::{fallible, RESOURCES};
@@ -206,7 +211,7 @@ mod kernel {
                     tables,
                     backing: Vec::new(),
                     threads: Vec::new(),
-                    handles: SpinLock::new(Handles),
+                    handles: SpinLock::new(Handles::default()),
                 }));
                 self.processes.push(process.clone());
                 Ok(process)
@@ -216,10 +221,30 @@ mod kernel {
                 self.processes.pop()
             }
         }
-        pub struct Handles;
+        #[derive(Default)]
+        pub struct Handles {
+            entries: Vec<Option<Arc<crate::kernel::capabilities::CapNode>>>,
+            count: usize,
+        }
         impl Handles {
             pub fn count(&self) -> usize {
-                0
+                self.count
+            }
+            pub fn insert_at(
+                &mut self,
+                slot: u32,
+                node: Arc<crate::kernel::capabilities::CapNode>,
+            ) {
+                let slot = slot as usize;
+                if self.entries.len() <= slot {
+                    self.entries.resize_with(slot + 1, || None);
+                }
+                assert!(self.entries[slot].is_none());
+                self.entries[slot] = Some(node);
+                self.count += 1;
+            }
+            pub fn slot(&self, slot: usize) -> Option<&Arc<crate::kernel::capabilities::CapNode>> {
+                self.entries.get(slot).and_then(Option::as_ref)
             }
         }
         // Match production field order: page-table teardown precedes backing reclaim.
@@ -374,7 +399,7 @@ fn reap(root: &Arc<sync::SpinLock<kernel::task::Job>>) {
 fn every_setup_failure_unwinds_without_publication_or_dangling_backing() {
     let root = root();
     let bytes = fixture();
-    assert_eq!(elf_load::admit(&root, &bytes), Ok(()));
+    assert_eq!(elf_load::admit(&root, &bytes, None), Ok(()));
     let steps = RESOURCES.with_borrow(|r| r.steps.len());
     reap(&root);
     for fail_after in 0..steps {
@@ -383,14 +408,14 @@ fn every_setup_failure_unwinds_without_publication_or_dangling_backing() {
             r.fail_after = Some(fail_after);
         });
         assert!(
-            elf_load::admit(&root, &bytes).is_err(),
+            elf_load::admit(&root, &bytes, None).is_err(),
             "failure point {fail_after} did not fail"
         );
         RESOURCES.with_borrow_mut(|r| r.fail_after = None);
         assert_clean(&root);
     }
     assert!(steps >= 20, "fixture omitted multi-page/admission failures");
-    assert_eq!(elf_load::admit(&root, &bytes), Ok(()));
+    assert_eq!(elf_load::admit(&root, &bytes, None), Ok(()));
     reap(&root);
 }
 
@@ -398,7 +423,7 @@ fn every_setup_failure_unwinds_without_publication_or_dangling_backing() {
 fn successful_load_copies_only_file_bytes_and_preserves_permissions() {
     let root = root();
     let bytes = fixture();
-    elf_load::admit(&root, &bytes).unwrap();
+    elf_load::admit(&root, &bytes, None).unwrap();
     let process = root.lock().processes[0].clone();
     {
         let process = process.lock();
@@ -436,6 +461,45 @@ fn successful_load_copies_only_file_bytes_and_preserves_permissions() {
 }
 
 #[test]
+fn explicit_bootstrap_handle_uses_slot_zero_and_unwinds_if_admission_fails() {
+    let test_root = root();
+    let bytes = fixture();
+    let node = Arc::new(kernel::capabilities::CapNode);
+    let weak = Arc::downgrade(&node);
+    elf_load::admit(&test_root, &bytes, Some(node.clone())).unwrap();
+    let process = test_root.lock().processes[0].clone();
+    {
+        let process = process.lock();
+        let handles = process.handle_table().lock();
+        assert_eq!(handles.count(), 1);
+        assert!(Arc::ptr_eq(handles.slot(0).unwrap(), &node));
+    }
+    let steps = RESOURCES.with_borrow(|r| r.steps.len());
+    drop(node);
+    drop(process);
+    reap(&test_root);
+    assert!(
+        weak.upgrade().is_none(),
+        "delegated handle survived process exit"
+    );
+
+    let failing_root = root();
+    let node = Arc::new(kernel::capabilities::CapNode);
+    let weak = Arc::downgrade(&node);
+    RESOURCES.with_borrow_mut(|r| {
+        r.fail_after = Some(steps - 1);
+    });
+    assert!(elf_load::admit(&failing_root, &bytes, Some(node.clone())).is_err());
+    drop(node);
+    assert!(
+        weak.upgrade().is_none(),
+        "failed admission retained delegated handle"
+    );
+    RESOURCES.with_borrow_mut(|r| r.fail_after = None);
+    assert_clean(&failing_root);
+}
+
+#[test]
 fn invalid_images_and_stack_guard_collisions_allocate_nothing() {
     for address in [
         kernel::syscall::USER_STACK - 4096,
@@ -448,14 +512,14 @@ fn invalid_images_and_stack_guard_collisions_allocate_nothing() {
         bytes[24..32].copy_from_slice(&entry.to_le_bytes());
         bytes[80..88].copy_from_slice(&entry.to_le_bytes());
         assert_eq!(
-            elf_load::admit(&root, &bytes),
+            elf_load::admit(&root, &bytes, None),
             Err(elf_load::LoadError::StackOverlap)
         );
         assert!(RESOURCES.with_borrow(|r| r.steps.is_empty()));
         assert_clean(&root);
     }
     let root = root();
-    assert!(elf_load::admit(&root, b"not an executable").is_err());
+    assert!(elf_load::admit(&root, b"not an executable", None).is_err());
     assert!(RESOURCES.with_borrow(|r| r.steps.is_empty()));
     assert_clean(&root);
 }
@@ -471,7 +535,7 @@ fn pages_adjacent_to_the_guard_and_stack_remain_loadable() {
         let entry = (address + 0x120) as u64;
         bytes[24..32].copy_from_slice(&entry.to_le_bytes());
         bytes[80..88].copy_from_slice(&entry.to_le_bytes());
-        assert_eq!(elf_load::admit(&root, &bytes), Ok(()));
+        assert_eq!(elf_load::admit(&root, &bytes, None), Ok(()));
         reap(&root);
     }
 }

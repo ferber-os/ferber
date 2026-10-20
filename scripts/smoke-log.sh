@@ -23,7 +23,7 @@ smoke_deadlock_ok() {
 
 smoke_log_ok() {
     local log=$1 scenario=$2 expected line='' count=0
-    local handle_count=0 mutation_count=0 memory_count=0 channel_count=0
+    local handle_count=0 mutation_count=0 memory_count=0 channel_count=0 bootstrap_count=0
     local scheduling_count=0 blocking_count=0 reclamation_count=0
     if [[ "$scenario" == deadlock ]]; then
         smoke_deadlock_ok "$log"
@@ -56,6 +56,8 @@ smoke_log_ok() {
             blocking_count=$((blocking_count + 1))
         elif [[ "$scenario" == normal && "$line" == '[FERBER_TEST] task_reclamation: PASS' ]]; then
             reclamation_count=$((reclamation_count + 1))
+        elif [[ "$scenario" == elf && "$line" == '[FERBER_TEST] userspace_bootstrap_channel: PASS' ]]; then
+            bootstrap_count=$((bootstrap_count + 1))
         elif [[ "$line" == '[FERBER_TEST] memory_verification: PASS' ]]; then
             memory_count=$((memory_count + 1))
         elif [[ "$line" == *'[FERBER_TEST]'* ]]; then
@@ -64,6 +66,9 @@ smoke_log_ok() {
     done < "$log"
     # A partial final write must not turn a crashed probe into a passing run.
     [[ -z "$line" && "$count" -eq 1 && "$memory_count" -eq 1 ]] || return 1
+    if [[ "$scenario" == elf ]]; then
+        [[ "$bootstrap_count" -eq 1 ]] || return 1
+    fi
     if [[ "$scenario" == normal ]]; then
         [[ "$handle_count" -eq 1 && "$mutation_count" -eq 1 && "$channel_count" -eq 1 \
             && "$scheduling_count" -eq 1 && "$blocking_count" -eq 1 && "$reclamation_count" -eq 1 ]]
@@ -87,11 +92,13 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     scheduling_marker='[FERBER_TEST] cooperative_scheduling: PASS'
     blocking_marker='[FERBER_TEST] blocking_channel_receive: PASS'
     reclamation_marker='[FERBER_TEST] task_reclamation: PASS'
+    bootstrap_marker='[FERBER_TEST] userspace_bootstrap_channel: PASS'
     for index in "${!scenarios[@]}"; do
         scenario=${scenarios[index]}
         expected="[FERBER_TEST] ${markers[index]}: PASS"
         valid="$memory_marker"$'\n'"$expected"$'\n'
         [[ "$scenario" != normal ]] || valid+="$handle_marker"$'\n'"$mutation_marker"$'\n'"$channel_marker"$'\n'"$scheduling_marker"$'\n'"$blocking_marker"$'\n'"$reclamation_marker"$'\n'
+        [[ "$scenario" != elf ]] || valid+="$bootstrap_marker"$'\n'
         printf '%s' "$valid" > "$test_log"
         smoke_log_ok "$test_log" "$scenario"
         printf '%s' "${valid//$'\n'/$'\r\n'}" > "$test_log"
@@ -103,6 +110,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             "$valid$memory_marker"$'\n' "$valid$channel_marker"$'\n' \
             "$valid$scheduling_marker"$'\n' "$valid$blocking_marker"$'\n' \
             "$valid$reclamation_marker"$'\n' \
+            "$valid$bootstrap_marker"$'\n' \
             "$handle_marker"$'\n' "$valid"$'[FERBER_TEST] unknown: PASS\n'; do
             printf '%s' "$text" > "$test_log"
             if smoke_log_ok "$test_log" "$scenario"; then
@@ -112,6 +120,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         done
         required=("$memory_marker" "$expected")
         [[ "$scenario" != normal ]] || required+=("$handle_marker" "$mutation_marker" "$channel_marker" "$scheduling_marker" "$blocking_marker" "$reclamation_marker")
+        [[ "$scenario" != elf ]] || required+=("$bootstrap_marker")
         for missing in "${required[@]}"; do
             printf '%s' "${valid/"$missing"$'\n'/}" > "$test_log"
             if smoke_log_ok "$test_log" "$scenario"; then

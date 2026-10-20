@@ -1,4 +1,4 @@
-# Static ELF loading: Checkpoint A
+# Static ELF loading: Checkpoints A and B
 
 The opt-in `userspace-elf-probe` feature loads a separately compiled executable
 on RISC-V 64 and x86-64. The kernel constructs its process and thread, then
@@ -40,9 +40,18 @@ construction kills and detaches the partial process before returning an error.
 
 The user stack is 16 KiB, RW/NX, with an unmapped page below it. Initial SP
 is its 16-byte-aligned top. No `argc`, `argv`, environment, auxiliary vector,
-return address, or bootstrap channel is installed. The thread's own entry PC
-selects the ELF entry rather than the resident probe's fixed code address.
-The handle table starts and remains empty. No authority is inherited.
+or return address is installed. The thread's own entry PC selects the ELF
+entry rather than the resident probe's fixed code address. The process is born
+with an empty handle table; no authority is inherited.
+
+Checkpoint A leaves that table empty. Checkpoint B explicitly installs one
+bootstrap channel endpoint in slot `0` with `READ | WRITE` rights after process
+construction and before scheduler admission. The kernel prequeues a fixed
+challenge. The ELF fixture uses the existing nonblocking receive syscall (`9`)
+to read it and nonblocking send syscall (`8`) to return a reply, which the
+kernel verifies after the fixture exits. There is no runnable service task and
+no blocking receive in this exchange. Slot `0` and this exchange are a test
+ABI for the checkpoint, not the production init startup ABI.
 
 ## The fixture is embedded independently linked data
 
@@ -81,4 +90,5 @@ frame/node/process accounting and empty the scheduler before
 syscall markers. Execution remains single-CPU, cooperative, integer-only, and
 interrupt-disabled. A bad instruction or unexpected user fault still panics
 the kernel. Bootstrap-channel startup is Checkpoint B; init and service
-launching remain later work.
+launching remain later work. Checkpoint B must not be read as init or as a
+general userspace service protocol.

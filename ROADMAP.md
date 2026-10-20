@@ -189,24 +189,33 @@ its lifetime policy is still open. This path does not add ELF/init, userspace
 task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
 
 ### Userspace Binary Loading & Execution
-- [ ] Userspace ELF loader (`ferber/src/kernel/elf.rs`, `elf_load.rs`):
+- [x] Bounded static ELF loader for Checkpoints A and B (`ferber/src/kernel/elf.rs`, `elf_load.rs`):
   - [x] Bounded static ELF64 `ET_EXEC` parsing with architecture, range, alignment, entry, resource-limit, and unsupported-feature validation
   - [x] VMO allocation for ELF segments (`PT_LOAD` headers), initialized file bytes, and zero-filled BSS/page tails
   - [x] Memory mapping with strict permissions: `PT_LOAD` `.text` mapped R-X, `.rodata` mapped R--, `.data`/`.bss` mapped RW-
   - [x] Checkpoint A: separately compiled RISC-V/x86-64 ELF fixture, kernel-constructed zero-handle process, guarded stack, syscall return/yield/exit, and repeated reclamation checks
-  - [ ] Stack VMO allocation and user stack initialization with auxiliary vector (`auxv`), arguments (`argc`/`argv`), and environment
-- [ ] Checkpoint B: define userspace startup protocol and explicitly delegate an initial bootstrap channel to the loaded executable
+  - [x] VMO-backed guarded user stack with aligned initial SP
+  - [ ] Populate the stack with an auxiliary vector (`auxv`), arguments (`argc`/`argv`), and environment
+- [x] Checkpoint B test ABI: explicitly delegate a bootstrap channel to the ELF fixture and verify a request/reply exchange
+- [ ] Define the production init startup ABI and bootstrap service protocol
 - [ ] Init Process (`init`):
   - [ ] Root userspace process spawned under root `Job`
   - [ ] Injected initial bootstrap channel handle pointing to kernel control service
   - [ ] Spawns root namespace and system servers
 
-Checkpoint A is an unreleased opt-in `userspace-elf-probe` build. The kernel
+Checkpoint A is an opt-in `userspace-elf-probe` build released in
+`Uranium-238-v0.2.6`. The kernel
 embeds independently linked bytes; it does not yet consume a boot payload or
 initramfs. Its 16 KiB stack is empty and zeroed, with an unmapped guard page
-below it. The startup ABI, bootstrap channel, and service-launching init remain
-unchecked. No task-creation or VMO syscall is required for this kernel-created
-fixture. See [the ELF loading contract](docs/elf-loading.md).
+below it. Checkpoint B exercises a test startup ABI: the process is born with
+an empty handle table, then the kernel explicitly installs a bootstrap channel
+with `READ | WRITE` rights in slot 0 before scheduler admission. The kernel
+prequeues a challenge, and the ELF fixture uses nonblocking channel syscalls
+to receive it and send a reply for the kernel to verify. No service task runs;
+this does not define init's production startup ABI. Production startup and
+service-launching init remain unchecked. No task-creation or VMO syscall is
+required for these kernel-created fixtures. See
+[the ELF loading contract](docs/elf-loading.md).
 
 ### C Runtime & Foundations
 - [ ] `musl` libc port:

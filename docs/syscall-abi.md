@@ -257,11 +257,22 @@ multi-page zeroed BSS, stack alignment, a returning unknown syscall (`-38`),
 yield (`0`), preserved register/stack/data contents, and exit syscall `1` with
 status `0`.
 After one warmup and three measured runs, frame/node/process baselines must be
-restored and the scheduler must be empty. A successful ELF scenario emits
-exactly `memory_verification: PASS` and `userspace_elf: PASS`, each with the
+restored and the scheduler must be empty. Checkpoint A emits exactly
+`memory_verification: PASS` and `userspace_elf: PASS`, each with the
 `[FERBER_TEST]` prefix. These markers do not claim resident handle/channel
 coverage or protection-fault containment. See
 [the ELF loading contract](elf-loading.md).
+
+Checkpoint B adds a test-only startup handoff to that ELF fixture. Its handle
+table is empty at process birth; before scheduler admission, the kernel
+explicitly installs one bootstrap channel endpoint in slot `0` with
+`READ | WRITE` rights. The kernel prequeues the challenge. The fixture receives
+it with nonblocking syscall `9`, sends its reply with nonblocking syscall `8`,
+and exits; the kernel verifies the reply and emits
+`[FERBER_TEST] userspace_bootstrap_channel: PASS` only after cleanup checks.
+There is no runnable service task, and the exchange does not use blocking
+receive syscall `10`. Slot `0` is part of this test checkpoint only. It does
+not define init's production startup ABI or provide a general service protocol.
 
 The separate debug `cooperative-deadlock-probe` build runs two receivers without
 a runnable producer. It must diagnose

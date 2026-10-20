@@ -2,6 +2,7 @@
 
 use alloc::sync::Arc;
 
+use super::capabilities::CapNode;
 use super::elf::{ElfError, ElfImage};
 use super::memory::{
     paging::{AddressSpace, MapFlags, PageError},
@@ -30,7 +31,11 @@ pub enum LoadError {
     Task(TaskError),
 }
 
-pub fn admit(root: &Arc<SpinLock<Job>>, bytes: &[u8]) -> Result<(), LoadError> {
+pub fn admit(
+    root: &Arc<SpinLock<Job>>,
+    bytes: &[u8],
+    bootstrap: Option<Arc<CapNode>>,
+) -> Result<(), LoadError> {
     let image = ElfImage::parse(bytes, MACHINE, USER_END).map_err(LoadError::Image)?;
     // Keep an unmapped guard page below the fixed test stack.
     for segment in image.segments() {
@@ -45,7 +50,7 @@ pub fn admit(root: &Arc<SpinLock<Job>>, bytes: &[u8]) -> Result<(), LoadError> {
         .create_process("elf_probe")
         .map_err(LoadError::Task)?;
     let id = process.lock().id();
-    let result = populate(&process, &image)
+    let result = populate(&process, &image, bootstrap)
         .and_then(|thread| scheduler::admit(Arc::clone(&process), thread).map_err(LoadError::Task));
     if result.is_err() {
         process.lock().kill();
@@ -59,6 +64,7 @@ pub fn admit(root: &Arc<SpinLock<Job>>, bytes: &[u8]) -> Result<(), LoadError> {
 fn populate(
     process: &Arc<SpinLock<Process>>,
     image: &ElfImage<'_>,
+    bootstrap: Option<Arc<CapNode>>,
 ) -> Result<Arc<SpinLock<Thread>>, LoadError> {
     let mut process = process.lock();
     process
@@ -102,5 +108,8 @@ fn populate(
         thread.set_user_stack_mapping(USER_STACK);
     }
     assert_eq!(process.handle_table().lock().count(), 0, "ELF birth table");
+    if let Some(node) = bootstrap {
+        process.handle_table().lock().insert_at(0, node);
+    }
     Ok(thread)
 }

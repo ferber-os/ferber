@@ -47,11 +47,15 @@ preemption, FP/vector state, init, or task-creation syscalls.
 The opt-in ELF checkpoint constructs a fresh process under the root Job and
 loads a separately compiled static executable into VMO-backed user mappings.
 The thread owns its entry PC and stack; the same dispatcher handles first entry,
-yield, and exit. The handle table stays empty throughout this fixture. Image
-validation finishes before task construction, and a failed construction is
-killed and detached from the Job before returning. The embedded image is a
-test-delivery mechanism; startup arguments, bootstrap capability delegation,
-and production image handoff remain separate work. See
+yield, and exit. The process is born with an empty handle table. Checkpoint A
+leaves it empty; Checkpoint B explicitly installs a bootstrap channel endpoint
+with `READ | WRITE` rights in slot `0` before scheduler admission. The kernel
+prequeues a challenge, and the fixture uses nonblocking channel syscalls to
+reply for kernel verification. No service task is scheduled. Slot `0` is a
+test-ABI choice, not a production init contract. Image validation finishes
+before task construction, and a failed construction is killed and detached
+from the Job before returning. The embedded image is a test-delivery mechanism;
+startup arguments and production image handoff remain separate work. See
 [the ELF loading contract](elf-loading.md).
 
 ## 4. IPC
