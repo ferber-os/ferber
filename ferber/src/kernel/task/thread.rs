@@ -30,6 +30,7 @@ pub struct Thread {
     kernel_stack: Vmo,
     user_stack: Option<Vmo>,
     user_stack_base: Option<usize>,
+    user_initial_sp: Option<usize>,
 }
 
 unsafe impl Send for Thread {}
@@ -60,6 +61,7 @@ impl Thread {
             kernel_stack: kstack,
             user_stack: None,
             user_stack_base: None,
+            user_initial_sp: None,
         }
     }
 
@@ -119,10 +121,27 @@ impl Thread {
 
     pub fn set_user_stack(&mut self, ustack: Vmo) {
         self.user_stack = Some(ustack);
+        self.user_initial_sp = None;
     }
 
     pub fn set_user_stack_mapping(&mut self, base: usize) {
         self.user_stack_base = Some(base);
+        self.user_initial_sp = None;
+    }
+
+    pub(crate) fn set_user_initial_sp(&mut self, sp: usize) -> Result<(), ()> {
+        let (base, size) = self.user_stack_mapping().ok_or(())?;
+        let top = base.checked_add(size).ok_or(())?;
+        if sp & 15 != 0 || sp <= base || sp > top {
+            return Err(());
+        }
+        self.user_initial_sp = Some(sp);
+        Ok(())
+    }
+
+    pub fn user_initial_sp(&self) -> Option<usize> {
+        let (base, size) = self.user_stack_mapping()?;
+        self.user_initial_sp.or_else(|| base.checked_add(size))
     }
 
     pub fn user_stack_mapping(&self) -> Option<(usize, usize)> {

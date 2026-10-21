@@ -2,6 +2,9 @@
 
 use alloc::sync::Arc;
 
+#[path = "../../../shared/startup.rs"]
+pub mod startup;
+
 use super::capabilities::CapNode;
 use super::elf::{ElfError, ElfImage};
 use super::memory::{
@@ -95,7 +98,20 @@ fn populate(
     let thread = process
         .create_named_thread("elf_probe/main", image.entry(), STACK_SIZE)
         .map_err(LoadError::Task)?;
-    let stack = Vmo::create(STACK_SIZE).map_err(LoadError::Memory)?;
+    assert_eq!(process.handle_table().lock().count(), 0, "ELF birth table");
+    let handle = bootstrap.map(|node| {
+        // Exercise discovery through startup metadata rather than a fixed ABI slot.
+        let slot = 7;
+        process.handle_table().lock().insert_at(slot, node);
+        slot
+    });
+    let mut stack = Vmo::create(STACK_SIZE).map_err(LoadError::Memory)?;
+    stack
+        .write(
+            STACK_SIZE - startup::SIZE,
+            &startup::Startup { bootstrap: handle }.encode(),
+        )
+        .map_err(LoadError::Memory)?;
     unsafe {
         process
             .address_space_mut()
@@ -106,10 +122,9 @@ fn populate(
         let mut thread = thread.lock();
         thread.set_user_stack(stack);
         thread.set_user_stack_mapping(USER_STACK);
-    }
-    assert_eq!(process.handle_table().lock().count(), 0, "ELF birth table");
-    if let Some(node) = bootstrap {
-        process.handle_table().lock().insert_at(0, node);
+        thread
+            .set_user_initial_sp(USER_STACK + STACK_SIZE - startup::SIZE)
+            .expect("validated ELF initial stack");
     }
     Ok(thread)
 }

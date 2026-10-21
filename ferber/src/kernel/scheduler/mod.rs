@@ -505,10 +505,9 @@ extern "C" fn first_entry() -> ! {
         };
         process.lock().set_state(ProcessState::Running);
         let thread = thread.lock();
-        let (base, size) = thread.user_stack_mapping().expect("user task stack");
         (
             thread.user_entry(),
-            base + size,
+            thread.user_initial_sp().expect("user task initial stack"),
             thread.kernel_stack_top(),
         )
     };

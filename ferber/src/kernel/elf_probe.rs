@@ -1,4 +1,4 @@
-//! Checkpoint A: independently linked bytes, kernel-constructed task lifecycle.
+//! Independently linked Rust startup, explicit channel delegation and task reclamation.
 
 use super::capabilities::{ObjectType, Rights, CAP_NODE_ALLOCATOR};
 use super::ipc::channel::{Channel, ChannelMessage};

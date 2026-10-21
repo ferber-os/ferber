@@ -5,8 +5,9 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 target=${1:?usage: build-user-elf.sh TARGET PROFILE [OUTPUT]}
 profile=${2:?usage: build-user-elf.sh TARGET PROFILE [OUTPUT]}
 case "$target" in
-    riscv64gc-unknown-none-elf) machine='RISC-V' ;;
-    x86_64-unknown-none) machine='Advanced Micro Devices X86-64' ;;
+    riscv64gc-unknown-none-elf|riscv64imac-unknown-none-elf)
+        machine='RISC-V'; rust_target=riscv64imac-unknown-none-elf ;;
+    x86_64-unknown-none) machine='Advanced Micro Devices X86-64'; rust_target=$target ;;
     *) echo "unsupported userspace ELF target: $target" >&2; exit 2 ;;
 esac
 case "$profile" in
@@ -18,10 +19,10 @@ output=${3:-"$repo_root/target/userspace-elf/$target/$profile/probe.elf"}
 mkdir -p "$(dirname "$output")"
 output=$(realpath "$output")
 rustc +nightly --edition=2021 --crate-name ferber_elf_probe \
-    --target "$target" -C panic=abort -C opt-level="$opt_level" \
+    --target "$rust_target" -D warnings -C panic=abort -C opt-level="$opt_level" \
     -C relocation-model=static -C linker=rust-lld \
     -C link-arg=-T"$repo_root/userspace/elf-probe/linker.ld" \
-    -C link-arg=--no-dynamic-linker -C link-arg=--build-id=none \
+    -C link-arg=--no-relax -C link-arg=--no-dynamic-linker -C link-arg=--build-id=none \
     "$repo_root/userspace/elf-probe/main.rs" -o "$output"
 readelf -h "$output" | grep -Eq 'Class:.*ELF64'
 readelf -h "$output" | grep -Eq 'Type:.*EXEC'

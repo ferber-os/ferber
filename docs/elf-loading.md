@@ -39,24 +39,33 @@ backing, and the thread retains its user and kernel stack VMOs. Failed
 construction kills and detaches the partial process before returning an error.
 
 The user stack is 16 KiB, RW/NX, with an unmapped page below it. Initial SP
-is its 16-byte-aligned top. No `argc`, `argv`, environment, auxiliary vector,
-or return address is installed. The thread's own entry PC selects the ELF
+points to a 32-byte, versioned startup record at its aligned top minus 32.
+No `argc`, `argv`, environment, auxiliary vector or return address is installed.
+The thread's own entry PC selects the ELF
 entry rather than the resident probe's fixed code address. The process is born
 with an empty handle table; no authority is inherited.
 
-Checkpoint A leaves that table empty. Checkpoint B explicitly installs one
-bootstrap channel endpoint in slot `0` with `READ | WRITE` rights after process
-construction and before scheduler admission. The kernel prequeues a fixed
+Checkpoint A established zero-handle construction. The current ELF path
+explicitly installs the supplied bootstrap channel with `READ | WRITE` rights
+after process construction and before scheduler admission, then records the
+assigned slot in the startup record. A missing endpoint is encoded explicitly.
+Slot `0` is no longer assumed; the test uses a nonzero slot. The kernel prequeues a fixed
 challenge. The ELF fixture uses the existing nonblocking receive syscall (`9`)
 to read it and nonblocking send syscall (`8`) to return a reply, which the
 kernel verifies after the fixture exits. There is no runnable service task and
-no blocking receive in this exchange. Slot `0` and this exchange are a test
-ABI for the checkpoint, not the production init startup ABI.
+no blocking receive in this exchange. See [startup ABI v1](userspace-startup.md)
+for the entry record, handle ownership and architecture calling conventions.
+The exchange remains a test protocol.
 
 ## The fixture is embedded independently linked data
 
 `scripts/build-user-elf.sh` builds `userspace/elf-probe/` for the requested
-target and profile. Its linker script places `_start` at `0x400000` and emits
+kernel target and profile. RISC-V user code uses the integer-only
+`riscv64imac-unknown-none-elf` target while the kernel remains `riscv64gc`.
+Install that additional target with
+`rustup target add riscv64imac-unknown-none-elf --toolchain nightly`.
+Small assembly entry shims call shared `no_std` Rust validation and protocol
+code. Its linker script places `_start` at `0x400000` and emits
 separate R-X, R--, and RW- segments. The kernel embeds the resulting bytes
 through `FERBER_USER_ELF`; the build script tracks changes to that file.
 BootInfo version 2, UEFI handoff, and RISC-V FDT delivery are unchanged.
@@ -81,7 +90,8 @@ Both architecture smoke suites include debug/release ELF scenarios;
 `bash scripts/x86-iso-smoke.sh elf` checks the ELF ISO boot path. These are
 verification entry points, not a claim that any particular run has passed.
 
-The executable checks initialized read-only/writable data, multi-page BSS
+The Rust executable checks startup-record decoding and handle discovery,
+initialized read-only/writable data, multi-page BSS
 zeroing, stack alignment, unknown-syscall return, cooperative yield with state
 preservation, and exit. One warmup and three measured executions must restore
 frame/node/process accounting and empty the scheduler before

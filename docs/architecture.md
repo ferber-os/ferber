@@ -47,16 +47,17 @@ preemption, FP/vector state, init, or task-creation syscalls.
 The opt-in ELF checkpoint constructs a fresh process under the root Job and
 loads a separately compiled static executable into VMO-backed user mappings.
 The thread owns its entry PC and stack; the same dispatcher handles first entry,
-yield, and exit. The process is born with an empty handle table. Checkpoint A
-leaves it empty; Checkpoint B explicitly installs a bootstrap channel endpoint
-with `READ | WRITE` rights in slot `0` before scheduler admission. The kernel
+yield, and exit. The process is born with an empty handle table. Explicit setup
+installs the supplied bootstrap channel with `READ | WRITE` before admission.
+A 32-byte versioned record at initial SP identifies the handle, and small entry
+shims pass that record to shared `no_std` Rust code. The kernel
 prequeues a challenge, and the fixture uses nonblocking channel syscalls to
-reply for kernel verification. No service task is scheduled. Slot `0` is a
-test-ABI choice, not a production init contract. Image validation finishes
+reply for kernel verification. No service task is scheduled. The handle's
+numerical slot is not an ABI constant. Image validation finishes
 before task construction, and a failed construction is killed and detached
 from the Job before returning. The embedded image is a test-delivery mechanism;
 startup arguments and production image handoff remain separate work. See
-[the ELF loading contract](elf-loading.md).
+[the ELF loading contract](elf-loading.md) and [startup ABI v1](userspace-startup.md).
 
 ## 4. IPC
 

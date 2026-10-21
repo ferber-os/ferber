@@ -251,11 +251,47 @@ fn failed_task_construction(root: &Arc<SpinLock<Job>>) {
     assert!(weak.upgrade().is_none(), "failed construction retained process");
 }
 
+fn startup_stack_pointer_bounds(root: &Arc<SpinLock<Job>>) {
+    let process = root.lock().create_process("startup_stack_test").unwrap();
+    let thread = process
+        .lock()
+        .create_named_thread("startup_stack_test/main", 0x20_0040, 4096)
+        .unwrap();
+    {
+        let mut thread = thread.lock();
+        assert_eq!(thread.user_initial_sp(), None);
+        assert_eq!(thread.set_user_initial_sp(0x1000), Err(()));
+        thread.set_user_stack(Vmo::create(4096).unwrap());
+        thread.set_user_stack_mapping(0x1000);
+        assert_eq!(
+            thread.user_initial_sp(),
+            Some(0x2000),
+            "resident stack default"
+        );
+        for invalid in [0xff0, 0x1000, 0x1001, 0x1fff, 0x2001, 0x2010] {
+            assert_eq!(thread.set_user_initial_sp(invalid), Err(()));
+            assert_eq!(thread.user_initial_sp(), Some(0x2000));
+        }
+        for valid in [0x1010, 0x1fe0, 0x2000] {
+            assert_eq!(thread.set_user_initial_sp(valid), Ok(()));
+            assert_eq!(thread.user_initial_sp(), Some(valid));
+            assert_eq!(thread.user_stack_mapping(), Some((0x1000, 4096)));
+        }
+        thread.set_user_stack_mapping(usize::MAX - 4095);
+        assert_eq!(thread.user_initial_sp(), None);
+        assert_eq!(thread.set_user_initial_sp(usize::MAX - 4095), Err(()));
+    }
+    let id = process.lock().id();
+    process.lock().kill();
+    drop(root.lock().detach_process(id).unwrap());
+}
+
 pub(super) fn run(root: &Arc<SpinLock<Job>>) {
     assert_eq!(task_count(), 0);
     assert!(RUNTIME.lock().current.is_none());
     let processes = root.lock().process_count();
     let nodes = CAP_NODE_ALLOCATOR.live_count();
+    startup_stack_pointer_bounds(root);
     failed_task_construction(root);
     notified_close_reuse(root);
     ancestor_revocation(root);

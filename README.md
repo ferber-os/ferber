@@ -152,12 +152,12 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.7** adds a test-only bootstrap channel
-exchange to the static ELF fixture on RISC-V 64 and x86-64. Each process starts
-with an empty handle table; the kernel explicitly delegates one READ|WRITE
-endpoint before scheduler admission, then verifies the fixture's reply and
-cleanup. This does not define init's production startup ABI. SMP, init, and
-musl remain pending.
+Current milestone: **Uranium-238-v0.2.8** adds a versioned userspace startup
+record and a shared `no_std` Rust ELF fixture on RISC-V 64 and x86-64. The
+fixture discovers its explicitly delegated bootstrap channel without assuming
+a handle slot, verifies the challenge/reply exchange, and exits through the
+existing syscalls. This remains test startup plumbing; init, service launch,
+and startup arguments remain pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---
@@ -173,7 +173,7 @@ Install Rust nightly and the targets you need:
 
 ```bash
 rustup toolchain install nightly
-rustup target add riscv64gc-unknown-none-elf x86_64-unknown-none x86_64-unknown-uefi --toolchain nightly
+rustup target add riscv64gc-unknown-none-elf riscv64imac-unknown-none-elf x86_64-unknown-none x86_64-unknown-uefi --toolchain nightly
 export RUSTUP_TOOLCHAIN=nightly
 ```
 

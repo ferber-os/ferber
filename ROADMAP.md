@@ -197,7 +197,8 @@ task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
   - [x] VMO-backed guarded user stack with aligned initial SP
   - [ ] Populate the stack with an auxiliary vector (`auxv`), arguments (`argc`/`argv`), and environment
 - [x] Checkpoint B test ABI: explicitly delegate a bootstrap channel to the ELF fixture and verify a request/reply exchange
-- [ ] Define the production init startup ABI and bootstrap service protocol
+- [x] Startup ABI v1: bounded record at initial SP, slot-independent bootstrap discovery, and shared integer-only `no_std` Rust entry on both architectures
+- [ ] Integrate startup ABI v1 into production init and define its bootstrap service protocol
 - [ ] Init Process (`init`):
   - [ ] Root userspace process spawned under root `Job`
   - [ ] Injected initial bootstrap channel handle pointing to kernel control service
@@ -206,16 +207,19 @@ task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
 Checkpoint A is an opt-in `userspace-elf-probe` build released in
 `Uranium-238-v0.2.6`. The kernel
 embeds independently linked bytes; it does not yet consume a boot payload or
-initramfs. Its 16 KiB stack is empty and zeroed, with an unmapped guard page
-below it. Checkpoint B exercises a test startup ABI: the process is born with
-an empty handle table, then the kernel explicitly installs a bootstrap channel
-with `READ | WRITE` rights in slot 0 before scheduler admission. The kernel
+initramfs. Its 16 KiB stack has an unmapped guard page below it. Startup ABI v1
+places a versioned 32-byte record at initial SP; the remaining stack is zeroed.
+The process is born with an empty handle table, then the kernel explicitly
+installs a bootstrap channel with `READ | WRITE` rights before admission and
+records its assigned slot. Shared Rust code discovers that handle instead of
+assuming slot 0. The kernel
 prequeues a challenge, and the ELF fixture uses nonblocking channel syscalls
 to receive it and send a reply for the kernel to verify. No service task runs;
 this does not define init's production startup ABI. Production startup and
 service-launching init remain unchecked. No task-creation or VMO syscall is
 required for these kernel-created fixtures. See
-[the ELF loading contract](docs/elf-loading.md).
+[the ELF loading contract](docs/elf-loading.md) and
+[startup ABI v1](docs/userspace-startup.md).
 
 ### C Runtime & Foundations
 - [ ] `musl` libc port:

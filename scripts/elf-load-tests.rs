@@ -287,6 +287,7 @@ mod kernel {
                     kernel_stack,
                     user_stack: None,
                     stack_base: None,
+                    initial_sp: None,
                 }));
                 self.threads.push(thread.clone());
                 Ok(thread)
@@ -297,10 +298,15 @@ mod kernel {
             kernel_stack: Vmo,
             pub user_stack: Option<Vmo>,
             pub stack_base: Option<usize>,
+            pub initial_sp: Option<usize>,
         }
         impl Thread {
             pub fn set_user_stack(&mut self, stack: Vmo) {
                 self.user_stack = Some(stack);
+            }
+            pub fn set_user_initial_sp(&mut self, sp: usize) -> Result<(), ()> {
+                self.initial_sp = Some(sp);
+                Ok(())
             }
             pub fn set_user_stack_mapping(&mut self, base: usize) {
                 self.stack_base = Some(base);
@@ -444,9 +450,15 @@ fn successful_load_copies_only_file_bytes_and_preserves_permissions() {
                 expected[offset..offset + source.len()].copy_from_slice(source);
                 assert_eq!(*actual, expected, "non-file bytes must stay zero");
             }
-            assert!(r.backing[&thread.user_stack.as_ref().unwrap().frames().id]
-                .iter()
-                .all(|&b| b == 0));
+            let stack = &r.backing[&thread.user_stack.as_ref().unwrap().frames().id];
+            let offset = syscall::STACK_SIZE - elf_load::startup::SIZE;
+            assert!(stack[..offset].iter().all(|&b| b == 0));
+            assert_eq!(
+                elf_load::startup::Startup::decode(&stack[offset..]),
+                Ok(elf_load::startup::Startup { bootstrap: None })
+            );
+            assert_eq!(thread.initial_sp, Some(syscall::USER_STACK + offset));
+            assert_eq!(thread.initial_sp.unwrap() & 15, 0);
             assert_eq!(r.mappings.len(), 8);
             for &(va, _, flags) in &r.mappings {
                 assert!(flags.readable && flags.user);
@@ -461,7 +473,7 @@ fn successful_load_copies_only_file_bytes_and_preserves_permissions() {
 }
 
 #[test]
-fn explicit_bootstrap_handle_uses_slot_zero_and_unwinds_if_admission_fails() {
+fn explicit_bootstrap_handle_is_discovered_and_all_failures_unwind() {
     let test_root = root();
     let bytes = fixture();
     let node = Arc::new(kernel::capabilities::CapNode);
@@ -472,7 +484,16 @@ fn explicit_bootstrap_handle_uses_slot_zero_and_unwinds_if_admission_fails() {
         let process = process.lock();
         let handles = process.handle_table().lock();
         assert_eq!(handles.count(), 1);
-        assert!(Arc::ptr_eq(handles.slot(0).unwrap(), &node));
+        assert!(Arc::ptr_eq(handles.slot(7).unwrap(), &node));
+        assert!(handles.slot(0).is_none());
+        let thread = process.threads[0].lock();
+        RESOURCES.with_borrow(|r| {
+            let stack = &r.backing[&thread.user_stack.as_ref().unwrap().frames().id];
+            assert_eq!(
+                elf_load::startup::Startup::decode(&stack[syscall::STACK_SIZE - 32..]),
+                Ok(elf_load::startup::Startup { bootstrap: Some(7) })
+            );
+        });
     }
     let steps = RESOURCES.with_borrow(|r| r.steps.len());
     drop(node);
@@ -483,20 +504,20 @@ fn explicit_bootstrap_handle_uses_slot_zero_and_unwinds_if_admission_fails() {
         "delegated handle survived process exit"
     );
 
-    let failing_root = root();
-    let node = Arc::new(kernel::capabilities::CapNode);
-    let weak = Arc::downgrade(&node);
-    RESOURCES.with_borrow_mut(|r| {
-        r.fail_after = Some(steps - 1);
-    });
-    assert!(elf_load::admit(&failing_root, &bytes, Some(node.clone())).is_err());
-    drop(node);
-    assert!(
-        weak.upgrade().is_none(),
-        "failed admission retained delegated handle"
-    );
-    RESOURCES.with_borrow_mut(|r| r.fail_after = None);
-    assert_clean(&failing_root);
+    for fail_after in 0..steps {
+        let failing_root = root();
+        let node = Arc::new(kernel::capabilities::CapNode);
+        let weak = Arc::downgrade(&node);
+        RESOURCES.with_borrow_mut(|r| r.fail_after = Some(fail_after));
+        assert!(elf_load::admit(&failing_root, &bytes, Some(node.clone())).is_err());
+        drop(node);
+        assert!(
+            weak.upgrade().is_none(),
+            "failure {fail_after} retained delegated handle"
+        );
+        RESOURCES.with_borrow_mut(|r| r.fail_after = None);
+        assert_clean(&failing_root);
+    }
 }
 
 #[test]
