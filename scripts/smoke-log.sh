@@ -1,5 +1,26 @@
 #!/usr/bin/env bash
 # Shared checks for completed user-mode probes; source from the smoke scripts.
+smoke_payload_failure_ok() {
+    local log=$1 scenario=$2 expected line='' memory=0 banner=0 detail=0
+    case "$scenario" in
+        payload-missing) expected='  detail: boot payload required' ;;
+        payload-invalid) expected='  detail: load userspace ELF: Image(Header)' ;;
+        payload-exit) expected='  detail: assertion `left == right` failed: incomplete ELF protocol' ;;
+        *) return 1 ;;
+    esac
+    while IFS= read -r line; do
+        line=${line%$'\r'}
+        case "$line" in
+            '[FERBER_TEST] memory_verification: PASS') memory=$((memory + 1)) ;;
+            *'[FERBER_TEST]'*) return 1 ;;
+            *'F E R B E R   K E R N E L   P A N I C'*) banner=$((banner + 1)) ;;
+            "$expected") detail=$((detail + 1)) ;;
+            *'detail:'*|*[Ff][Aa][Ii][Ll]*) return 1 ;;
+        esac
+    done < "$log"
+    [[ -z "$line" && "$memory" -eq 1 && "$banner" -eq 1 && "$detail" -eq 1 ]]
+}
+
 smoke_deadlock_ok() {
     local log=$1 line='' memory=0 banner=0 detail=0 roundtrip=0 handles=0 mutation=0 channel=0
     grep -Eiq 'FAIL' "$log" && return 1
@@ -23,10 +44,14 @@ smoke_deadlock_ok() {
 
 smoke_log_ok() {
     local log=$1 scenario=$2 expected line='' count=0
-    local handle_count=0 mutation_count=0 memory_count=0 channel_count=0 bootstrap_count=0
+    local handle_count=0 mutation_count=0 memory_count=0 channel_count=0 bootstrap_count=0 payload_count=0
     local scheduling_count=0 blocking_count=0 reclamation_count=0
     if [[ "$scenario" == deadlock ]]; then
         smoke_deadlock_ok "$log"
+        return $?
+    fi
+    if [[ "$scenario" == payload-* ]]; then
+        smoke_payload_failure_ok "$log" "$scenario"
         return $?
     fi
     case "$scenario" in
@@ -58,6 +83,8 @@ smoke_log_ok() {
             reclamation_count=$((reclamation_count + 1))
         elif [[ "$scenario" == elf && "$line" == '[FERBER_TEST] userspace_bootstrap_channel: PASS' ]]; then
             bootstrap_count=$((bootstrap_count + 1))
+        elif [[ "$scenario" == elf && "$line" == '[FERBER_TEST] boot_payload: PASS' ]]; then
+            payload_count=$((payload_count + 1))
         elif [[ "$line" == '[FERBER_TEST] memory_verification: PASS' ]]; then
             memory_count=$((memory_count + 1))
         elif [[ "$line" == *'[FERBER_TEST]'* ]]; then
@@ -67,7 +94,7 @@ smoke_log_ok() {
     # A partial final write must not turn a crashed probe into a passing run.
     [[ -z "$line" && "$count" -eq 1 && "$memory_count" -eq 1 ]] || return 1
     if [[ "$scenario" == elf ]]; then
-        [[ "$bootstrap_count" -eq 1 ]] || return 1
+        [[ "$bootstrap_count" -eq 1 && "$payload_count" -eq 1 ]] || return 1
     fi
     if [[ "$scenario" == normal ]]; then
         [[ "$handle_count" -eq 1 && "$mutation_count" -eq 1 && "$channel_count" -eq 1 \
@@ -93,12 +120,13 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     blocking_marker='[FERBER_TEST] blocking_channel_receive: PASS'
     reclamation_marker='[FERBER_TEST] task_reclamation: PASS'
     bootstrap_marker='[FERBER_TEST] userspace_bootstrap_channel: PASS'
+    payload_marker='[FERBER_TEST] boot_payload: PASS'
     for index in "${!scenarios[@]}"; do
         scenario=${scenarios[index]}
         expected="[FERBER_TEST] ${markers[index]}: PASS"
         valid="$memory_marker"$'\n'"$expected"$'\n'
         [[ "$scenario" != normal ]] || valid+="$handle_marker"$'\n'"$mutation_marker"$'\n'"$channel_marker"$'\n'"$scheduling_marker"$'\n'"$blocking_marker"$'\n'"$reclamation_marker"$'\n'
-        [[ "$scenario" != elf ]] || valid+="$bootstrap_marker"$'\n'
+        [[ "$scenario" != elf ]] || valid+="$bootstrap_marker"$'\n'"$payload_marker"$'\n'
         printf '%s' "$valid" > "$test_log"
         smoke_log_ok "$test_log" "$scenario"
         printf '%s' "${valid//$'\n'/$'\r\n'}" > "$test_log"
@@ -111,6 +139,8 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             "$valid$scheduling_marker"$'\n' "$valid$blocking_marker"$'\n' \
             "$valid$reclamation_marker"$'\n' \
             "$valid$bootstrap_marker"$'\n' \
+            "$valid"$'FAIL: a different check failed\n' "$valid"$'fAiL: unrelated\n' \
+            "$valid$payload_marker"$'\n' \
             "$handle_marker"$'\n' "$valid"$'[FERBER_TEST] unknown: PASS\n'; do
             printf '%s' "$text" > "$test_log"
             if smoke_log_ok "$test_log" "$scenario"; then
@@ -120,7 +150,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         done
         required=("$memory_marker" "$expected")
         [[ "$scenario" != normal ]] || required+=("$handle_marker" "$mutation_marker" "$channel_marker" "$scheduling_marker" "$blocking_marker" "$reclamation_marker")
-        [[ "$scenario" != elf ]] || required+=("$bootstrap_marker")
+        [[ "$scenario" != elf ]] || required+=("$bootstrap_marker" "$payload_marker")
         for missing in "${required[@]}"; do
             printf '%s' "${valid/"$missing"$'\n'/}" > "$test_log"
             if smoke_log_ok "$test_log" "$scenario"; then
@@ -160,6 +190,27 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             echo 'smoke log self-check accepted invalid deadlock evidence' >&2
             exit 1
         fi
+    done
+    for scenario in payload-missing payload-invalid payload-exit; do
+        case "$scenario" in
+            payload-missing) detail='  detail: boot payload required' ;;
+            payload-invalid) detail='  detail: load userspace ELF: Image(Header)' ;;
+            payload-exit) detail='  detail: assertion `left == right` failed: incomplete ELF protocol' ;;
+        esac
+        valid="$memory_marker"$'\n'"$deadlock_banner"$'\n'"$detail"$'\n'
+        printf '%s' "$valid" > "$test_log"
+        smoke_log_ok "$test_log" "$scenario"
+        for text in '' "${valid%$'\n'}" "$valid$detail"$'\n' \
+            "$valid$deadlock_banner"$'\n' "$valid$memory_marker"$'\n' \
+            "$valid"$'FAIL: a different check failed\n' "$valid"$'fAiL: unrelated\n' \
+            "$valid$payload_marker"$'\n' "$valid$bootstrap_marker"$'\n' \
+            "$memory_marker"$'\n'"$deadlock_banner"$'\n''  detail: unrelated panic'$'\n'; do
+            printf '%s' "$text" > "$test_log"
+            if smoke_log_ok "$test_log" "$scenario"; then
+                echo 'smoke log self-check accepted invalid payload failure' >&2
+                exit 1
+            fi
+        done
     done
     echo 'Smoke log self-check passed'
 fi

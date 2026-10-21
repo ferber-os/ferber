@@ -36,9 +36,9 @@ cleanup() {
 trap cleanup EXIT
 
 cargo_args=(--release --features qemu-debug-port)
+payload=
 if [[ "$scenario" == elf ]]; then
-    export FERBER_USER_ELF
-    FERBER_USER_ELF=$("$repo_root/scripts/build-user-elf.sh" x86_64-unknown-none release)
+    payload=$("$repo_root/scripts/build-user-elf.sh" x86_64-unknown-none release)
     cargo_args+=(--features userspace-elf-probe)
 fi
 # Debug-port diagnostics are used only for automated log capture.
@@ -49,7 +49,7 @@ CARGO_TARGET_DIR="$trial_dir/kernel-target" \
 bash "$repo_root/scripts/build-iso.sh" \
     "$trial_dir/kernel-target/x86_64-unknown-none/release/ferber" \
     "$trial_dir/loader-target/x86_64-unknown-uefi/release/ferber-uefi-loader.efi" \
-    "$trial_dir/ferber.iso"
+    "$trial_dir/ferber.iso" "$payload"
 cp -- "$ovmf_vars" "$trial_dir/OVMF_VARS.fd"
 
 log="$trial_dir/kernel.log"

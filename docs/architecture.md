@@ -55,8 +55,12 @@ prequeues a challenge, and the fixture uses nonblocking channel syscalls to
 reply for kernel verification. No service task is scheduled. The handle's
 numerical slot is not an ABI constant. Image validation finishes
 before task construction, and a failed construction is killed and detached
-from the Job before returning. The embedded image is a test-delivery mechanism;
-startup arguments and production image handoff remain separate work. See
+from the Job before returning. The independently built raw ELF arrives through
+a bounded external boot payload: UEFI reads `BOOT.ELF`, while RISC-V uses FDT
+initrd bounds. Its reserved source has a permanent supervisor RO/NX mapping
+and boot-lifetime physical VMO ownership. Startup arguments, multi-file
+initramfs delivery and init remain separate work. See
+[the boot-payload contract](boot-payload.md),
 [the ELF loading contract](elf-loading.md) and [startup ABI v1](userspace-startup.md).
 
 ## 4. IPC

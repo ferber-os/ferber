@@ -22,6 +22,8 @@ done
 
 trial_dir=$(mktemp -d /tmp/ferber-x86-smoke.XXXXXX)
 smoke_passed=0
+declare -A payload_kernel_hash
+rustc --edition=2021 -D warnings "$repo_root/scripts/boot-payload-fixture.rs" -o "$trial_dir/payload-fixture"
 cleanup() {
     if [[ "$smoke_passed" -eq 1 ]]; then
         rm -rf -- "$trial_dir"
@@ -36,6 +38,7 @@ trap cleanup EXIT
 run_case() {
     local profile=$1 scenario=$2 ram=$3 limit=8
     local cargo_args=(--features qemu-debug-port)
+    local payload=
     local log="$trial_dir/$profile-$scenario.log"
     local qemu_log="$trial_dir/$profile-$scenario-qemu.log"
     if [[ "$profile" == release ]]; then
@@ -46,10 +49,15 @@ run_case() {
         write-rx) cargo_args+=(--features user-write-probe) ;;
         execute-nx) cargo_args+=(--features user-execute-probe) ;;
         deadlock) cargo_args+=(--features cooperative-deadlock-probe) ;;
-        elf)
+        elf|payload-missing|payload-invalid|payload-exit)
             cargo_args+=(--features userspace-elf-probe)
-            export FERBER_USER_ELF
-            FERBER_USER_ELF=$("$repo_root/scripts/build-user-elf.sh" x86_64-unknown-none "$profile")
+            case "$scenario" in
+                elf) payload=$("$repo_root/scripts/build-user-elf.sh" x86_64-unknown-none "$profile") ;;
+                payload-invalid) payload="$trial_dir/invalid.elf"; printf 'invalid ELF' > "$payload" ;;
+                payload-exit)
+                    payload="$trial_dir/exit.elf"
+                    "$trial_dir/payload-fixture" x86_64-unknown-none "$payload" ;;
+            esac
             ;;
     esac
     if [[ "$scenario" == exception ]]; then
@@ -58,9 +66,19 @@ run_case() {
 
     CARGO_TARGET_DIR="$trial_dir/kernel-target" \
         "$repo_root/scripts/x86-preview.sh" "${cargo_args[@]}"
+    local kernel="$trial_dir/kernel-target/x86_64-unknown-none/$profile/ferber"
+    if [[ "$scenario" == elf || "$scenario" == payload-* ]]; then
+        local hash
+        hash=$(sha256sum "$kernel" | cut -d ' ' -f 1)
+        if [[ -n "${payload_kernel_hash[$profile]:-}" && "${payload_kernel_hash[$profile]}" != "$hash" ]]; then
+            echo 'payload swap rebuilt or changed the kernel' >&2
+            exit 1
+        fi
+        payload_kernel_hash[$profile]=$hash
+    fi
     "$repo_root/boot/uefi/package.sh" \
-        "$trial_dir/kernel-target/x86_64-unknown-none/$profile/ferber" \
-        "$trial_dir/esp"
+        "$kernel" "$trial_dir/esp" \
+        "$repo_root/boot/uefi/target/x86_64-unknown-uefi/release/ferber-uefi-loader.efi" "$payload"
     cp -- "$ovmf_vars" "$trial_dir/OVMF_VARS.fd"
 
     local status=0
@@ -114,4 +132,7 @@ run_case release execute-nx 512
 run_case debug deadlock 512
 run_case debug elf 512
 run_case release elf 512
+run_case debug payload-missing 512
+run_case debug payload-invalid 512
+run_case debug payload-exit 512
 smoke_passed=1

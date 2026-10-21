@@ -1,5 +1,8 @@
 pub const BOOT_MAGIC: u64 = 0x574f_4c46_5241_4d21;
-pub const BOOT_VERSION: u32 = 2;
+#[path = "../../../shared/boot_payload.rs"]
+pub mod payload;
+pub use payload::BootPayload;
+pub const BOOT_VERSION: u32 = 3;
 pub const BOOT_DATA_BASE: u64 = 0xffff_fffe_0000_0000;
 pub const BOOT_INFO_VA: u64 = BOOT_DATA_BASE;
 pub const BOOT_REGIONS_VA: u64 = BOOT_DATA_BASE + 0x1_0000;
@@ -58,10 +61,11 @@ pub struct BootInfo {
     pub boot_info_physical: u64,
     pub memory_regions_virtual: u64,
     pub framebuffer: Framebuffer,
+    pub boot_payload: BootPayload,
 }
 
 const _: () = assert!(core::mem::size_of::<MemoryRegion>() == 24);
 const _: () = assert!(core::mem::size_of::<Framebuffer>() == 40);
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 112);
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 136);
 const _: () = assert!(core::mem::offset_of!(BootInfo, kernel_virtual_start) == 48);
 const _: () = assert!(core::mem::offset_of!(BootInfo, framebuffer) == 72);

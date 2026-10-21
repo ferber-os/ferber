@@ -198,6 +198,7 @@ task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
   - [ ] Populate the stack with an auxiliary vector (`auxv`), arguments (`argc`/`argv`), and environment
 - [x] Checkpoint B test ABI: explicitly delegate a bootstrap channel to the ELF fixture and verify a request/reply exchange
 - [x] Startup ABI v1: bounded record at initial SP, slot-independent bootstrap discovery, and shared integer-only `no_std` Rust entry on both architectures
+- [x] Bounded external raw ELF delivery: BootInfo v3, UEFI `BOOT.ELF`, RISC-V initrd discovery, reserved RO/NX source and boot-lifetime backing
 - [ ] Integrate startup ABI v1 into production init and define its bootstrap service protocol
 - [ ] Init Process (`init`):
   - [ ] Root userspace process spawned under root `Job`
@@ -205,9 +206,10 @@ task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
   - [ ] Spawns root namespace and system servers
 
 Checkpoint A is an opt-in `userspace-elf-probe` build released in
-`Uranium-238-v0.2.6`. The kernel
-embeds independently linked bytes; it does not yet consume a boot payload or
-initramfs. Its 16 KiB stack has an unmapped guard page below it. Startup ABI v1
+`Uranium-238-v0.2.6`. That release embedded independently linked bytes. The
+current path consumes one externally delivered raw ELF through BootInfo v3;
+this is not a multi-file initramfs. Its 16 KiB stack has an unmapped guard page
+below it. Startup ABI v1
 places a versioned 32-byte record at initial SP; the remaining stack is zeroed.
 The process is born with an empty handle table, then the kernel explicitly
 installs a bootstrap channel with `READ | WRITE` rights before admission and
@@ -219,7 +221,8 @@ this does not define init's production startup ABI. Production startup and
 service-launching init remain unchecked. No task-creation or VMO syscall is
 required for these kernel-created fixtures. See
 [the ELF loading contract](docs/elf-loading.md) and
-[startup ABI v1](docs/userspace-startup.md).
+[startup ABI v1](docs/userspace-startup.md), and
+[the boot-payload contract](docs/boot-payload.md).
 
 ### C Runtime & Foundations
 - [ ] `musl` libc port:

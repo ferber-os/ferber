@@ -4,7 +4,11 @@
 //! The provider retains the handoff and memory map through memory initialization.
 
 pub const BOOT_INFO_MAGIC: u64 = 0x574f_4c46_5241_4d21; // Stable loader/kernel handoff identifier.
-pub const BOOT_INFO_VERSION: u32 = 2;
+#[path = "../../shared/boot_payload.rs"]
+pub mod payload;
+pub use payload::BootPayload;
+
+pub const BOOT_INFO_VERSION: u32 = 3;
 #[cfg(target_arch = "x86_64")]
 pub const BOOT_DATA_BASE: u64 = 0xffff_fffe_0000_0000;
 #[cfg(target_arch = "x86_64")]
@@ -111,6 +115,7 @@ pub struct BootInfo {
     pub boot_info_physical: u64,
     pub memory_regions_virtual: u64,
     pub framebuffer: Framebuffer,
+    pub boot_payload: BootPayload,
 }
 
 impl BootInfo {
@@ -135,6 +140,7 @@ impl BootInfo {
             boot_info_physical,
             memory_regions_virtual,
             framebuffer: Framebuffer::NONE,
+            boot_payload: BootPayload::NONE,
         }
     }
 
@@ -210,6 +216,29 @@ impl BootInfo {
         {
             return Err("invalid framebuffer alias");
         }
+        if let Some((start, end)) = self.boot_payload.bounds()? {
+            #[cfg(target_arch = "riscv64")]
+            let physical_end = 1u64 << 56;
+            #[cfg(target_arch = "x86_64")]
+            let physical_end = 1u64 << 52;
+            if end > physical_end || self.framebuffer.overlaps(start, end) {
+                return Err("invalid boot payload physical backing");
+            }
+            for (base, length) in [
+                (self.kernel_start, self.kernel_end - self.kernel_start),
+                (self.boot_info_physical, core::mem::size_of::<Self>() as u64),
+                (self.memory_regions, bytes as u64),
+            ] {
+                let protected_end = base
+                    .checked_add(length)
+                    .and_then(|v| v.checked_add(4095))
+                    .ok_or("boot reservation overflow")?
+                    & !4095;
+                if start < protected_end && (base & !4095) < end {
+                    return Err("boot payload overlaps protected memory");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -226,7 +255,7 @@ impl BootInfo {
 
 const _: () = assert!(core::mem::size_of::<MemoryRegion>() == 24);
 const _: () = assert!(core::mem::size_of::<Framebuffer>() == 40);
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 112);
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 136);
 const _: () = assert!(core::mem::offset_of!(BootInfo, kernel_virtual_start) == 48);
 const _: () = assert!(core::mem::offset_of!(BootInfo, framebuffer) == 72);
 
@@ -265,6 +294,37 @@ mod tests {
     }
 
     #[test]
+    fn payload_rejects_protected_backing_and_physical_width() {
+        let regions = [MemoryRegion::usable(0x1000, 0x100000)];
+        let mut info = BootInfo::new(
+            &regions,
+            0x3000,
+            0x5000,
+            KERNEL_IMAGE_BASE,
+            0x6000,
+            regions.as_ptr() as u64,
+        );
+        info.memory_regions = 0x7000;
+        info.boot_payload = BootPayload::new(0x8001, 4096).unwrap();
+        assert!(info.validate().is_ok());
+        for address in [0x3000, 0x4fff, 0x6000, 0x7000, (1u64 << 56)] {
+            info.boot_payload = BootPayload::new(address, 1).unwrap();
+            assert!(
+                info.validate().is_err(),
+                "accepted protected address {address:x}"
+            );
+        }
+        info.boot_payload = BootPayload::new(0x8000, 1).unwrap();
+        info.framebuffer = Framebuffer {
+            base: 0x8001,
+            size: 1,
+            virtual_base: 0xffff_fffe_8000_0000,
+            ..Framebuffer::NONE
+        };
+        assert!(info.validate().is_err());
+    }
+
+    #[test]
     fn device_alias_must_not_overlap_protected_physical_pages() {
         let mut fb = Framebuffer {
             base: 0x2fff,
@@ -294,3 +354,5 @@ mod tests {
         assert!(info.validate().is_err());
     }
 }
+
+const _: () = assert!(core::mem::offset_of!(BootInfo, boot_payload) == 112);

@@ -1,7 +1,8 @@
 # Ferber UEFI loader
 
 This standalone Rust `no_std` UEFI application loads `FERBER.ELF` from the
-same FAT filesystem as the loader. The kernel must be an x86-64 ELF64
+same FAT filesystem as the loader and optionally reads `\BOOT.ELF` from its
+root as an external userspace payload. The kernel must be an x86-64 ELF64
 position-independent `ET_DYN` image with only `R_X86_64_RELATIVE` dynamic
 relocations and a SysV entry point accepting `BootInfo *` in `RDI`. The loader
 asks UEFI for a contiguous physical run of pages and loads the image there.
@@ -24,14 +25,28 @@ Stage files into a FAT32 partition or a QEMU EFI system partition directory:
 boot/uefi/package.sh /path/to/ferber-kernel-elf /path/to/fat-root
 ```
 
-The result contains `EFI/BOOT/BOOTX64.EFI` and `FERBER.ELF`. The image is
-unsigned, so firmware Secure Boot policy must permit it. The loader requires a
+The optional fourth argument supplies the boot payload; the third is the loader:
+
+```sh
+boot/uefi/package.sh KERNEL_ELF FAT_ROOT LOADER_EFI BOOT_ELF
+```
+
+The result contains `EFI/BOOT/BOOTX64.EFI`, `FERBER.ELF`, and, when supplied,
+`BOOT.ELF`. Packaging without a payload removes any stale staged `BOOT.ELF`.
+The image is unsigned, so firmware Secure Boot policy must permit it. The loader requires a
 GOP mode with RGB or BGR 32-bit pixels, and passes its framebuffer and the UEFI
-memory map in version 2 of the shared 112-byte `BootInfo` structure. Physical
+memory map in version 3 of the shared 136-byte `BootInfo` structure. Physical
 reservation addresses are distinct from readable virtual pointers, including
 the framebuffer's virtual base. Only
 `EfiConventionalMemory` is passed as usable. All loader allocations and boot
 data are `EfiLoaderCode`/`EfiLoaderData` and remain reserved in the handoff.
+A present `BOOT.ELF` must be nonempty and at most 4 MiB. The loader allocates
+dedicated zeroed pages, reads the exact file length and closes handles before
+the final memory-map/ExitBootServices sequence. Only file-not-found means absent;
+other read failures stop the handoff. Resident kernels permit absence, while
+the ELF probe requires a payload. Both loader and permanent kernel tables map
+its reserved backing supervisor RO/NX. See
+[the boot-payload contract](../../docs/boot-payload.md).
 
 Before the jump, the loader installs temporary four-level page tables with
 the high kernel, boot-data and framebuffer mappings, scratch pages, and the
@@ -65,10 +80,13 @@ image cannot replace the ordinary kernel intended for a USB stick.
 For an optical-media QEMU test, install `libisoburn`, `dosfstools`, and
 `mtools` (Arch package names), then run `make x86-iso`. This creates an ignored
 `ferber.iso` at the repository root. It embeds a FAT El Torito image with both
-the UEFI loader and `FERBER.ELF`; placing the ELF only in the ISO filesystem
+the UEFI loader and `FERBER.ELF`; `make x86-iso USERSPACE_ELF_PROBE=1` also
+places the independently built payload at `BOOT.ELF` on that FAT image.
+Placing these files only in the ISO filesystem
 would not work because the loader reads from its own FAT filesystem. Boot it
 with QEMU/OVMF using `-cdrom ferber.iso -boot order=d`. The ISO tests the CD
-boot path; the MSI USB test still uses a FAT32 partition with the two files.
+boot path. This external-payload patch has no physical-hardware result claimed
+here.
 
 Run `bash scripts/x86-iso-smoke.sh` to build and boot a temporary ISO
 automatically. It uses `scripts/build-iso.sh`, the same packager as

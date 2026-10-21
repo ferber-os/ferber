@@ -70,6 +70,34 @@ impl PageTables {
         Ok(())
     }
 
+    unsafe fn map_payload(
+        &self,
+        services: *mut uefi::BootServices,
+        payload: abi::BootPayload,
+    ) -> Result<(), uefi::Status> {
+        if let Some((start, end)) = payload.bounds().map_err(|_| uefi::LOAD_ERROR)? {
+            for offset in (0..end - start).step_by(PAGE_SIZE as usize) {
+                let physical = start + offset;
+                self.map_4k(
+                    services,
+                    abi::payload::PAYLOAD_BASE + offset,
+                    physical,
+                    self.flags(false, false, false),
+                )?;
+                // High physical addresses have no lower-half identity alias.
+                if physical < IDENTITY_LIMIT {
+                    self.map_4k(
+                        services,
+                        physical,
+                        physical,
+                        self.flags(false, false, false),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     unsafe fn directory_entry(
         &self,
         services: *mut uefi::BootServices,
@@ -180,12 +208,68 @@ pub unsafe fn build(
     regions_bytes: usize,
 ) -> Result<PageTables, uefi::Status> {
     if info.framebuffer.overlaps(kernel.start, kernel.end)
-        || info.framebuffer.overlaps(info.boot_info_physical, info.boot_info_physical + PAGE_SIZE)
-        || info.framebuffer.overlaps(info.memory_regions, info.memory_regions + regions_bytes as u64)
+        || info
+            .framebuffer
+            .overlaps(info.boot_info_physical, info.boot_info_physical + PAGE_SIZE)
+        || info.framebuffer.overlaps(
+            info.memory_regions,
+            info.memory_regions + regions_bytes as u64,
+        )
     {
         return Err(uefi::LOAD_ERROR);
     }
+    let payload_bounds = info.boot_payload.bounds().map_err(|_| uefi::LOAD_ERROR)?;
+    if let Some((start, end)) = payload_bounds {
+        let overlaps = |a: u64, b: u64| start < b && a < end;
+        if overlaps(kernel.start, kernel.end)
+            || overlaps(info.boot_info_physical, info.boot_info_physical + PAGE_SIZE)
+            || overlaps(
+                info.memory_regions,
+                info.memory_regions + regions_bytes as u64,
+            )
+            || info.framebuffer.overlaps(start, end)
+        {
+            return Err(uefi::LOAD_ERROR);
+        }
+        let max = core::arch::x86_64::__cpuid(0x8000_0000).eax;
+        let physical_bits = if max >= 0x8000_0008 {
+            core::arch::x86_64::__cpuid(0x8000_0008).eax & 255
+        } else {
+            36
+        };
+        if physical_bits > 52 || end > (1u64 << physical_bits) {
+            return Err(uefi::UNSUPPORTED);
+        }
+        // Only the loader's dedicated allocation can supply payload backing.
+        let mut covered = start;
+        while covered < end {
+            let mut next = covered;
+            for index in 0..map_size / descriptor_size {
+                let descriptor = ptr::read_unaligned(
+                    map.add(index * descriptor_size) as *const uefi::MemoryDescriptor
+                );
+                let descriptor_end = descriptor
+                    .pages
+                    .checked_mul(PAGE_SIZE)
+                    .and_then(|bytes| descriptor.physical_start.checked_add(bytes))
+                    .ok_or(uefi::LOAD_ERROR)?;
+                if descriptor.kind == uefi::EFI_LOADER_DATA
+                    && descriptor.physical_start <= covered
+                    && covered < descriptor_end
+                {
+                    next = next.max(descriptor_end.min(end));
+                }
+            }
+            if next == covered {
+                return Err(uefi::LOAD_ERROR);
+            }
+            covered = next;
+        }
+    }
     let tables = PageTables::new(services)?;
+    if payload_bounds.is_some() && !tables.nx_supported {
+        return Err(uefi::UNSUPPORTED);
+    }
     let framebuffer = &info.framebuffer;
     let boot_info = info.boot_info_physical;
     let regions = info.memory_regions;
@@ -292,6 +376,7 @@ pub unsafe fn build(
             )?;
         }
     }
+    tables.map_payload(services, info.boot_payload)?;
     // A stable alias to the scratch leaf table lets the kernel access arbitrary
     // physical page-table frames before the permanent RAM aliases exist.
     const SCRATCH_TABLE: u64 = abi::BOOT_DATA_BASE + 0x20_0000;
@@ -335,4 +420,57 @@ pub unsafe fn enable_nx_and_switch(root: u64, nx_supported: bool) {
     cr0 |= 1 << 16; // CR0.WP
     asm!("mov cr0, {}", in(reg) cr0, options(nostack));
     asm!("mov cr3, {}", in(reg) root, options(nostack));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    unsafe fn leaf(root: u64, address: u64) -> u64 {
+        let mut table = root;
+        for shift in [39, 30, 21] {
+            table =
+                *((table as *const u64).add(((address >> shift) & 511) as usize)) & ADDRESS_MASK;
+            assert_ne!(table, 0);
+        }
+        *((table as *const u64).add(((address >> 12) & 511) as usize))
+    }
+    unsafe fn free_tables(root: u64, level: usize) {
+        if level > 1 {
+            for index in 0..512 {
+                let entry = *((root as *const u64).add(index));
+                if entry & PRESENT != 0 {
+                    free_tables(entry & ADDRESS_MASK, level - 1);
+                }
+            }
+        }
+        crate::tests::free(root, 1);
+    }
+    #[test]
+    fn high_payload_cannot_overwrite_kernel_alias_through_noncanonical_identity() {
+        let mut services = crate::tests::services();
+        unsafe {
+            let tables = PageTables {
+                root: allocate_table(&mut services).unwrap(),
+                nx_supported: true,
+            };
+            let flags = tables.flags(false, true, false);
+            tables
+                .map_4k(&mut services, abi::KERNEL_IMAGE_BASE, 0x200000, flags)
+                .unwrap();
+            let kernel_before = leaf(tables.root, abi::KERNEL_IMAGE_BASE);
+            let physical = 0x0000_ffff_8000_0000;
+            tables
+                .map_payload(
+                    &mut services,
+                    abi::BootPayload::new(physical, PAGE_SIZE).unwrap(),
+                )
+                .unwrap();
+            assert_eq!(leaf(tables.root, abi::KERNEL_IMAGE_BASE), kernel_before);
+            assert_eq!(
+                leaf(tables.root, abi::payload::PAYLOAD_BASE),
+                physical | PRESENT | NO_EXECUTE
+            );
+            free_tables(tables.root, 4);
+        }
+    }
 }

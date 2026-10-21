@@ -138,6 +138,9 @@ fn normalize(map: &mut Map, info: &BootInfo) {
             subtract(map, region.start, region.end);
         }
     }
+    if let Some((start, end)) = info.boot_payload.bounds().expect("invalid boot payload") {
+        subtract(map, start, end);
+    }
     subtract(map, 0, PAGE as u64);
     subtract(map, info.kernel_start, info.kernel_end);
     subtract(
@@ -345,6 +348,29 @@ mod tests {
             (high as usize + 2 * PAGE, high as usize + 3 * PAGE)
         );
         assert!(map.entries[1].virtual_start - map.entries[0].virtual_start < 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn payload_backing_is_excluded_even_without_a_map_reservation() {
+        let regions = [MemoryRegion::usable(0x1000, 0x20000)];
+        let mut info = BootInfo::new(
+            &regions,
+            0x1000,
+            0x2000,
+            crate::boot_info::KERNEL_IMAGE_BASE,
+            0x2000,
+            regions.as_ptr() as u64,
+        );
+        info.memory_regions = 0x3000;
+        info.boot_payload = crate::boot_info::BootPayload::new(0x8001, 4096).unwrap();
+        let mut map = empty_map();
+        normalize(&mut map, &info);
+        assert!(map.entries[..map.count]
+            .iter()
+            .all(|extent| extent.end <= 0x8000 || extent.start >= 0xa000));
+        assert!(map.entries[..map.count]
+            .iter()
+            .any(|extent| extent.start == 0xa000));
     }
 
     #[test]

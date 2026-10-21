@@ -152,12 +152,11 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.8** adds a versioned userspace startup
-record and a shared `no_std` Rust ELF fixture on RISC-V 64 and x86-64. The
-fixture discovers its explicitly delegated bootstrap channel without assuming
-a handle slot, verifies the challenge/reply exchange, and exits through the
-existing syscalls. This remains test startup plumbing; init, service launch,
-and startup arguments remain pending.
+Current milestone: **Uranium-238-v0.2.9** delivers the independently built
+Rust ELF separately from the kernel: RISC-V uses an initrd payload and the UEFI
+loader reads `BOOT.ELF`. Reserved source pages have a supervisor-only RO/NX
+alias; the existing loader and startup ABI execute the bootstrap-channel
+protocol and verify cleanup. Init and service launch remain pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---
@@ -183,9 +182,10 @@ Install QEMU to run the kernel. ISO builds also require xorriso, dosfstools, and
 make build                         # RISC-V kernel
 make run                           # boot in QEMU
 make debug                         # boot with GDB on :1234
+make run USERSPACE_ELF_PROBE=1      # boot the external userspace ELF
 make x86-preview                   # build and check the x86 kernel
 make x86-iso                       # build a bootable x86 ISO
-make x86-iso USERSPACE_ELF_PROBE=1 # include the ELF userspace probe
+make x86-iso USERSPACE_ELF_PROBE=1 # deliver the external userspace ELF
 ```
 ---
 

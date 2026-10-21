@@ -88,8 +88,10 @@ Both kernels execute at `0xffff_ffff_8000_0000` on high image-backed stacks
 before entering Rust. RISC-V retains a small physical assembly entry at
 `0x80200000`; x86 keeps its PIE/relative-relocation ELF contract while the
 loader writes through physical destinations and calculates high pointer
-values. BootInfo version 2 is 112 bytes and separates physical reservations
-from readable virtual pointers, including the framebuffer alias.
+values. BootInfo version 3 is 136 bytes and separates physical reservations
+from readable virtual pointers, including the framebuffer alias. Its appended
+24-byte payload descriptor carries physical start, exact byte length and the
+validated kernel-readable alias.
 
 Eligible RAM receives packed supervisor RW/NX aliases in
 `[0xffff_ffc0_0000_0000, 0xffff_fffe_0000_0000)` on Sv39 and
@@ -134,6 +136,22 @@ capacity build is required. Host memory/FDT tests run with
 `bash scripts/memory-tests.sh`.
 The current x86-64 release ISO has also passed these checks on physical
 hardware with 32 GiB installed: 8,240,704 managed frames across 23 extents.
+
+## Boot payload backing remains reserved
+
+The bounded raw ELF source is reserved before allocator metadata or bootstrap
+page-table carving. Its page-rounded backing is excluded from managed RAM and
+ordinary writable RAM aliases. Both permanent kernel roots map it supervisor
+RO/NX at `0xffff_fffe_0100_0000`, preserving the physical page offset in the
+published byte pointer. The reserved virtual window is 8 MiB; exact file length
+is at most 4 MiB. Unsupported physical ranges or window capacity fail explicitly.
+
+A retained physical VMO describes these pages without zeroing or freeing them.
+This is a boot-lifetime reservation, not a reclaimable allocation. Per-process
+ELF segment VMOs receive copies and are reclaimed normally; their accounting
+baselines exclude the reserved source. Publishing the source waits until the
+permanent mapping and retained ownership exist. See the
+[boot-payload contract](boot-payload.md) for provenance and overlap validation.
 
 ## ELF segments retain their own VMO backing
 

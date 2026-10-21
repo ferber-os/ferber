@@ -58,13 +58,13 @@ jobs:
       - name: Clippy (separately compiled userspace ELF)
         run: |
           for target in riscv64gc-unknown-none-elf x86_64-unknown-none; do
-            image=$(scripts/build-user-elf.sh "$target" debug)
-            (cd ferber && FERBER_USER_ELF="$image" cargo clippy --target "$target" --features userspace-elf-probe -- -D warnings)
+            scripts/build-user-elf.sh "$target" debug
+            (cd ferber && cargo clippy --target "$target" --features userspace-elf-probe -- -D warnings)
           done
 
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/elf-tests.sh scripts/elf-load-tests.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
@@ -74,6 +74,9 @@ jobs:
 
       - name: Test channel concurrency and allocation failures
         run: bash scripts/channel-tests.sh
+
+      - name: Test UEFI payload loading and failures
+        run: bash scripts/uefi-payload-tests.sh
 
       - name: Test userspace ELF validation
         run: |
@@ -117,8 +120,7 @@ jobs:
       - name: Build kernel (x86-64)
         working-directory: ferber
         run: |
-          image=$(../scripts/build-user-elf.sh x86_64-unknown-none release)
-          FERBER_USER_ELF="$image" cargo build --release --target x86_64-unknown-none --features userspace-elf-probe
+          cargo build --release --target x86_64-unknown-none --features userspace-elf-probe
 
       - name: Build UEFI bootloader
         working-directory: boot/uefi
@@ -126,10 +128,11 @@ jobs:
 
       - name: Build UEFI ISO
         run: |
+          image=$(scripts/build-user-elf.sh x86_64-unknown-none release)
           bash scripts/build-iso.sh \
             ferber/target/x86_64-unknown-none/release/ferber \
             boot/uefi/target/x86_64-unknown-uefi/release/ferber-uefi-loader.efi \
-            ferber.iso
+            ferber.iso "$image"
 
       - name: Publish release
         uses: softprops/action-gh-release@v3

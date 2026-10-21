@@ -520,7 +520,7 @@ impl Sv39AddressSpace {
 ///
 /// # Safety
 /// The allocator and physical aliases must already be initialized. Invoke once.
-pub unsafe fn finalize_kernel_space() {
+pub unsafe fn finalize_kernel_space(info: &crate::boot_info::BootInfo) {
     extern "C" {
         static __kernel_start: u8;
         static __kernel_end: u8;
@@ -564,6 +564,14 @@ pub unsafe fn finalize_kernel_space() {
                 pa += PAGE_SIZE;
                 va += PAGE_SIZE;
             }
+        }
+    }
+    if let Some((start, end)) = info.boot_payload.bounds().expect("boot payload bounds") {
+        let base = crate::boot_info::payload::PAYLOAD_BASE as usize;
+        for pa in (start as usize..end as usize).step_by(PAGE_SIZE) {
+            space
+                .map_page(base + pa - start as usize, pa, MapFlags::kernel_ro())
+                .expect("boot payload mapping");
         }
     }
     KERNEL_ROOT.store(space.root_paddr, Ordering::Release);

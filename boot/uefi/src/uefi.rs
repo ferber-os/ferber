@@ -7,6 +7,7 @@ pub const LOAD_ERROR: Status = error(1);
 pub const INVALID_PARAMETER: Status = error(2);
 pub const UNSUPPORTED: Status = error(3);
 pub const BUFFER_TOO_SMALL: Status = error(5);
+pub const NOT_FOUND: Status = error(14);
 pub const OUT_OF_RESOURCES: Status = error(9);
 pub const EFI_LOADER_CODE: u32 = 1;
 pub const EFI_LOADER_DATA: u32 = 2;

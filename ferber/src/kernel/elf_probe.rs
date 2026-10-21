@@ -9,8 +9,6 @@ use super::task::Job;
 use crate::kprintln;
 use alloc::sync::Arc;
 
-// shortcut: embedded test image; replace with a reserved boot payload for production startup.
-static IMAGE: &[u8] = include_bytes!(env!("FERBER_USER_ELF"));
 static STAGE: SpinLock<Option<usize>> = SpinLock::new(None);
 const CHALLENGE: &[u8; 8] = b"ferber:1";
 const REPLY: &[u8; 8] = b"ready-v1";
@@ -69,7 +67,12 @@ fn batch(root: &Arc<SpinLock<Job>>) {
         )
         .expect("ELF bootstrap capability");
     *STAGE.lock() = Some(0);
-    super::elf_load::admit(root, IMAGE, Some(user_node)).expect("load userspace ELF");
+    super::elf_load::admit(
+        root,
+        super::boot_payload::bytes().expect("boot payload required"),
+        Some(user_node),
+    )
+    .expect("load userspace ELF");
     let stats = scheduler::run();
     assert_eq!(STAGE.lock().take(), Some(6), "ELF did not exit");
     assert_eq!(stats.yields, 1);
@@ -95,4 +98,5 @@ pub fn run(root: &Arc<SpinLock<Job>>) {
     }
     kprintln!("[FERBER_TEST] userspace_elf: PASS");
     kprintln!("[FERBER_TEST] userspace_bootstrap_channel: PASS");
+    kprintln!("[FERBER_TEST] boot_payload: PASS");
 }

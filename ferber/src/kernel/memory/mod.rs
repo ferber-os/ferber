@@ -25,6 +25,7 @@ pub fn init_from_boot_info(info: &BootInfo) -> bitmap::MemoryStats {
     bitmap::init_from_boot_info(info);
     crate::arch::paging::finalize(info).expect("permanent kernel mappings");
     retain_kernel_backing(info);
+    crate::kernel::boot_payload::retain(info);
     bitmap::stats()
 }
 
@@ -59,6 +60,68 @@ pub fn init(device_tree: usize, device_tree_physical: usize) -> bitmap::MemorySt
     .unwrap_or_else(|e| panic!("physical memory detection: {}", e));
     let bank_start = kernel_bank_start.expect("no FDT RAM bank contains the kernel");
 
+    let payload = tree
+        .initrd()
+        .expect("invalid boot payload discovery")
+        .map(|region| {
+            crate::boot_info::BootPayload::new(region.start, region.end - region.start)
+                .expect("invalid boot payload descriptor")
+        })
+        .unwrap_or(crate::boot_info::BootPayload::NONE);
+    if let Some((start, end)) = payload.bounds().expect("invalid boot payload descriptor") {
+        // Cover the whole rounded source with reported RAM, allowing adjacent RAM tuples.
+        let mut cursor = start;
+        while cursor < end {
+            let mut next = cursor;
+            tree.memory_regions(|region| {
+                if region.start <= cursor && region.end > next {
+                    next = region.end.min(end);
+                }
+            })
+            .expect("invalid RAM for boot payload");
+            assert!(next > cursor, "boot payload outside RAM");
+            cursor = next;
+        }
+        let overlaps = |a: u64, b: u64| {
+            let a = a & !4095;
+            let b = b.checked_add(4095).expect("reservation overflow") & !4095;
+            start < b && a < end
+        };
+        assert!(
+            !overlaps(bank_start, kernel_end),
+            "boot payload overlaps boot island"
+        );
+        assert!(
+            !overlaps(
+                device_tree_physical as u64,
+                (device_tree_physical as u64)
+                    .checked_add(tree.size() as u64)
+                    .expect("FDT overflow")
+            ),
+            "boot payload overlaps device tree"
+        );
+        tree.reserved_memory_regions(|region| {
+            assert!(
+                !overlaps(region.start, region.end),
+                "boot payload overlaps reserved memory"
+            );
+        })
+        .expect("invalid reserved memory");
+        tree.reservation_map_regions(|region| {
+            if overlaps(region.start, region.end) {
+                let rounded_end =
+                    region.end.checked_add(4095).expect("reservation overflow") & !4095;
+                assert_eq!(
+                    (region.start & !4095, rounded_end),
+                    (start, end),
+                    "boot payload overlaps firmware reservation"
+                );
+            }
+        })
+        .expect("invalid firmware reservations");
+        push(MemoryRegion::reserved(start, end));
+    }
+
     // OpenSBI and its runtime data occupy the RAM before the linked kernel.
     // The FDT memory nodes include this area, so reserve it explicitly.
     push(MemoryRegion::reserved(bank_start, kernel_end));
@@ -87,14 +150,16 @@ pub fn init(device_tree: usize, device_tree_physical: usize) -> bitmap::MemorySt
         0,
         regions.as_ptr() as u64,
     );
+    info.boot_payload = payload;
     info.memory_regions = to_physical(regions.as_ptr() as usize);
     info.boot_info_physical = to_physical(&info as *const BootInfo as usize);
     phys_map::init(&info);
     unsafe { crate::arch::bootstrap_aliases() };
     phys_map::activate();
     bitmap::init_from_boot_info(&info);
-    unsafe { crate::arch::finalize_kernel_space() };
+    unsafe { crate::arch::finalize_kernel_space(&info) };
     retain_kernel_backing(&info);
+    crate::kernel::boot_payload::retain(&info);
     bitmap::stats()
 }
 

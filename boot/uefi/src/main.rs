@@ -4,6 +4,7 @@
 mod abi;
 mod elf;
 mod paging;
+mod payload;
 mod uefi;
 
 use abi::{BootInfo, Framebuffer, MemoryRegion};
@@ -85,6 +86,7 @@ fn stage_name(stage: usize) -> &'static str {
         8 => "boot information allocation",
         9 => "stack allocation",
         10 => "firmware memory map",
+        11 => "boot payload read",
         _ => "startup",
     }
 }
@@ -191,11 +193,24 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
     BOOT_STAGE.store(5, Ordering::Relaxed);
     let result = read_file(services, file);
     ((*file).close)(file);
-    ((*root).close)(root);
     let (file_bytes, file_size) = match result {
         Ok(value) => value,
-        Err(status) => return status,
+        Err(status) => {
+            ((*root).close)(root);
+            return status;
+        }
     };
+    BOOT_STAGE.store(11, Ordering::Relaxed);
+    let payload_result = payload::read_boot_payload(services, root);
+    ((*root).close)(root);
+    let boot_payload = match payload_result {
+        Ok(value) => value,
+        Err(status) => {
+            (*services).free_pool(file_bytes);
+            return status;
+        }
+    };
+    let mut payload_owner = payload::PayloadOwner::new(services, boot_payload, &EXIT_ATTEMPTED);
     BOOT_STAGE.store(6, Ordering::Relaxed);
     let kernel = load_kernel(services, file_bytes, file_size);
     (*services).free_pool(file_bytes);
@@ -243,6 +258,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
             boot_info_physical: boot_page,
             memory_regions_virtual: abi::BOOT_REGIONS_VA,
             framebuffer,
+            boot_payload,
         },
     );
 
@@ -251,6 +267,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
         Ok(tables) => tables,
         Err(status) => return status,
     };
+    payload_owner.disarm();
     jump_to_kernel(
         kernel.entry,
         abi::BOOT_INFO_VA as *const BootInfo,

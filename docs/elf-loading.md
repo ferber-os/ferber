@@ -57,7 +57,7 @@ no blocking receive in this exchange. See [startup ABI v1](userspace-startup.md)
 for the entry record, handle ownership and architecture calling conventions.
 The exchange remains a test protocol.
 
-## The fixture is embedded independently linked data
+## The fixture arrives as an external boot payload
 
 `scripts/build-user-elf.sh` builds `userspace/elf-probe/` for the requested
 kernel target and profile. RISC-V user code uses the integer-only
@@ -66,20 +66,21 @@ Install that additional target with
 `rustup target add riscv64imac-unknown-none-elf --toolchain nightly`.
 Small assembly entry shims call shared `no_std` Rust validation and protocol
 code. Its linker script places `_start` at `0x400000` and emits
-separate R-X, R--, and RW- segments. The kernel embeds the resulting bytes
-through `FERBER_USER_ELF`; the build script tracks changes to that file.
-BootInfo version 2, UEFI handoff, and RISC-V FDT delivery are unchanged.
-Embedding is a test mechanism pending a reserved boot payload for production.
-
-For a RISC-V debug ELF kernel:
+separate R-X, R--, and RW- segments. The kernel receives the independently
+built bytes through the [boot-payload contract](boot-payload.md), not through
+`include_bytes!` or `FERBER_USER_ELF`. Kernel builds do not require the fixture
+to exist. There is no embedded fallback when the required payload is absent.
 
 ```bash
-image=$(scripts/build-user-elf.sh riscv64gc-unknown-none-elf debug)
-(cd ferber && FERBER_USER_ELF="$image" cargo build --features userspace-elf-probe)
+make run USERSPACE_ELF_PROBE=1
+make debug USERSPACE_ELF_PROBE=1
+make x86-iso USERSPACE_ELF_PROBE=1
 ```
 
-`make x86-iso USERSPACE_ELF_PROBE=1` builds a release-profile ELF test ISO.
-Without that option, the ISO and default builds retain the resident probes.
+These commands build and deliver the fixture separately. RISC-V uses QEMU's
+`-initrd`; the x86 ISO carries `BOOT.ELF` beside the kernel on its FAT image.
+Without that option, default builds retain the resident probes and need no
+payload. The raw ELF delivery format does not provide an initramfs or init.
 Run `bash scripts/elf-tests.sh` for parser regressions and
 `bash scripts/elf-load-tests.sh` for loader regressions. The latter compiles
 the production loader against fallible host resources: it checks data/zeroing,
@@ -96,7 +97,11 @@ zeroing, stack alignment, unknown-syscall return, cooperative yield with state
 preservation, and exit. One warmup and three measured executions must restore
 frame/node/process accounting and empty the scheduler before
 `[FERBER_TEST] userspace_elf: PASS` is emitted. The ELF scenario also requires
-`[FERBER_TEST] memory_verification: PASS`; it does not emit the resident suite's
+`[FERBER_TEST] memory_verification: PASS`,
+`[FERBER_TEST] userspace_bootstrap_channel: PASS`, and
+`[FERBER_TEST] boot_payload: PASS`. The last marker follows execution and
+reclamation using the external source; delivery alone cannot satisfy it.
+It does not emit the resident suite's
 syscall markers. Execution remains single-CPU, cooperative, integer-only, and
 interrupt-disabled. A bad instruction or unexpected user fault still panics
 the kernel. Bootstrap-channel startup is Checkpoint B; init and service

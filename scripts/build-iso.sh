@@ -2,12 +2,15 @@
 # Package the release kernel and UEFI loader as an El Torito bootable ISO.
 set -euo pipefail
 
-if [[ "$#" -ne 3 ]]; then
-    echo "usage: $0 KERNEL_ELF LOADER_EFI OUTPUT_ISO" >&2
+if [[ "$#" -lt 3 || "$#" -gt 4 ]]; then
+    echo "usage: $0 KERNEL_ELF LOADER_EFI OUTPUT_ISO [BOOT_ELF]" >&2
     exit 2
 fi
 kernel=$1 loader=$2 output=$3
-for required in "$kernel" "$loader"; do
+boot_payload=${4:-}
+inputs=("$kernel" "$loader")
+if [[ -n "$boot_payload" ]]; then inputs+=("$boot_payload"); fi
+for required in "${inputs[@]}"; do
     if [[ ! -f "$required" ]]; then
         echo "missing ISO input: $required" >&2
         exit 1
@@ -21,7 +24,7 @@ for command in xorriso mkfs.vfat mmd mcopy; do
 done
 
 # Size FAT32 image to payload + 10 MiB headroom (FAT32 minimum: 33 MiB).
-payload_kb=$(du -sk "$kernel" "$loader" | awk '{s+=$1} END {print s}')
+payload_kb=$(du -sk "${inputs[@]}" | awk '{s+=$1} END {print s}')
 img_kb=$(( (payload_kb + 10240 + 511) / 512 * 512 ))
 if [[ "$img_kb" -lt 33792 ]]; then
     img_kb=33792
@@ -36,6 +39,9 @@ mkfs.vfat -F 32 -n FERBER "$efi_img" >/dev/null
 mmd -i "$efi_img" ::/EFI ::/EFI/BOOT
 mcopy -i "$efi_img" "$loader" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$efi_img" "$kernel" ::/FERBER.ELF
+if [[ -n "$boot_payload" ]]; then
+    mcopy -i "$efi_img" "$boot_payload" ::/BOOT.ELF
+fi
 
 mkdir -p "$iso_work/iso/EFI/BOOT"
 cp "$efi_img" "$iso_work/iso/EFI/BOOT/efiboot.img"

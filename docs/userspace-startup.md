@@ -2,8 +2,9 @@
 
 The opt-in static ELF path enters a separately linked, integer-only `no_std`
 Rust executable through this contract on RISC-V 64 and x86-64. It defines first
-entry and bootstrap-handle discovery. Production image delivery, init and
-service protocols remain separate work.
+entry and bootstrap-handle discovery. The executable arrives through the
+[external boot-payload handoff](boot-payload.md). Init and service protocols
+remain separate work.
 
 ## Initial SP identifies a fixed startup record
 
@@ -84,4 +85,5 @@ around yield. Host tests cover malformed startup bytes, initialized stack
 contents, initial-SP bounds and construction rollback. Boot tests require the
 exact reply and restored frame, node, process and scheduler baselines before
 the existing `userspace_elf` and `userspace_bootstrap_channel` PASS markers.
-Neither marker establishes init, service launching or recoverable user faults.
+The external-delivery scenario additionally requires `boot_payload: PASS`.
+These markers do not establish init, service launching or recoverable user faults.

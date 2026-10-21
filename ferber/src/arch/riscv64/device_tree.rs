@@ -115,6 +115,21 @@ impl<'a> DeviceTree<'a> {
     }
 
     pub fn reserved_regions(&self, mut visit: impl FnMut(Region)) -> Result<(), &'static str> {
+        self.reservation_map_regions(&mut visit)?;
+        self.reserved_memory_regions(visit)
+    }
+
+    pub fn reserved_memory_regions(
+        &self,
+        mut visit: impl FnMut(Region),
+    ) -> Result<(), &'static str> {
+        self.walk(3, &mut visit)
+    }
+
+    pub fn reservation_map_regions(
+        &self,
+        mut visit: impl FnMut(Region),
+    ) -> Result<(), &'static str> {
         let mut offset = self.reserve_offset;
         loop {
             let start = be64(self.bytes, offset)?;
@@ -132,7 +147,88 @@ impl<'a> DeviceTree<'a> {
                 .checked_add(16)
                 .ok_or("FDT reserve offset overflow")?;
         }
-        self.walk(3, &mut visit)
+        Ok(())
+    }
+
+    /// Initrd scalars use their own property width, not the root cell counts.
+    pub fn initrd(&self) -> Result<Option<Region>, &'static str> {
+        let mut offset = 0usize;
+        let mut depth = 0usize;
+        let mut chosen = false;
+        let mut chosen_seen = false;
+        let mut start = None;
+        let mut end = None;
+        loop {
+            let token = be32(self.structure, offset)?;
+            offset += 4;
+            match token {
+                1 => {
+                    if depth == MAX_DEPTH {
+                        return Err("FDT nesting too deep");
+                    }
+                    let name = cstr(self.structure, offset)?;
+                    offset = aligned4(offset + name.len() + 1)?;
+                    if depth == 1 && (name == b"chosen" || name.starts_with(b"chosen@")) {
+                        if chosen_seen {
+                            return Err("duplicate FDT chosen node");
+                        }
+                        chosen = true;
+                        chosen_seen = true;
+                    }
+                    depth += 1;
+                }
+                2 => {
+                    if depth == 0 {
+                        return Err("unbalanced FDT nodes");
+                    }
+                    if depth == 2 {
+                        chosen = false;
+                    }
+                    depth -= 1;
+                }
+                3 => {
+                    if depth == 0 {
+                        return Err("FDT property outside node");
+                    }
+                    let len = be32(self.structure, offset)? as usize;
+                    let name_offset = be32(self.structure, offset + 4)? as usize;
+                    offset += 8;
+                    section(self.structure, offset, len)?;
+                    let name = cstr(self.strings, name_offset)?;
+                    if chosen && depth == 2 {
+                        let target = match name {
+                            b"linux,initrd-start" => Some(&mut start),
+                            b"linux,initrd-end" => Some(&mut end),
+                            _ => None,
+                        };
+                        if let Some(target) = target {
+                            if target.is_some() {
+                                return Err("duplicate FDT initrd property");
+                            }
+                            *target = Some(match len {
+                                4 => be32(self.structure, offset)? as u64,
+                                8 => be64(self.structure, offset)?,
+                                _ => return Err("invalid FDT initrd scalar width"),
+                            });
+                        }
+                    }
+                    offset = aligned4(offset.checked_add(len).ok_or("FDT offset overflow")?)?;
+                }
+                4 => {}
+                9 if depth == 0 => break,
+                _ => return Err("invalid FDT token"),
+            }
+        }
+        match (start, end) {
+            (None, None) => Ok(None),
+            (Some(start), Some(end)) if start != 0 && end > start => {
+                if end - start > crate::boot_info::payload::MAX_PAYLOAD_BYTES {
+                    return Err("FDT initrd exceeds payload limit");
+                }
+                Ok(Some(Region { start, end }))
+            }
+            _ => Err("invalid FDT initrd range"),
+        }
     }
 
     fn walk(&self, wanted: u8, visit: &mut impl FnMut(Region)) -> Result<(), &'static str> {
@@ -331,6 +427,123 @@ mod tests {
         }
     }
     const REG: &[u8] = &[0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x20, 0, 0];
+
+    fn initrd_fixture(start: &[u8], end: &[u8]) -> Fixture {
+        let mut f = Fixture::new();
+        f.begin(b"");
+        // Deliberately unrelated to the initrd property's scalar width.
+        f.prop(b"#address-cells", &1u32.to_be_bytes());
+        f.begin(b"chosen");
+        f.prop(b"linux,initrd-start", start);
+        f.prop(b"linux,initrd-end", end);
+        f.end();
+        f.finish();
+        f
+    }
+
+    #[test]
+    fn initrd_scalars_accept_four_eight_and_mixed_widths() {
+        for f in [
+            initrd_fixture(&0x84000001u32.to_be_bytes(), &0x84002002u32.to_be_bytes()),
+            initrd_fixture(&0x84000001u64.to_be_bytes(), &0x84002002u64.to_be_bytes()),
+            initrd_fixture(&0x84000001u32.to_be_bytes(), &0x84002002u64.to_be_bytes()),
+        ] {
+            let r = f.tree().initrd().unwrap().unwrap();
+            assert_eq!((r.start, r.end), (0x84000001, 0x84002002));
+        }
+    }
+
+    #[test]
+    fn initrd_preserves_high_addresses_and_exact_size_limit() {
+        let start = 0x1_8400_0001u64;
+        let end = start + 4 * 1024 * 1024;
+        let f = initrd_fixture(&start.to_be_bytes(), &end.to_be_bytes());
+        let r = f.tree().initrd().unwrap().unwrap();
+        assert_eq!((r.start, r.end), (start, end));
+        let mut f = Fixture::new();
+        f.begin(b"");
+        f.begin(b"chosen");
+        f.begin(b"unrelated");
+        f.prop(b"linux,initrd-start", &1u32.to_be_bytes());
+        f.prop(b"linux,initrd-end", &2u32.to_be_bytes());
+        f.end();
+        f.end();
+        f.finish();
+        assert!(f.tree().initrd().unwrap().is_none());
+    }
+
+    #[test]
+    fn initrd_rejects_invalid_ranges_widths_and_truncation() {
+        for (start, end) in [(0, 1), (1, 1), (2, 1), (1, 0x400002)] {
+            let f = initrd_fixture(&u64::to_be_bytes(start), &u64::to_be_bytes(end));
+            assert!(f.tree().initrd().is_err());
+        }
+        let f = initrd_fixture(&[1, 2, 3], &4u32.to_be_bytes());
+        assert_eq!(
+            f.tree().initrd().err(),
+            Some("invalid FDT initrd scalar width")
+        );
+        let mut f = initrd_fixture(&1u32.to_be_bytes(), &2u32.to_be_bytes());
+        f.structure.truncate(f.structure.len() - 5);
+        assert!(f.tree().initrd().is_err());
+    }
+
+    #[test]
+    fn initrd_rejects_missing_half_duplicates_and_ambiguous_chosen() {
+        for duplicate_property in [false, true] {
+            let mut f = Fixture::new();
+            f.begin(b"");
+            f.begin(b"chosen");
+            f.prop(b"linux,initrd-start", &1u32.to_be_bytes());
+            if duplicate_property {
+                f.prop(b"linux,initrd-start", &1u32.to_be_bytes());
+            }
+            f.end();
+            f.finish();
+            assert!(f.tree().initrd().is_err());
+        }
+        let mut f = Fixture::new();
+        f.begin(b"");
+        f.begin(b"chosen");
+        f.end();
+        f.begin(b"chosen@0");
+        f.end();
+        f.finish();
+        assert_eq!(f.tree().initrd().err(), Some("duplicate FDT chosen node"));
+        let mut f = Fixture::new();
+        f.begin(b"");
+        f.finish();
+        assert!(f.tree().initrd().unwrap().is_none());
+    }
+
+    #[test]
+    fn reservation_provenance_stays_separate() {
+        let mut f = Fixture::new();
+        f.begin(b"");
+        f.begin(b"reserved-memory");
+        f.begin(b"firmware");
+        f.prop(b"reg", REG);
+        f.end();
+        f.end();
+        f.finish();
+        let mut reserve_map = [0u8; 32];
+        reserve_map[..8].copy_from_slice(&0x90000000u64.to_be_bytes());
+        reserve_map[8..16].copy_from_slice(&4096u64.to_be_bytes());
+        let mut tree = f.tree();
+        tree.bytes = &reserve_map;
+        let mut map = Vec::new();
+        tree.reservation_map_regions(|r| map.push((r.start, r.end)))
+            .unwrap();
+        assert_eq!(map, [(0x90000000, 0x90001000)]);
+        let mut nodes = Vec::new();
+        tree.reserved_memory_regions(|r| nodes.push((r.start, r.end)))
+            .unwrap();
+        assert_eq!(nodes, [(0x80000000, 0x80200000)]);
+        let mut combined = Vec::new();
+        tree.reserved_regions(|r| combined.push((r.start, r.end)))
+            .unwrap();
+        assert_eq!(combined.len(), 2);
+    }
 
     #[test]
     fn disabled_memory_is_ignored_and_device_type_is_honored() {
