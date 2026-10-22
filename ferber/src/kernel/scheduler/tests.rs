@@ -30,7 +30,7 @@ impl Fixture {
             .alloc_root(
                 endpoint.clone(),
                 ObjectType::Channel,
-                Rights::READ | Rights::WAIT | Rights::DUPLICATE | Rights::MANAGE,
+                Rights::READ | Rights::WRITE | Rights::WAIT | Rights::DUPLICATE | Rights::MANAGE,
             )
             .unwrap();
         let handle = process
@@ -40,7 +40,11 @@ impl Fixture {
             .insert(node.clone())
             .unwrap();
         admit(process.clone(), thread.clone()).unwrap();
-        assert_eq!(thread.lock().user_entry(), ENTRY, "admission lost user entry");
+        assert_eq!(
+            thread.lock().user_entry(),
+            ENTRY,
+            "admission lost user entry"
+        );
         let index = RUNTIME
             .lock()
             .tasks
@@ -236,7 +240,10 @@ fn failed_task_construction(root: &Arc<SpinLock<Job>>) {
     let process = root.lock().create_process("failed_task_test").unwrap();
     {
         let mut process = process.lock();
-        assert_eq!(process.reserve_backing(usize::MAX), Err(TaskError::OutOfMemory));
+        assert_eq!(
+            process.reserve_backing(usize::MAX),
+            Err(TaskError::OutOfMemory)
+        );
         assert!(matches!(
             process.create_named_thread("failed_task_test/main", 0x20_0040, 0),
             Err(TaskError::OutOfMemory)
@@ -248,7 +255,10 @@ fn failed_task_construction(root: &Arc<SpinLock<Job>>) {
     let id = process.lock().id();
     drop(root.lock().detach_process(id).unwrap());
     drop(process);
-    assert!(weak.upgrade().is_none(), "failed construction retained process");
+    assert!(
+        weak.upgrade().is_none(),
+        "failed construction retained process"
+    );
 }
 
 fn startup_stack_pointer_bounds(root: &Arc<SpinLock<Job>>) {
@@ -286,11 +296,112 @@ fn startup_stack_pointer_bounds(root: &Arc<SpinLock<Job>>) {
     drop(root.lock().detach_process(id).unwrap());
 }
 
+#[cfg(feature = "minimal-init")]
+fn init_wait_contract(root: &Arc<SpinLock<Job>>) {
+    let fixture = Fixture::new(root);
+    let (token, generation) = fixture.arm();
+    let mut session = crate::kernel::init::Session {
+        admitted: crate::kernel::elf_load::Admitted {
+            process_id: fixture.process.lock().id(),
+            thread_id: fixture.thread.lock().id(),
+        },
+        node: Arc::downgrade(&fixture.node),
+        peer: Some(Arc::clone(&fixture.peer)),
+        exit_status: None,
+        closure_probe: false,
+        parked_once: false,
+    };
+    assert!(init_wait_matches(&session));
+    fixture.endpoint.unregister_wait(&token, generation);
+    assert!(!init_wait_matches(&session), "unregistered wait accepted");
+    assert!(fixture.endpoint.register_wait(&token, generation).unwrap());
+    assert!(init_wait_matches(&session));
+    session.admitted.thread_id += 1;
+    assert!(!init_wait_matches(&session));
+    session.admitted.thread_id -= 1;
+    session.admitted.process_id += 1;
+    assert!(!init_wait_matches(&session));
+    session.admitted.process_id -= 1;
+    // The same pair's same side is not an external peer, nor is an unrelated pair.
+    session.peer = Some(Arc::clone(&fixture.endpoint));
+    assert!(!init_wait_matches(&session));
+    let (other, _) = Channel::create().unwrap();
+    session.peer = Some(other);
+    assert!(!init_wait_matches(&session));
+    session.peer = Some(Arc::clone(&fixture.peer));
+    {
+        let mut runtime = RUNTIME.lock();
+        let pending = runtime.tasks[fixture.index]
+            .as_mut()
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap();
+        pending.generation += 1;
+    }
+    assert!(!init_wait_matches(&session));
+    {
+        let mut runtime = RUNTIME.lock();
+        let pending = runtime.tasks[fixture.index]
+            .as_mut()
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap();
+        pending.generation -= 1;
+        pending.error = Some(-9);
+    }
+    assert!(!init_wait_matches(&session));
+    RUNTIME.lock().tasks[fixture.index]
+        .as_mut()
+        .unwrap()
+        .pending
+        .as_mut()
+        .unwrap()
+        .error = None;
+    assert!(init_wait_matches(&session));
+    let second = Fixture::new(root);
+    second.arm();
+    assert!(!init_wait_matches(&session), "other live task concealed");
+    second.dispose();
+    assert!(init_wait_matches(&session));
+    token.notify(generation);
+    assert!(!init_wait_matches(&session));
+    reconcile();
+    assert_eq!(fixture.thread.lock().state(), ThreadState::Ready);
+    assert!(!init_wait_matches(&session));
+    drop(session);
+    fixture.dispose();
+
+    let fixture = Fixture::new(root);
+    fixture.arm();
+    let session = crate::kernel::init::Session {
+        admitted: crate::kernel::elf_load::Admitted {
+            process_id: fixture.process.lock().id(),
+            thread_id: fixture.thread.lock().id(),
+        },
+        node: Arc::downgrade(&fixture.node),
+        peer: Some(Arc::clone(&fixture.peer)),
+        exit_status: None,
+        closure_probe: false,
+        parked_once: false,
+    };
+    fixture.node.revoke();
+    assert!(!init_wait_matches(&session), "revoked init wait accepted");
+    reconcile();
+    assert_eq!(fixture.error(), Some(-116));
+    assert_eq!(fixture.thread.lock().state(), ThreadState::Ready);
+    drop(session);
+    fixture.dispose();
+}
+
 pub(super) fn run(root: &Arc<SpinLock<Job>>) {
     assert_eq!(task_count(), 0);
     assert!(RUNTIME.lock().current.is_none());
     let processes = root.lock().process_count();
     let nodes = CAP_NODE_ALLOCATOR.live_count();
+    #[cfg(feature = "minimal-init")]
+    init_wait_contract(root);
     startup_stack_pointer_bounds(root);
     failed_task_construction(root);
     notified_close_reuse(root);

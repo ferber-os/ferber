@@ -5,9 +5,12 @@
 mod startup;
 
 #[cfg(target_arch = "riscv64")]
-core::arch::global_asm!(include_str!("riscv64.S"));
+core::arch::global_asm!(
+    include_str!("../common/riscv64.S"),
+    include_str!("riscv64.S")
+);
 #[cfg(target_arch = "x86_64")]
-core::arch::global_asm!(include_str!("x86_64.S"));
+core::arch::global_asm!(include_str!("../common/x86_64.S"), include_str!("x86_64.S"));
 
 unsafe extern "C" {
     fn syscall6(number: usize, a: usize, b: usize, c: usize, d: usize, e: usize, f: usize)
@@ -32,7 +35,7 @@ fn exit(code: usize) -> ! {
 /// # Safety
 /// Entry must supply a readable startup record in the retained user stack mapping.
 #[no_mangle]
-pub unsafe extern "C" fn probe_main(record: *const u8) -> ! {
+pub unsafe extern "C" fn user_main(record: *const u8) -> ! {
     if record.is_null() || record.addr() & 15 != 0 {
         exit(1);
     }

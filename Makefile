@@ -1,12 +1,24 @@
 KERNEL := ferber/target/riscv64gc-unknown-none-elf/debug/ferber
 USERSPACE_ELF_PROBE ?= 0
+MINIMAL_INIT ?= 0
+
+ifeq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE),11)
+$(error MINIMAL_INIT and USERSPACE_ELF_PROBE are mutually exclusive)
+endif
+
+ifeq ($(MINIMAL_INIT),1)
+KERNEL_FEATURES = --features minimal-init
+RISCV_PAYLOAD = -initrd target/userspace-init/riscv64gc-unknown-none-elf/debug/init.elf
+X86_PAYLOAD = target/userspace-init/x86_64-unknown-none/release/init.elf
+X86_ISO_BUILD = scripts/x86-preview.sh --release --features minimal-init
+endif
 
 ifeq ($(USERSPACE_ELF_PROBE),1)
 KERNEL_FEATURES = --features userspace-elf-probe
 RISCV_PAYLOAD = -initrd target/userspace-elf/riscv64gc-unknown-none-elf/debug/probe.elf
 X86_PAYLOAD = target/userspace-elf/x86_64-unknown-none/release/probe.elf
 X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-elf-probe
-else
+else ifneq ($(MINIMAL_INIT),1)
 X86_ISO_BUILD = scripts/x86-preview.sh --release
 endif
 
@@ -18,6 +30,9 @@ build:
 	cd ferber && cargo build $(KERNEL_FEATURES)
 
 riscv-payload:
+ifeq ($(MINIMAL_INIT),1)
+	scripts/build-user.sh init riscv64gc-unknown-none-elf debug >/dev/null
+endif
 ifeq ($(USERSPACE_ELF_PROBE),1)
 	scripts/build-user-elf.sh riscv64gc-unknown-none-elf debug >/dev/null
 endif
@@ -46,6 +61,9 @@ x86-smoke:
 	scripts/x86-smoke.sh
 
 x86-iso:
+ifeq ($(MINIMAL_INIT),1)
+	scripts/build-user.sh init x86_64-unknown-none release >/dev/null
+endif
 ifeq ($(USERSPACE_ELF_PROBE),1)
 	scripts/build-user-elf.sh x86_64-unknown-none release >/dev/null
 endif

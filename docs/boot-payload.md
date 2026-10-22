@@ -1,8 +1,8 @@
 # External boot payload
 
-The opt-in `userspace-elf-probe` path loads one independently built raw static
+The `userspace-elf-probe` and `minimal-init` paths load one independently built raw static
 ELF supplied separately from the kernel. It uses the existing ELF loader,
-startup ABI v1 and bootstrap-channel test protocol. It is not an archive,
+startup ABI v1. The fixture and minimal init use distinct bootstrap protocols. It is not an archive,
 initramfs, verified-boot mechanism or service-launching init.
 
 ## BootInfo v3 describes exact bytes and reserved backing
@@ -95,3 +95,9 @@ These are verification requirements, not a claim that every configuration or
 physical machine has been tested. See [ELF loading](elf-loading.md) for accepted
 image restrictions and [startup ABI v1](userspace-startup.md) for the unchanged
 entry contract.
+
+Minimal init uses the same delivery and reservation rules.
+`make run MINIMAL_INIT=1` or `make x86-iso MINIMAL_INIT=1` supplies `init.elf`
+as the external payload. Its `boot_payload` marker follows readiness and
+validated terminal waiting, rather than fixture exit/reclamation. See
+[minimal init](minimal-init.md).

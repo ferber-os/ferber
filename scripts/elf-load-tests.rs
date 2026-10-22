@@ -301,6 +301,7 @@ mod kernel {
             pub initial_sp: Option<usize>,
         }
         impl Thread {
+            pub fn id(&self) -> u64 { 1 }
             pub fn set_user_stack(&mut self, stack: Vmo) {
                 self.user_stack = Some(stack);
             }

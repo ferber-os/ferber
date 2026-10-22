@@ -44,7 +44,7 @@ A present `BOOT.ELF` must be nonempty and at most 4 MiB. The loader allocates
 dedicated zeroed pages, reads the exact file length and closes handles before
 the final memory-map/ExitBootServices sequence. Only file-not-found means absent;
 other read failures stop the handoff. Resident kernels permit absence, while
-the ELF probe requires a payload. Both loader and permanent kernel tables map
+the ELF probe and minimal init require a payload. Both loader and permanent kernel tables map
 its reserved backing supervisor RO/NX. See
 [the boot-payload contract](../../docs/boot-payload.md).
 
@@ -93,3 +93,7 @@ automatically. It uses `scripts/build-iso.sh`, the same packager as
 `make x86-iso` and the release workflow, and requires the normal userspace
 PASS marker. The test kernel adds `qemu-debug-port` diagnostics for log
 capture. Set `OVMF_CODE` and `OVMF_VARS` to override the firmware paths.
+
+`make x86-iso MINIMAL_INIT=1` packages the dedicated Ferrum init as `BOOT.ELF`.
+See [minimal init](../../docs/minimal-init.md) for readiness and terminal-wait
+validation; the loader uses the same bounded raw-ELF delivery contract.

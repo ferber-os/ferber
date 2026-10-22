@@ -2,8 +2,9 @@
 
 Ferber uses Linux-style argument registers with its own syscall numbers.
 This ABI cooperatively schedules resident user tasks and opt-in static ELF
-fixtures on one active CPU with interrupts disabled. It does not provide Linux
-or musl compatibility, preemption, userspace task creation, or init.
+fixtures and minimal init on one active CPU with interrupts disabled. It does
+not provide Linux or musl compatibility, preemption, userspace task creation,
+or service launching.
 
 ## Calling Convention
 
@@ -172,6 +173,9 @@ closes endpoints or discards queued messages. Surviving tasks continue running.
 When all resident tasks exit, the scheduler returns to the kernel harness, which
 checks reclamation before halting. Live tasks all blocked without a runnable
 wake source are diagnosed as deadlock, not successful completion.
+The separate [minimal-init session](minimal-init.md) accepts only its exact,
+validated bootstrap receive as terminal waiting. An open peer alone provides
+no exemption and no interrupt-driven wakeup guarantee.
 
 Scheduling remains cooperative, single-CPU, and integer-only. Interrupt-driven
 wakeup, preemption, SMP, concurrent unmapping, FP/vector state, and user-created

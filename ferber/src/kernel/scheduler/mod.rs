@@ -167,6 +167,20 @@ pub fn current_process() -> Arc<SpinLock<Process>> {
     )
 }
 
+#[cfg(feature = "minimal-init")]
+pub(crate) fn current_identity() -> (u64, u64) {
+    let (process, thread) = {
+        let runtime = RUNTIME.lock();
+        let task = runtime.tasks[runtime.current.expect("no current task")]
+            .as_ref()
+            .unwrap();
+        (Arc::clone(&task.process), Arc::clone(&task.thread))
+    };
+    let process_id = process.lock().id();
+    let thread_id = thread.lock().id();
+    (process_id, thread_id)
+}
+
 fn current_context() -> *mut CpuContext {
     let thread = {
         let runtime = RUNTIME.lock();
@@ -439,6 +453,122 @@ fn reap() {
     }
 }
 
+#[cfg(feature = "minimal-init")]
+fn init_wait_matches(session: &super::init::Session) -> bool {
+    use super::capabilities::Rights;
+    let Some(peer) = &session.peer else {
+        return false;
+    };
+    let snapshot = {
+        let runtime = RUNTIME.lock();
+        if runtime.current.is_some() || !runtime.ready.is_empty() {
+            return false;
+        }
+        let mut tasks = runtime.tasks.iter().flatten();
+        let Some(task) = tasks.next() else {
+            return false;
+        };
+        if tasks.next().is_some() {
+            return false;
+        }
+        let Some(pending) = task.pending.clone() else {
+            return false;
+        };
+        if pending.generation != task.generation
+            || pending.error.is_some()
+            || task.token.is_notified(pending.generation)
+            || !pending.registration.waits_on_peer_of(peer)
+            || !pending.node.ptr_eq(&session.node)
+        {
+            return false;
+        }
+        (
+            Arc::clone(&task.process),
+            Arc::clone(&task.thread),
+            Arc::clone(&task.token),
+            pending,
+        )
+    };
+    let (process, thread, token, pending) = snapshot;
+    if !pending
+        .registration
+        .is_registered_peer_wait(peer, &token, pending.generation)
+    {
+        return false;
+    }
+    let thread = thread.lock();
+    if thread.id() != session.admitted.thread_id || thread.state() != ThreadState::Blocked {
+        return false;
+    }
+    drop(thread);
+    let process = process.lock();
+    if process.id() != session.admitted.process_id
+        || pending.process_id != process.id()
+        || process.state() != ProcessState::Running
+    {
+        return false;
+    }
+    let table = process.handle_table().lock();
+    let Ok(handle) = u32::try_from(pending.handle) else {
+        return false;
+    };
+    let Ok(node) = table.lookup(handle) else {
+        return false;
+    };
+    Arc::downgrade(node).ptr_eq(&session.node)
+        && node
+            .rights()
+            .contains(Rights::READ | Rights::WRITE | Rights::WAIT)
+        && node
+            .object_ref::<super::ipc::channel::Channel>()
+            .is_some_and(|endpoint| endpoint.wait_registration().waits_on_peer_of(peer))
+}
+
+#[cfg(feature = "minimal-init")]
+fn finish_init(mut session: super::init::Session) -> bool {
+    if session.closure_probe
+        && session.parked_once
+        && task_count() == 0
+        && session.exit_status == Some(1)
+    {
+        return true;
+    }
+    let ready = session.exit_status.is_none() && session.ready();
+    if ready && init_wait_matches(&session) {
+        if session.closure_probe {
+            session.parked_once = true;
+            drop(session.peer.take());
+            super::init::install(session);
+            return false;
+        }
+        crate::kprintln!("[FERBER_TEST] boot_payload: PASS");
+        crate::kprintln!("[FERBER_TEST] init_ready: PASS");
+        crate::kprintln!("[FERBER_TEST] init_waiting: PASS");
+        // shortcut: no IRQ/event producer exists yet; replace terminal halt before event-driven init.
+        super::syscall::halt();
+    }
+    // Dispatcher stack and kernel root are active; no retired stack is freed underneath us.
+    let count = RUNTIME.lock().tasks.len();
+    for index in 0..count {
+        let thread = RUNTIME.lock().tasks[index]
+            .as_ref()
+            .map(|task| Arc::clone(&task.thread));
+        if let Some(thread) = thread {
+            thread.lock().set_state(ThreadState::Dead);
+        }
+    }
+    reap();
+    let status = session.exit_status;
+    drop(session);
+    if let Some(status) = status {
+        panic!("init exited unexpectedly: {status}");
+    }
+    if ready {
+        panic!("cooperative deadlock: live tasks with no runnable producer");
+    }
+    panic!("init bootstrap failed");
+}
+
 extern "C" fn dispatch_loop() -> ! {
     loop {
         unsafe {
@@ -486,6 +616,15 @@ extern "C" fn dispatch_loop() -> ! {
                 arch::switch_context(CONTEXTS.dispatcher.get(), context);
             }
         } else {
+            #[cfg(feature = "minimal-init")]
+            if let Some(session) = super::init::take() {
+                if finish_init(session) {
+                    unsafe {
+                        arch::switch_context(CONTEXTS.dispatcher.get(), CONTEXTS.launcher.get());
+                    }
+                }
+                continue;
+            }
             if task_count() != 0 {
                 panic!("cooperative deadlock: live tasks with no runnable producer");
             }
@@ -526,4 +665,19 @@ pub fn run() -> Stats {
     }
     assert_eq!(task_count(), 0);
     RUNTIME.lock().stats
+}
+
+#[cfg(feature = "minimal-init")]
+pub(crate) fn run_init(session: super::init::Session) -> ! {
+    super::init::install(session);
+    run();
+    panic!("init scheduler returned")
+}
+
+#[cfg(feature = "minimal-init")]
+pub(crate) fn run_init_closure_probe(session: super::init::Session) {
+    assert!(session.closure_probe);
+    super::init::install(session);
+    let stats = run();
+    assert_eq!(stats.reaped, 1, "init closure did not reap its task");
 }

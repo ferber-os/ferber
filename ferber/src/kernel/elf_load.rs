@@ -34,11 +34,27 @@ pub enum LoadError {
     Task(TaskError),
 }
 
+#[cfg_attr(feature = "minimal-init", allow(dead_code))]
 pub fn admit(
     root: &Arc<SpinLock<Job>>,
     bytes: &[u8],
     bootstrap: Option<Arc<CapNode>>,
 ) -> Result<(), LoadError> {
+    admit_named(root, bytes, bootstrap, "elf_probe").map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Admitted {
+    pub process_id: u64,
+    pub thread_id: u64,
+}
+
+pub fn admit_named(
+    root: &Arc<SpinLock<Job>>,
+    bytes: &[u8],
+    bootstrap: Option<Arc<CapNode>>,
+    name: &'static str,
+) -> Result<Admitted, LoadError> {
     let image = ElfImage::parse(bytes, MACHINE, USER_END).map_err(LoadError::Image)?;
     // Keep an unmapped guard page below the fixed test stack.
     for segment in image.segments() {
@@ -48,13 +64,16 @@ pub fn admit(
             return Err(LoadError::StackOverlap);
         }
     }
-    let process = root
-        .lock()
-        .create_process("elf_probe")
-        .map_err(LoadError::Task)?;
+    let process = root.lock().create_process(name).map_err(LoadError::Task)?;
     let id = process.lock().id();
-    let result = populate(&process, &image, bootstrap)
-        .and_then(|thread| scheduler::admit(Arc::clone(&process), thread).map_err(LoadError::Task));
+    let result = populate(&process, &image, bootstrap, name).and_then(|thread| {
+        let thread_id = thread.lock().id();
+        scheduler::admit(Arc::clone(&process), thread).map_err(LoadError::Task)?;
+        Ok(Admitted {
+            process_id: id,
+            thread_id,
+        })
+    });
     if result.is_err() {
         process.lock().kill();
         // Job owns a strong reference from creation, even before admission.
@@ -68,6 +87,7 @@ fn populate(
     process: &Arc<SpinLock<Process>>,
     image: &ElfImage<'_>,
     bootstrap: Option<Arc<CapNode>>,
+    name: &'static str,
 ) -> Result<Arc<SpinLock<Thread>>, LoadError> {
     let mut process = process.lock();
     process
@@ -96,7 +116,7 @@ fn populate(
         process.retain_backing(backing);
     }
     let thread = process
-        .create_named_thread("elf_probe/main", image.entry(), STACK_SIZE)
+        .create_named_thread(name, image.entry(), STACK_SIZE)
         .map_err(LoadError::Task)?;
     assert_eq!(process.handle_table().lock().count(), 0, "ELF birth table");
     let handle = bootstrap.map(|node| {

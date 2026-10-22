@@ -152,11 +152,12 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.9** delivers the independently built
-Rust ELF separately from the kernel: RISC-V uses an initrd payload and the UEFI
-loader reads `BOOT.ELF`. Reserved source pages have a supervisor-only RO/NX
-alias; the existing loader and startup ABI execute the bootstrap-channel
-protocol and verify cleanup. Init and service launch remain pending.
+Current milestone: **Uranium-238-v0.2.10** boots minimal Ferrum init as a
+separately delivered Rust ELF on both ports. It discovers its explicitly
+delegated bootstrap channel, completes the START/READY protocol and remains
+alive in a validated blocking receive. Ordinary cooperative-deadlock detection
+remains intact. Terminal waiting has no interrupt-driven event source yet;
+service launch remains pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---
@@ -183,9 +184,11 @@ make build                         # RISC-V kernel
 make run                           # boot in QEMU
 make debug                         # boot with GDB on :1234
 make run USERSPACE_ELF_PROBE=1      # boot the external userspace ELF
+make run MINIMAL_INIT=1             # boot minimal Ferrum init
 make x86-preview                   # build and check the x86 kernel
 make x86-iso                       # build a bootable x86 ISO
 make x86-iso USERSPACE_ELF_PROBE=1 # deliver the external userspace ELF
+make x86-iso MINIMAL_INIT=1        # package minimal Ferrum init
 ```
 ---
 

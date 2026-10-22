@@ -59,7 +59,10 @@ from the Job before returning. The independently built raw ELF arrives through
 a bounded external boot payload: UEFI reads `BOOT.ELF`, while RISC-V uses FDT
 initrd bounds. Its reserved source has a permanent supervisor RO/NX mapping
 and boot-lifetime physical VMO ownership. Startup arguments, multi-file
-initramfs delivery and init remain separate work. See
+initramfs delivery and service launching remain separate work.
+The separate [minimal init](minimal-init.md) mode adds a kernel-owned bootstrap
+exchange and exact terminal-wait validation without weakening ordinary
+cooperative-deadlock detection. See
 [the boot-payload contract](boot-payload.md),
 [the ELF loading contract](elf-loading.md) and [startup ABI v1](userspace-startup.md).
 

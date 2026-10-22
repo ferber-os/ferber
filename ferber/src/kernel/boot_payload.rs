@@ -37,7 +37,7 @@ pub fn retain(info: &BootInfo) {
     *source = Some((info.boot_payload, backing));
 }
 
-#[cfg(feature = "userspace-elf-probe")]
+#[cfg(any(feature = "userspace-elf-probe", feature = "minimal-init"))]
 pub fn bytes() -> Option<&'static [u8]> {
     let source = SOURCE.lock();
     let (payload, _) = source.as_ref()?;

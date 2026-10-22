@@ -199,10 +199,11 @@ task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
 - [x] Checkpoint B test ABI: explicitly delegate a bootstrap channel to the ELF fixture and verify a request/reply exchange
 - [x] Startup ABI v1: bounded record at initial SP, slot-independent bootstrap discovery, and shared integer-only `no_std` Rust entry on both architectures
 - [x] Bounded external raw ELF delivery: BootInfo v3, UEFI `BOOT.ELF`, RISC-V initrd discovery, reserved RO/NX source and boot-lifetime backing
-- [ ] Integrate startup ABI v1 into production init and define its bootstrap service protocol
+- [x] Integrate startup ABI v1 into minimal Ferrum init and define its versioned bootstrap readiness protocol
 - [ ] Init Process (`init`):
-  - [ ] Root userspace process spawned under root `Job`
-  - [ ] Injected initial bootstrap channel handle pointing to kernel control service
+  - [x] Root userspace process spawned under root `Job`
+  - [x] Explicit bootstrap channel to the kernel-owned startup session; validated terminal waiting
+  - [ ] General kernel control service and event-driven idle
   - [ ] Spawns root namespace and system servers
 
 Checkpoint A is an opt-in `userspace-elf-probe` build released in
@@ -217,9 +218,10 @@ records its assigned slot. Shared Rust code discovers that handle instead of
 assuming slot 0. The kernel
 prequeues a challenge, and the ELF fixture uses nonblocking channel syscalls
 to receive it and send a reply for the kernel to verify. No service task runs;
-this does not define init's production startup ABI. Production startup and
-service-launching init remain unchecked. No task-creation or VMO syscall is
-required for these kernel-created fixtures. See
+this fixture exchange is separate from init's bootstrap protocol. Minimal init
+uses the same startup ABI with a versioned readiness protocol and validated
+terminal waiting. Service-launching init remains unchecked. No task-creation
+or VMO syscall is required for these kernel-created executables. See
 [the ELF loading contract](docs/elf-loading.md) and
 [startup ABI v1](docs/userspace-startup.md), and
 [the boot-payload contract](docs/boot-payload.md).

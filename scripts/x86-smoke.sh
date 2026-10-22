@@ -45,6 +45,14 @@ run_case() {
         cargo_args+=(--release)
     fi
     case "$scenario" in
+        init|init-*)
+            cargo_args+=(--features minimal-init)
+            case "$scenario" in
+                init) payload=$("${repo_root}/scripts/build-user.sh" init x86_64-unknown-none "$profile") ;;
+                init-missing) ;;
+                *) payload=$("${repo_root}/scripts/build-init-test.sh" "$scenario" x86_64-unknown-none "$profile") ;;
+            esac
+            ;;
         isolation) cargo_args+=(--features user-isolation-probe) ;;
         write-rx) cargo_args+=(--features user-write-probe) ;;
         execute-nx) cargo_args+=(--features user-execute-probe) ;;
@@ -67,14 +75,15 @@ run_case() {
     CARGO_TARGET_DIR="$trial_dir/kernel-target" \
         "$repo_root/scripts/x86-preview.sh" "${cargo_args[@]}"
     local kernel="$trial_dir/kernel-target/x86_64-unknown-none/$profile/ferber"
-    if [[ "$scenario" == elf || "$scenario" == payload-* ]]; then
-        local hash
+    if [[ "$scenario" == elf || "$scenario" == payload-* || "$scenario" == init || "$scenario" == init-* ]]; then
+        local hash key="$profile-elf"
+        [[ "$scenario" != init && "$scenario" != init-* ]] || key="$profile-init"
         hash=$(sha256sum "$kernel" | cut -d ' ' -f 1)
-        if [[ -n "${payload_kernel_hash[$profile]:-}" && "${payload_kernel_hash[$profile]}" != "$hash" ]]; then
+        if [[ -n "${payload_kernel_hash[$key]:-}" && "${payload_kernel_hash[$key]}" != "$hash" ]]; then
             echo 'payload swap rebuilt or changed the kernel' >&2
             exit 1
         fi
-        payload_kernel_hash[$profile]=$hash
+        payload_kernel_hash[$key]=$hash
     fi
     "$repo_root/boot/uefi/package.sh" \
         "$kernel" "$trial_dir/esp" \
@@ -132,7 +141,12 @@ run_case release execute-nx 512
 run_case debug deadlock 512
 run_case debug elf 512
 run_case release elf 512
+run_case debug init 512
+run_case release init 512
 run_case debug payload-missing 512
 run_case debug payload-invalid 512
 run_case debug payload-exit 512
+for scenario in init-missing init-malformed-ready init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
+    run_case debug "$scenario" 512
+done
 smoke_passed=1

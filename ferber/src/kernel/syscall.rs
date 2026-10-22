@@ -42,6 +42,14 @@ compile_error!("user-write-probe and user-execute-probe must run separately");
 )))]
 compile_error!("userspace-elf-probe must run separately from other probe scenarios");
 
+#[cfg(all(feature = "minimal-init", any(
+    feature = "userspace-elf-probe",
+    feature = "user-isolation-probe",
+    feature = "cooperative-deadlock-probe",
+    feature = "x86-exception-probe",
+)))]
+compile_error!("minimal-init must run separately from other probe scenarios");
+
 pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
 pub(crate) const USER_STACK: usize = 0x0000_0020_0000_0000;
 pub(crate) const STACK_SIZE: usize = 16384;
@@ -140,6 +148,10 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     channel::self_test();
     scheduler::init();
     scheduler::self_test(&root);
+    if cfg!(feature = "minimal-init") {
+        #[cfg(feature = "minimal-init")]
+        super::init::run(&root);
+    }
     if cfg!(feature = "userspace-elf-probe") {
         #[cfg(feature = "userspace-elf-probe")]
         super::elf_probe::run(&root);
@@ -398,7 +410,13 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
             if let Some(state) = state {
                 state.observer.finish(args[0], handles, state.isolation);
             } else {
-                assert_eq!(args[0], 0, "cooperative user probe failed");
+                #[cfg(feature = "minimal-init")]
+                let init_exit = super::init::record_exit(args[0]);
+                #[cfg(not(feature = "minimal-init"))]
+                let init_exit = false;
+                if !init_exit {
+                    assert_eq!(args[0], 0, "cooperative user probe failed");
+                }
             }
         }
         scheduler::exit()
@@ -494,7 +512,7 @@ pub fn user_fault(pc: usize, addr: usize, cause: usize) -> ! {
     halt()
 }
 
-fn halt() -> ! {
+pub(crate) fn halt() -> ! {
     loop {
         #[cfg(target_arch = "riscv64")]
         unsafe {

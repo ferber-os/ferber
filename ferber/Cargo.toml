@@ -1,6 +1,6 @@
 [package]
 name = "ferber"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2021"
 authors = ["notvcto <git@notvc.to>"]
 description = "Ferber kernel — capability-based microkernel for RISC-V"
@@ -16,6 +16,7 @@ qemu-debug-port = []
 # Opt-in verification scenarios; ordinary builds use the resident probes.
 cooperative-deadlock-probe = []
 userspace-elf-probe = []
+minimal-init = []
 user-isolation-probe = []
 user-write-probe = ["user-isolation-probe"]
 user-execute-probe = ["user-isolation-probe"]

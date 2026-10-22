@@ -115,6 +115,23 @@ pub struct WaitRegistration {
 }
 
 impl WaitRegistration {
+    #[cfg(feature = "minimal-init")]
+    pub(crate) fn waits_on_peer_of(&self, endpoint: &ChannelEndpoint) -> bool {
+        self.side == 1 - endpoint.side
+            && self.pair.ptr_eq(&Arc::downgrade(&endpoint.pair))
+    }
+
+    #[cfg(feature = "minimal-init")]
+    pub(crate) fn is_registered_peer_wait(
+        &self, endpoint: &ChannelEndpoint, token: &Arc<WaitToken>, generation: u64,
+    ) -> bool {
+        if !self.waits_on_peer_of(endpoint) { return false; }
+        let pair = endpoint.pair.lock();
+        pair.open[self.side] && pair.open[endpoint.side] && pair.queues[self.side].is_empty()
+            && pair.waiters[self.side].iter().any(|waiter|
+                waiter.generation == generation && waiter.token.ptr_eq(&Arc::downgrade(token)))
+    }
+
     pub fn unregister(&self, token: &Arc<WaitToken>, generation: u64) {
         if let Some(pair) = self.pair.upgrade() {
             let target = Arc::downgrade(token);

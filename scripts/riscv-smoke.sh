@@ -25,6 +25,15 @@ run_case() {
     local initrd_args=() payload=
     [[ "$profile" != release ]] || cargo_args+=(--release)
     case "$scenario" in
+        init|init-*)
+            cargo_args+=(--features minimal-init)
+            case "$scenario" in
+                init) payload=$("${repo_dir}/scripts/build-user.sh" init riscv64gc-unknown-none-elf "$profile") ;;
+                init-missing) ;;
+                *) payload=$("${repo_dir}/scripts/build-init-test.sh" "$scenario" riscv64gc-unknown-none-elf "$profile") ;;
+            esac
+            [[ -z "$payload" ]] || initrd_args=(-initrd "$payload")
+            ;;
         isolation) cargo_args+=(--features user-isolation-probe) ;;
         write-rx) cargo_args+=(--features user-write-probe) ;;
         execute-nx) cargo_args+=(--features user-execute-probe) ;;
@@ -43,14 +52,15 @@ run_case() {
     esac
     (cd "$repo_dir/ferber" && cargo build --quiet "${cargo_args[@]}")
     local kernel="$repo_dir/ferber/target/riscv64gc-unknown-none-elf/$profile/ferber"
-    if [[ "$scenario" == elf || "$scenario" == payload-* ]]; then
-        local hash
+    if [[ "$scenario" == elf || "$scenario" == payload-* || "$scenario" == init || "$scenario" == init-* ]]; then
+        local hash key="$profile-elf"
+        [[ "$scenario" != init && "$scenario" != init-* ]] || key="$profile-init"
         hash=$(sha256sum "$kernel" | cut -d ' ' -f 1)
-        if [[ -n "${payload_kernel_hash[$profile]:-}" && "${payload_kernel_hash[$profile]}" != "$hash" ]]; then
+        if [[ -n "${payload_kernel_hash[$key]:-}" && "${payload_kernel_hash[$key]}" != "$hash" ]]; then
             echo 'payload swap rebuilt or changed the kernel' >&2
             exit 1
         fi
-        payload_kernel_hash[$profile]=$hash
+        payload_kernel_hash[$key]=$hash
     fi
     local status=0
     timeout "${limit}s" qemu-system-riscv64 \
@@ -75,10 +85,15 @@ for profile in debug release; do
     run_case "$profile" write-rx 128 1
     run_case "$profile" execute-nx 128 1
     run_case "$profile" elf 128 1
+    run_case "$profile" init 128 1
 done
 run_case debug deadlock 128 1
 run_case debug elf 256 4
+run_case debug init 256 4
 run_case debug payload-missing 128 1
 run_case debug payload-invalid 128 1
 run_case debug payload-exit 128 1
+for scenario in init-missing init-malformed-ready init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
+    run_case debug "$scenario" 128 1
+done
 smoke_passed=1

@@ -3,8 +3,8 @@
 The opt-in static ELF path enters a separately linked, integer-only `no_std`
 Rust executable through this contract on RISC-V 64 and x86-64. It defines first
 entry and bootstrap-handle discovery. The executable arrives through the
-[external boot-payload handoff](boot-payload.md). Init and service protocols
-remain separate work.
+[external boot-payload handoff](boot-payload.md). Minimal init uses this same entry contract and a separate
+[bootstrap protocol](minimal-init.md); service launching remains pending.
 
 ## Initial SP identifies a fixed startup record
 
@@ -47,7 +47,8 @@ assigned slot. The current test uses a nonzero slot to reject a hardcoded-zero
 assumption; that numerical slot is not part of the ABI. The program must read
 the record.
 
-The fixture endpoint has exactly `READ | WRITE`. The process owns its handle
+The fixture endpoint has exactly `READ | WRITE`; minimal init explicitly
+receives `READ | WRITE | WAIT` for blocking receive. The process owns its handle
 and may close it; final process teardown also releases it. The kernel harness
 retains only the opposite endpoint. The record owns no capability reference.
 The loader can also construct an executable without a bootstrap endpoint,
@@ -86,4 +87,5 @@ contents, initial-SP bounds and construction rollback. Boot tests require the
 exact reply and restored frame, node, process and scheduler baselines before
 the existing `userspace_elf` and `userspace_bootstrap_channel` PASS markers.
 The external-delivery scenario additionally requires `boot_payload: PASS`.
-These markers do not establish init, service launching or recoverable user faults.
+These fixture markers do not establish init, service launching or recoverable
+user faults. Minimal init has separate readiness and waiting markers.

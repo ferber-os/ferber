@@ -7,9 +7,12 @@ pub mod panic;
 pub mod syscall;
 pub mod sync;
 pub mod task;
-#[cfg(feature = "userspace-elf-probe")]
+#[cfg(any(feature = "userspace-elf-probe", feature = "minimal-init"))]
 pub mod elf;
-#[cfg(feature = "userspace-elf-probe")]
+#[cfg(any(feature = "userspace-elf-probe", feature = "minimal-init"))]
 mod elf_load;
 #[cfg(feature = "userspace-elf-probe")]
 pub mod elf_probe;
+
+#[cfg(feature = "minimal-init")]
+pub mod init;

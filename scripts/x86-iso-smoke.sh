@@ -6,8 +6,8 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repo_root/scripts/smoke-log.sh"
 scenario=${1:-normal}
 case "$scenario" in
-    normal|elf) ;;
-    *) echo "usage: $0 [normal|elf]" >&2; exit 2 ;;
+    normal|elf|init) ;;
+    *) echo "usage: $0 [normal|elf|init]" >&2; exit 2 ;;
 esac
 ovmf_code=${OVMF_CODE:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}
 ovmf_vars=${OVMF_VARS:-/usr/share/edk2/x64/OVMF_VARS.4m.fd}
@@ -40,6 +40,10 @@ payload=
 if [[ "$scenario" == elf ]]; then
     payload=$("$repo_root/scripts/build-user-elf.sh" x86_64-unknown-none release)
     cargo_args+=(--features userspace-elf-probe)
+fi
+if [[ "$scenario" == init ]]; then
+    payload=$("$repo_root/scripts/build-user.sh" init x86_64-unknown-none release)
+    cargo_args+=(--features minimal-init)
 fi
 # Debug-port diagnostics are used only for automated log capture.
 CARGO_TARGET_DIR="$trial_dir/kernel-target" \
