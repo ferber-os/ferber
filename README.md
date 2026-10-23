@@ -152,12 +152,12 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.10** boots minimal Ferrum init as a
-separately delivered Rust ELF on both ports. It discovers its explicitly
-delegated bootstrap channel, completes the START/READY protocol and remains
-alive in a validated blocking receive. Ordinary cooperative-deadlock detection
-remains intact. Terminal waiting has no interrupt-driven event source yet;
-service launch remains pending.
+Current milestone: **Uranium-238-v0.2.11** exposes bounded VMO creation,
+read and write through capability handles on both ports. Fresh backing is
+zeroed, byte copies are staged, and allocation charges follow the object
+through aliases and channel transfer until final destruction. The release ISO
+continues to boot minimal Ferrum init. User mapping/unmapping, executable
+publication and service launch remain pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---
