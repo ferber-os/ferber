@@ -37,6 +37,9 @@ harness's fatal exception path.
 | `8` | Channel send | Endpoint handle, bytes address, byte count, handles address, handle count | `0` |
 | `9` | Channel receive | Endpoint handle, bytes address, byte capacity, handles address, handle capacity, counts output address | `0` |
 | `10` | Blocking channel receive | Same six arguments as `9` | `0` |
+| `11` | VMO create | Size, options (`0`) | New handle number |
+| `12` | VMO read | Handle, offset, destination, length | `0` |
+| `13` | VMO write | Handle, offset, source, length | `0` |
 
 Every handle is resolved through the trusted calling process's table. Processes
 are born with zero handles; delegation is explicit. Handle zero is valid.
@@ -71,6 +74,15 @@ The copy checks the entire range before writing. Null, overflowing, supervisor,
 unmapped, or nonwritable destinations fail without changing any output byte.
 Mappings/backing remain stable under the current resident-task constraints;
 concurrent unmapping and recoverable copy faults remain future work.
+
+## VMO Byte Operations
+
+Create returns fresh zeroed owned RAM, bounded to 16 MiB and charged for its
+object lifetime. Read/write require READ/WRITE respectively, copy exactly at
+most 64 KiB and preflight complete ranges before staged copying. Physical VMOs
+are excluded. See [the VMO byte ABI](vmo-abi.md) for exact rights, errors,
+zero-length behavior, the global budget and aliasing guarantees. No mapping,
+unmapping or executable publication syscall is added.
 
 ## Capability Mutation and Ownership
 
@@ -188,15 +200,15 @@ same syscall table; ELF loading adds no syscall numbers.
 | --- | --- |
 | `-9` | Invalid handle, including nonzero bits above bit 31, or suspended receive cancelled by source-slot close |
 | `-11` | Channel queue is full, or empty with its peer still open |
-| `-12` | Capability-node, endpoint, message, or queue allocation failed |
+| `-12` | Capability-node, endpoint, message, queue, VMO frame/metadata/object, or staging allocation failed |
 | `-13` | Required right is absent |
 | `-14` | User buffer range is invalid or lacks the required user permissions |
-| `-22` | Invalid rights mask, endpoint backing/type, repeated transfer slot, unsupported payload backing/type, or overlapping receive outputs |
+| `-22` | Invalid rights mask, options, logical VMO range or backing/type; repeated transfer slot; unsupported payload; or overlapping output bytes |
 | `-24` | Handle table is full |
-| `-28` | Live/reserved node quota, node IDs, or wait generations exhausted |
+| `-28` | User-VMO backing budget, live/reserved node quota, node IDs, or wait generations exhausted |
 | `-32` | Channel peer is closed and no queued message can be received |
 | `-38` | Unknown syscall number |
-| `-90` | Message exceeds limits or receive buffers are too small |
+| `-90` | VMO size, byte-copy or message limit exceeded, or receive buffers are too small |
 | `-116` | Capability node is revoked |
 
 For duplicate, inspect, attenuate, and revoke, validate the handle, then node

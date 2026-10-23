@@ -270,3 +270,12 @@ Ferber:   file_read(passwd_handle)
 
 The simplicity isn't a compromise. It's a consequence of getting the model right.
 
+## VMO byte syscalls preserve shared backing
+
+[VMO creation](vmo-abi.md) returns fresh zeroed RAM with READ, WRITE, DUPLICATE,
+TRANSFER, INSPECT and MANAGE. It grants no MAP or EXECUTE rights. Duplicate and
+derived capabilities share the same backing and its byte-operation lock;
+attenuation limits a particular capability, not every other alias. Channel
+transfer retains the backing and its user-allocation charge through delivery or
+message discard. Final ownership, rather than creator exit or a handle count,
+determines reclamation. Generic inspection remains unchanged.

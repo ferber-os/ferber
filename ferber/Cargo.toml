@@ -16,6 +16,7 @@ qemu-debug-port = []
 # Opt-in verification scenarios; ordinary builds use the resident probes.
 cooperative-deadlock-probe = []
 userspace-elf-probe = []
+userspace-vmo-probe = []
 minimal-init = []
 user-isolation-probe = []
 user-write-probe = ["user-isolation-probe"]

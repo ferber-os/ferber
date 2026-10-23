@@ -25,6 +25,11 @@ run_case() {
     local initrd_args=() payload=
     [[ "$profile" != release ]] || cargo_args+=(--release)
     case "$scenario" in
+        vmo)
+            cargo_args+=(--features userspace-vmo-probe)
+            payload=$("$repo_dir/scripts/build-user.sh" vmo-probe riscv64gc-unknown-none-elf "$profile")
+            initrd_args=(-initrd "$payload")
+            ;;
         init|init-*)
             cargo_args+=(--features minimal-init)
             case "$scenario" in
@@ -86,10 +91,12 @@ for profile in debug release; do
     run_case "$profile" execute-nx 128 1
     run_case "$profile" elf 128 1
     run_case "$profile" init 128 1
+    run_case "$profile" vmo 128 1
 done
 run_case debug deadlock 128 1
 run_case debug elf 256 4
 run_case debug init 256 4
+run_case debug vmo 256 4
 run_case debug payload-missing 128 1
 run_case debug payload-invalid 128 1
 run_case debug payload-exit 128 1

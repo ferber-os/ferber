@@ -6,6 +6,7 @@ program=${1:?usage: build-user.sh PROGRAM TARGET PROFILE [OUTPUT]}
 shift
 case "$program" in
     init) source_dir=init; output_dir=userspace-init; basename=init ;;
+    vmo-probe) source_dir=vmo-probe; output_dir=userspace-vmo; basename=probe ;;
     elf-probe) source_dir=elf-probe; output_dir=userspace-elf; basename=probe ;;
     *) echo "unsupported userspace program: $program" >&2; exit 2 ;;
 esac

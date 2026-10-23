@@ -8,9 +8,9 @@ use crate::kernel::ipc::channel::{
     Channel, ChannelError, ChannelMessage, WaitRegistration, WaitToken, DEFAULT_MAX_HANDLES,
     DEFAULT_MAX_MESSAGE_BYTES,
 };
-use crate::kernel::memory::paging::AddressSpace;
-use crate::kernel::memory::user_mem::{copy_from_user, copy_to_user, preflight};
+use crate::kernel::memory::user_mem::{copy_from_user, copy_to_user, validate_outputs, OutputError};
 use crate::kernel::memory::Vmo;
+use crate::kernel::memory::paging::AddressSpace;
 use crate::kernel::sync::SpinLock;
 use crate::kernel::task::Process;
 use alloc::sync::{Arc, Weak};
@@ -21,6 +21,12 @@ mod tests;
 
 #[derive(Debug)]
 struct Error(isize);
+
+impl From<OutputError> for Error {
+    fn from(error: OutputError) -> Self {
+        Self(match error { OutputError::UserMemory => -14, OutputError::Overlap => -22 })
+    }
+}
 
 impl From<ChannelError> for Error {
     fn from(error: ChannelError) -> Self {
@@ -278,51 +284,6 @@ pub(super) fn blocking_attempt(
             Err(error) => return ReceiveAttempt::Complete(error.0),
         }
     }
-}
-
-/// Output spans must be disjoint even when different virtual pages alias RAM.
-fn validate_outputs(space: &impl AddressSpace, spans: &[(usize, usize)]) -> Result<(), Error> {
-    for &(start, len) in spans {
-        preflight(space, start, len, true).map_err(|_| Error(-14))?;
-    }
-    for (index, &(start, len)) in spans.iter().enumerate() {
-        if len == 0 {
-            continue;
-        }
-        let end = start + len;
-        for &(other, count) in &spans[..index] {
-            if count != 0 && start < other + count && other < end {
-                return Err(Error(-22));
-            }
-        }
-        // Compare each physical chunk to every preceding chunk, including its own span.
-        let mut offset = 0;
-        while offset < len {
-            let address = start + offset;
-            let physical = space.query(address).expect("preflight mapping").0;
-            let count = (4096 - address % 4096).min(len - offset);
-            for &(other, length) in &spans[..=index] {
-                let limit = if other == start && length == len {
-                    offset
-                } else {
-                    length
-                };
-                let mut preceding = 0;
-                while preceding < limit {
-                    let other_address = other + preceding;
-                    let other_physical = space.query(other_address).expect("preflight mapping").0;
-                    let other_count = (4096 - other_address % 4096).min(limit - preceding);
-                    if physical < other_physical + other_count && other_physical < physical + count
-                    {
-                        return Err(Error(-22));
-                    }
-                    preceding += other_count;
-                }
-            }
-            offset += count;
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn self_test() {

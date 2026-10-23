@@ -110,6 +110,57 @@ pub unsafe fn copy_to_user(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputError {
+    UserMemory,
+    Overlap,
+}
+
+/// Output spans must be disjoint even when different virtual pages alias RAM.
+pub(crate) fn validate_outputs(space: &impl AddressSpace, spans: &[(usize, usize)]) -> Result<(), OutputError> {
+    for &(start, len) in spans {
+        preflight(space, start, len, true).map_err(|_| OutputError::UserMemory)?;
+    }
+    for (index, &(start, len)) in spans.iter().enumerate() {
+        if len == 0 {
+            continue;
+        }
+        let end = start + len;
+        for &(other, count) in &spans[..index] {
+            if count != 0 && start < other + count && other < end {
+                return Err(OutputError::Overlap);
+            }
+        }
+        // Compare each physical chunk to every preceding chunk, including its own span.
+        let mut offset = 0;
+        while offset < len {
+            let address = start + offset;
+            let physical = space.query(address).expect("preflight mapping").0;
+            let count = (4096 - address % 4096).min(len - offset);
+            for &(other, length) in &spans[..=index] {
+                let limit = if other == start && length == len {
+                    offset
+                } else {
+                    length
+                };
+                let mut preceding = 0;
+                while preceding < limit {
+                    let other_address = other + preceding;
+                    let other_physical = space.query(other_address).expect("preflight mapping").0;
+                    let other_count = (4096 - other_address % 4096).min(limit - preceding);
+                    if physical < other_physical + other_count && other_physical < physical + count
+                    {
+                        return Err(OutputError::Overlap);
+                    }
+                    preceding += other_count;
+                }
+            }
+            offset += count;
+        }
+    }
+    Ok(())
+}
+
 /// Boot checks use detached page tables; no test user address is dereferenced.
 pub fn self_test() {
     use super::bitmap;

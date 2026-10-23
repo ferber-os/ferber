@@ -6,18 +6,59 @@
 
 use alloc::vec::Vec;
 use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use crate::kernel::sync::SpinLock;
 
 use crate::kernel::capabilities::{KernelObject, Rights};
 use crate::kernel::memory::paging::MapFlags;
 use crate::kernel::memory::{bitmap, phys_map};
 
 const PAGE_SIZE: usize = 4096;
+pub const MAX_USER_VMO_SIZE: usize = 16 * 1024 * 1024;
+static USER_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
+static USER_USED: AtomicUsize = AtomicUsize::new(0);
+
+pub const fn user_budget_limit(managed_pages: usize) -> usize {
+    let quarter = managed_pages / 4;
+    if quarter < 16_384 { quarter } else { 16_384 }
+}
+
+pub fn init_user_budget(managed_pages: usize) {
+    assert!(USER_LIMIT.compare_exchange(usize::MAX, user_budget_limit(managed_pages),
+        Ordering::Release, Ordering::Relaxed).is_ok(), "user VMO budget initialized twice");
+}
+
+pub fn user_budget_stats() -> (usize, usize) {
+    (USER_LIMIT.load(Ordering::Acquire), USER_USED.load(Ordering::Acquire))
+}
+
+struct UserCharge(usize);
+
+impl UserCharge {
+    fn reserve(pages: usize) -> Result<Self, VmoError> {
+        let limit = USER_LIMIT.load(Ordering::Acquire);
+        assert_ne!(limit, usize::MAX, "user VMO budget not initialized");
+        USER_USED.try_update(Ordering::AcqRel, Ordering::Acquire,
+            |used| used.checked_add(pages).filter(|next| *next <= limit))
+            .map_err(|_| VmoError::UserBudget)?;
+        Ok(Self(pages))
+    }
+}
+
+impl Drop for UserCharge {
+    fn drop(&mut self) {
+        USER_USED.fetch_sub(self.0, Ordering::AcqRel);
+    }
+}
 
 /// Errors returned by VMO operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmoError {
     /// Requested size is zero.
     ZeroSize,
+    TooLarge,
+    UserBudget,
+    InvalidBacking,
     /// Physical allocator ran out of frames.
     OutOfMemory,
     /// Offset and length exceed the VMO size.
@@ -76,6 +117,8 @@ pub struct Vmo {
     size: usize,
     frames: VmoFrames,
     is_physical: bool,
+    content: SpinLock<()>,
+    user_charge: Option<UserCharge>,
 }
 
 unsafe impl Send for Vmo {}
@@ -88,6 +131,63 @@ impl KernelObject for Vmo {
 }
 
 impl Vmo {
+    pub fn create_user(size: usize) -> Result<Self, VmoError> {
+        if size == 0 { return Err(VmoError::ZeroSize); }
+        if size > MAX_USER_VMO_SIZE { return Err(VmoError::TooLarge); }
+        let charge = UserCharge::reserve(size.div_ceil(PAGE_SIZE))?;
+        let mut vmo = Self::create(size)?;
+        vmo.user_charge = Some(charge);
+        Ok(vmo)
+    }
+
+    pub fn is_owned_ram(&self) -> bool { !self.is_physical }
+
+    pub fn validate_owned_range(&self, offset: usize, length: usize) -> Result<(), VmoError> {
+        if !self.is_owned_ram() { return Err(VmoError::InvalidBacking); }
+        let end = offset.checked_add(length).filter(|end| *end <= self.size)
+            .ok_or(VmoError::OutOfBounds)?;
+        if length == 0 { return Ok(()); }
+        for index in offset / PAGE_SIZE..end.div_ceil(PAGE_SIZE) {
+            let frame = self.frames.get(index).ok_or(VmoError::OutOfBounds)?;
+            if phys_map::mmio_to_virt(frame).is_some() || phys_map::phys_to_virt(frame).is_none() {
+                return Err(VmoError::InvalidBacking);
+            }
+        }
+        Ok(())
+    }
+
+    /// Caller supplies a kernel buffer disjoint from this VMO's physical backing.
+    pub fn read_owned(&self, offset: usize, buffer: &mut [u8]) -> Result<(), VmoError> {
+        let _content = self.content.lock();
+        self.validate_owned_range(offset, buffer.len())?;
+        self.copy_owned(offset, buffer.as_mut_ptr(), buffer.len(), false);
+        Ok(())
+    }
+
+    /// Caller supplies a kernel snapshot disjoint from this VMO's physical backing.
+    pub fn write_owned(&self, offset: usize, buffer: &[u8]) -> Result<(), VmoError> {
+        let _content = self.content.lock();
+        self.validate_owned_range(offset, buffer.len())?;
+        self.copy_owned(offset, buffer.as_ptr().cast_mut(), buffer.len(), true);
+        Ok(())
+    }
+
+    fn copy_owned(&self, offset: usize, buffer: *mut u8, length: usize, write: bool) {
+        let mut copied = 0;
+        while copied < length {
+            let position = offset + copied;
+            let count = (PAGE_SIZE - position % PAGE_SIZE).min(length - copied);
+            let frame = self.frames.get(position / PAGE_SIZE).expect("validated VMO frame");
+            let alias = phys_map::phys_to_virt(frame).expect("validated VMO RAM alias");
+            unsafe {
+                let backing = (alias + position % PAGE_SIZE) as *mut u8;
+                if write { ptr::copy_nonoverlapping(buffer.add(copied), backing, count); }
+                else { ptr::copy_nonoverlapping(backing, buffer.add(copied), count); }
+            }
+            copied += count;
+        }
+    }
+
     /// Create a new dynamically allocated VMO with `size` bytes.
     /// Allocates physical frames from the frame bitmap allocator.
     pub fn create(size: usize) -> Result<Self, VmoError> {
@@ -127,6 +227,8 @@ impl Vmo {
             size,
             frames: VmoFrames::new(frames),
             is_physical: false,
+            content: SpinLock::new(()),
+            user_charge: None,
         })
     }
 
@@ -150,6 +252,8 @@ impl Vmo {
             size,
             frames: VmoFrames::contiguous(base, num_pages),
             is_physical: false,
+            content: SpinLock::new(()),
+            user_charge: None,
         })
     }
 
@@ -170,6 +274,8 @@ impl Vmo {
             size,
             frames: VmoFrames::contiguous(base, num_pages),
             is_physical: true,
+            content: SpinLock::new(()),
+            user_charge: None,
         })
     }
 
@@ -207,6 +313,7 @@ impl Vmo {
 
     /// Read data from the VMO at `offset` into `buffer`.
     pub fn read(&self, offset: usize, buffer: &mut [u8]) -> Result<(), VmoError> {
+        let _content = self.content.lock();
         if offset
             .checked_add(buffer.len())
             .is_none_or(|end| end > self.size)
@@ -247,6 +354,11 @@ impl Vmo {
 
     /// Write data to the VMO at `offset` from `buffer`.
     pub fn write(&mut self, offset: usize, buffer: &[u8]) -> Result<(), VmoError> {
+        self.write_shared(offset, buffer)
+    }
+
+    fn write_shared(&self, offset: usize, buffer: &[u8]) -> Result<(), VmoError> {
+        let _content = self.content.lock();
         if offset
             .checked_add(buffer.len())
             .is_none_or(|end| end > self.size)

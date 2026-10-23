@@ -18,6 +18,9 @@ use alloc::sync::Arc;
 #[path = "syscall_channel.rs"]
 mod channel;
 
+#[path = "syscall_vmo.rs"]
+mod vmo;
+
 #[path = "syscall_probe.rs"]
 mod probe;
 
@@ -32,6 +35,9 @@ pub(crate) const SYS_CHAN_CREATE: usize = 7;
 pub(crate) const SYS_CHAN_SEND: usize = 8;
 pub(crate) const SYS_CHAN_RECV: usize = 9;
 pub(crate) const SYS_CHAN_RECV_WAIT: usize = 10;
+pub(crate) const SYS_VMO_CREATE: usize = 11;
+pub(crate) const SYS_VMO_READ: usize = 12;
+pub(crate) const SYS_VMO_WRITE: usize = 13;
 
 #[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
 compile_error!("user-write-probe and user-execute-probe must run separately");
@@ -49,6 +55,13 @@ compile_error!("userspace-elf-probe must run separately from other probe scenari
     feature = "x86-exception-probe",
 )))]
 compile_error!("minimal-init must run separately from other probe scenarios");
+
+#[cfg(all(feature = "userspace-vmo-probe", any(
+    feature = "minimal-init", feature = "userspace-elf-probe",
+    feature = "user-isolation-probe", feature = "cooperative-deadlock-probe",
+    feature = "x86-exception-probe",
+)))]
+compile_error!("userspace-vmo-probe must run separately from other probe scenarios");
 
 pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
 pub(crate) const USER_STACK: usize = 0x0000_0020_0000_0000;
@@ -146,6 +159,7 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     address_space_lifecycle(memory);
     probe::self_test();
     channel::self_test();
+    vmo::self_test();
     scheduler::init();
     scheduler::self_test(&root);
     if cfg!(feature = "minimal-init") {
@@ -155,6 +169,11 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     if cfg!(feature = "userspace-elf-probe") {
         #[cfg(feature = "userspace-elf-probe")]
         super::elf_probe::run(&root);
+        halt();
+    }
+    if cfg!(feature = "userspace-vmo-probe") {
+        #[cfg(feature = "userspace-vmo-probe")]
+        super::vmo_probe::run(&root);
         halt();
     }
     let isolation = cfg!(feature = "user-isolation-probe");
@@ -271,6 +290,9 @@ pub(crate) fn dispatch_for_process(
     }
     if matches!(nr, SYS_CHAN_CREATE | SYS_CHAN_SEND | SYS_CHAN_RECV) {
         return channel::dispatch(process, nr, args);
+    }
+    if matches!(nr, SYS_VMO_CREATE | SYS_VMO_READ | SYS_VMO_WRITE) {
+        return vmo::dispatch(process, nr, args);
     }
     if !matches!(
         nr,
@@ -406,6 +428,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
             let handles = process.lock().handle_table().lock().count();
             #[cfg(feature = "userspace-elf-probe")]
             super::elf_probe::finish(args[0], handles);
+            #[cfg(feature = "userspace-vmo-probe")]
+            super::vmo_probe::finish(args[0], handles);
             let state = PROBE.lock().take();
             if let Some(state) = state {
                 state.observer.finish(args[0], handles, state.isolation);
@@ -460,6 +484,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
     }
     #[cfg(feature = "userspace-elf-probe")]
     super::elf_probe::observe(nr, result);
+    #[cfg(feature = "userspace-vmo-probe")]
+    super::vmo_probe::observe(nr, result);
     result
 }
 

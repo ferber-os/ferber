@@ -55,6 +55,7 @@ fn kernel_start(
     kprintln!();
 
     let memory = init_memory();
+    kernel::memory::vmo::init_user_budget(memory.total_pages);
     kprintln!(
         "[mem]   RAM: {:#x}..{:#x}, {} free pages",
         memory.start,

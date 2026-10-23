@@ -45,6 +45,10 @@ run_case() {
         cargo_args+=(--release)
     fi
     case "$scenario" in
+        vmo)
+            cargo_args+=(--features userspace-vmo-probe)
+            payload=$("$repo_root/scripts/build-user.sh" vmo-probe x86_64-unknown-none "$profile")
+            ;;
         init|init-*)
             cargo_args+=(--features minimal-init)
             case "$scenario" in
@@ -141,6 +145,8 @@ run_case release execute-nx 512
 run_case debug deadlock 512
 run_case debug elf 512
 run_case release elf 512
+run_case debug vmo 512
+run_case release vmo 512
 run_case debug init 512
 run_case release init 512
 run_case debug payload-missing 512

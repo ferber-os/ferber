@@ -86,7 +86,8 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
 - [x] Hierarchical Job Tree (`job.rs`):
   - [x] Singleton root job (`Job::create_root()`)
   - [x] Acyclic job hierarchy with weak parent references
-  - [x] Memory quota accounting (`memory_limit`, `memory_used`)
+  - [x] Memory policy fields (`memory_limit`, `memory_used`)
+  - [ ] Enforce hierarchical Job memory charges and limits
   - [x] Recursive subtree destruction (`Job::kill()`): synchronous cascade teardown guaranteeing **zero orphan processes**
 - [x] Process Containers (`process.rs`):
   - [x] Isolated `ArchAddressSpace` bound at creation
@@ -153,7 +154,10 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
   - [ ] Ownership-cycle policy for transferring channel endpoints and other graph-owning capabilities
   - [x] Resident channel wait-queue integration: blocking receive (`10`) requires `READ | WAIT`, parks threads, and wakes on message arrival, final peer closure, or authority cancellation; nonblocking receive (`9`) remains unchanged
   - [ ] FastCall IPC: `sys_fastcall` register transfer
-  - [ ] VMO operations: `sys_vmo_create`, `sys_vmo_read`, `sys_vmo_write`, `sys_vmo_map`, `sys_vmo_unmap`
+  - [ ] VMO operations:
+    - [x] Bounded owned-RAM `sys_vmo_create`, `sys_vmo_read`, `sys_vmo_write`; synchronized staged byte copies and object-lifetime user budget
+    - [ ] `sys_vmo_map`, `sys_vmo_unmap` with shared mapping ownership
+    - [ ] Executable VMO publication/sealing across writable aliases
   - [ ] Task creation: `sys_process_create`, `sys_thread_create`
   - [x] Cooperative resident yield and thread/last-thread process exit reclamation on a permanent-root dispatcher stack; repeated-run frame/node baselines and empty registry checks
   - [ ] Extend scheduling and exit reclamation to user-created tasks
