@@ -45,6 +45,14 @@ run_case() {
         cargo_args+=(--release)
     fi
     case "$scenario" in
+        vmo-map|vmo-map-write|vmo-map-execute)
+            case "$scenario" in
+                vmo-map) cargo_args+=(--features userspace-vmo-map-probe); program=vmo-map-probe ;;
+                vmo-map-write) cargo_args+=(--features user-vmo-map-write-probe); program=vmo-map-write ;;
+                vmo-map-execute) cargo_args+=(--features user-vmo-map-execute-probe); program=vmo-map-execute ;;
+            esac
+            payload=$("$repo_root/scripts/build-user.sh" "$program" x86_64-unknown-none "$profile")
+            ;;
         vmo)
             cargo_args+=(--features userspace-vmo-probe)
             payload=$("$repo_root/scripts/build-user.sh" vmo-probe x86_64-unknown-none "$profile")
@@ -147,6 +155,11 @@ run_case debug elf 512
 run_case release elf 512
 run_case debug vmo 512
 run_case release vmo 512
+for profile in debug release; do
+    run_case "$profile" vmo-map 512
+    run_case "$profile" vmo-map-write 512
+    run_case "$profile" vmo-map-execute 512
+done
 run_case debug init 512
 run_case release init 512
 run_case debug payload-missing 512

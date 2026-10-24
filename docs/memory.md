@@ -204,4 +204,6 @@ object until final destruction. It excludes kernel-created VMOs and is not
 hierarchical Job accounting or guaranteed kernel headroom. Byte copies stage
 the whole bounded request and validate all aliases before committing. A content
 lock serializes kernel copies; future mapped user stores and SMP need separate
-synchronization. User mapping and executable sealing remain pending.
+synchronization. [User mappings](vmo-mapping.md) retain shared backing independently of handles,
+use transactional page-table preparation and reclaim empty private tables.
+Executable sealing remains pending.

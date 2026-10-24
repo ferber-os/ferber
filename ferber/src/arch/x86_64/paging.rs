@@ -18,6 +18,8 @@
 
 #![allow(dead_code)]
 
+use alloc::vec::Vec;
+use crate::kernel::memory::vmo::VmoFrames;
 use crate::boot_info::{BootInfo, BOOT_INFO_VA, BOOT_REGIONS_VA, MMIO_BASE};
 use crate::kernel::memory::paging::{AddressSpace, MapFlags, PageError};
 use crate::kernel::memory::{bitmap, phys_map};
@@ -138,10 +140,24 @@ fn table_ptr(physical: usize) -> *mut u64 {
     phys_map::phys_to_virt(physical).expect("page table outside RAM aliases") as *mut u64
 }
 
+fn physical_bits() -> u32 {
+    let extended = core::arch::x86_64::__cpuid(0x8000_0000).eax;
+    if extended >= 0x8000_0008 { (core::arch::x86_64::__cpuid(0x8000_0008).eax & 255).min(52) } else { 36 }
+}
+
+struct PendingTables(Vec<usize>);
+impl Drop for PendingTables {
+    fn drop(&mut self) {
+        for pa in self.0.drain(..) { bitmap::free_frame(pa).expect("unpublished table frame"); }
+    }
+}
+
 /// x86-64 PML4 page table address space.
 #[derive(Debug)]
 pub struct Pml4AddressSpace {
     root_paddr: usize,
+    table_pages: usize,
+    table_limit: usize,
 }
 
 static BOOT_ROOT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
@@ -436,6 +452,8 @@ impl Pml4AddressSpace {
         );
         let result = Self {
             root_paddr: allocate_table()?,
+            table_pages: 1,
+            table_limit: usize::MAX,
         };
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -447,146 +465,160 @@ impl Pml4AddressSpace {
         Ok(result)
     }
 
+    pub fn new_user() -> Result<Self, PageError> {
+        let mut result = Self::new()?;
+        result.table_limit = 256;
+        Ok(result)
+    }
+
+    pub fn table_pages(&self) -> usize { self.table_pages }
+
+    fn validate_virtual_range(va: usize, count: usize) -> Result<(), PageError> {
+        if !va.is_multiple_of(PAGE_SIZE) { return Err(PageError::Unaligned); }
+        if count == 0 { return Err(PageError::OutOfRange); }
+        let end = count.checked_mul(PAGE_SIZE).and_then(|bytes| va.checked_add(bytes - 1)).ok_or(PageError::OutOfRange)?;
+        if !is_canonical(va) || !is_canonical(end) || pml4_index(va) >= 256 || pml4_index(end) >= 256 {
+            return Err(PageError::OutOfRange);
+        }
+        Ok(())
+    }
+
+    fn preflight_free_range(&self, va: usize, count: usize) -> Result<usize, PageError> {
+        Self::validate_virtual_range(va, count)?;
+        unsafe {
+            let mut needed = 0usize;
+            let mut previous = [usize::MAX; 3];
+            for page in 0..count {
+                let addr = va + page * PAGE_SIZE;
+                let indices = [pml4_index(addr), pdpt_index(addr), pd_index(addr), pt_index(addr)];
+                let mut table = Some(self.root_paddr);
+                for depth in 0..4 {
+                    let entry = table.map(|p| table_ptr(p).add(indices[depth]).read()).unwrap_or(0);
+                    if depth == 3 {
+                        if entry != 0 { return Err(PageError::AlreadyMapped); }
+                    } else if entry == 0 {
+                        let prefix = addr >> (39 - depth * 9);
+                        if previous[depth] != prefix { needed += 1; previous[depth] = prefix; }
+                        table = None;
+                    } else {
+                        if entry & PTE_PRESENT == 0 || entry & PTE_HUGE != 0 { return Err(PageError::AlreadyMapped); }
+                        table = Some(pte_to_paddr(entry));
+                    }
+                }
+            }
+            Ok(needed)
+        }
+    }
+
+    fn validate_range(va: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
+        Self::validate_virtual_range(va, count)?;
+        if !flags.readable || first.checked_add(count).filter(|end| *end <= frames.count()).is_none() {
+            return Err(PageError::OutOfRange);
+        }
+        let bits = physical_bits();
+        for i in first..first + count {
+            let pa = frames.get(i).ok_or(PageError::OutOfRange)?;
+            if !pa.is_multiple_of(PAGE_SIZE) { return Err(PageError::Unaligned); }
+            if pa as u64 >= (1u64 << bits) { return Err(PageError::OutOfRange); }
+        }
+        Ok(())
+    }
+
+    // The caller preflights the entire range before reaching this infallible walk.
+    unsafe fn remove_leaf(&mut self, va: usize) -> usize {
+        let indices = [pml4_index(va), pdpt_index(va), pd_index(va), pt_index(va)];
+        let mut tables = [self.root_paddr; 4];
+        for depth in 0..3 {
+            tables[depth + 1] = pte_to_paddr(table_ptr(tables[depth]).add(indices[depth]).read());
+        }
+        let slot = table_ptr(tables[3]).add(indices[3]);
+        let pa = pte_to_paddr(slot.read());
+        slot.write(0);
+        self.flush_tlb_page(va);
+        for depth in (1..4).rev() {
+            if (0..512).any(|i| table_ptr(tables[depth]).add(i).read() != 0) { break; }
+            table_ptr(tables[depth - 1]).add(indices[depth - 1]).write(0);
+            // Retiring a nonleaf invalidates paging-structure caches before reuse.
+            self.flush_tlb_all();
+            bitmap::free_frame(tables[depth]).expect("owned private page table");
+            self.table_pages -= 1;
+        }
+        pa
+    }
+
     pub fn root_paddr(&self) -> usize {
         self.root_paddr
     }
 }
 
 impl AddressSpace for Pml4AddressSpace {
+    fn check_free_range(&self, va: usize, count: usize) -> Result<(), PageError> {
+        self.preflight_free_range(va, count).map(|_| ())
+    }
+
     unsafe fn map_page(
         &mut self,
         virt_addr: usize,
         phys_addr: usize,
         flags: MapFlags,
     ) -> Result<(), PageError> {
-        if !virt_addr.is_multiple_of(PAGE_SIZE) || !phys_addr.is_multiple_of(PAGE_SIZE) {
-            return Err(PageError::Unaligned);
+        self.map_pages(virt_addr, &VmoFrames::contiguous(phys_addr, 1), 0, 1, flags)
+    }
+
+    unsafe fn map_pages(&mut self, va: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
+        Self::validate_range(va, frames, first, count, flags)?;
+        let needed = self.preflight_free_range(va, count)?;
+        if needed > self.table_limit - self.table_pages { return Err(PageError::TableBudget); }
+        let mut pending = PendingTables(Vec::new());
+        pending.0.try_reserve_exact(needed).map_err(|_| PageError::OutOfMemory)?;
+        for _ in 0..needed { pending.0.push(allocate_table()?); }
+        for page in 0..count {
+            let addr = va + page * PAGE_SIZE;
+            let indices = [pml4_index(addr), pdpt_index(addr), pd_index(addr), pt_index(addr)];
+            let mut table = self.root_paddr;
+            for index in &indices[..3] {
+                let slot = table_ptr(table).add(*index);
+                if slot.read() == 0 {
+                    slot.write(make_table_entry(pending.0.pop().expect("preflight counted tables")));
+                    self.table_pages += 1;
+                } else { open_table(slot, flags); }
+                table = pte_to_paddr(slot.read());
+            }
+            table_ptr(table).add(indices[3]).write(make_leaf_entry(frames.get(first + page).unwrap(), flags));
         }
-        if !is_canonical(virt_addr) || pml4_index(virt_addr) >= 256 {
-            return Err(PageError::OutOfRange);
-        }
-
-        if !flags.readable {
-            return Err(PageError::OutOfRange);
-        }
-        // Level 4 (PML4) walk
-        let pml4 = table_ptr(self.root_paddr);
-        let l4_idx = pml4_index(virt_addr);
-        let pml4e = unsafe { pml4.add(l4_idx).read() };
-        let pdpt = if (pml4e & PTE_PRESENT) == 0 {
-            let pdpt_paddr = allocate_table()?;
-            unsafe {
-                pml4.add(l4_idx).write(make_table_entry(pdpt_paddr));
-            }
-            table_ptr(pdpt_paddr)
-        } else {
-            unsafe {
-                open_table(pml4.add(l4_idx), flags);
-            }
-            table_ptr(pte_to_paddr(pml4e))
-        };
-
-        // Level 3 (PDPT) walk
-        let l3_idx = pdpt_index(virt_addr);
-        let pdpte = unsafe { pdpt.add(l3_idx).read() };
-        let pd = if (pdpte & PTE_PRESENT) == 0 {
-            let pd_paddr = allocate_table()?;
-            unsafe {
-                pdpt.add(l3_idx).write(make_table_entry(pd_paddr));
-            }
-            table_ptr(pd_paddr)
-        } else if (pdpte & PTE_HUGE) != 0 {
-            // Already mapped as a 1 GiB huge page leaf
-            return Err(PageError::AlreadyMapped);
-        } else {
-            unsafe {
-                open_table(pdpt.add(l3_idx), flags);
-            }
-            table_ptr(pte_to_paddr(pdpte))
-        };
-
-        // Level 2 (PD) walk
-        let l2_idx = pd_index(virt_addr);
-        let pde = unsafe { pd.add(l2_idx).read() };
-        let pt = if (pde & PTE_PRESENT) == 0 {
-            let pt_paddr = allocate_table()?;
-            unsafe {
-                pd.add(l2_idx).write(make_table_entry(pt_paddr));
-            }
-            table_ptr(pt_paddr)
-        } else if (pde & PTE_HUGE) != 0 {
-            // Already mapped as a 2 MiB huge page leaf
-            return Err(PageError::AlreadyMapped);
-        } else {
-            unsafe {
-                open_table(pd.add(l2_idx), flags);
-            }
-            table_ptr(pte_to_paddr(pde))
-        };
-
-        // Level 1 (PT) walk & leaf insertion
-        let l1_idx = pt_index(virt_addr);
-        let pte = unsafe { pt.add(l1_idx).read() };
-        if (pte & PTE_PRESENT) != 0 {
-            return Err(PageError::AlreadyMapped);
-        }
-
-        let leaf_pte = make_leaf_entry(phys_addr, flags);
-        unsafe {
-            pt.add(l1_idx).write(leaf_pte);
-        }
-
-        self.flush_tlb_page(virt_addr);
+        debug_assert!(pending.0.is_empty());
+        self.flush_tlb_all();
         Ok(())
     }
 
-    unsafe fn unmap_page(&mut self, virt_addr: usize) -> Result<usize, PageError> {
-        if !virt_addr.is_multiple_of(PAGE_SIZE) {
-            return Err(PageError::Unaligned);
+    unsafe fn unmap_pages_exact(&mut self, va: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
+        Self::validate_range(va, frames, first, count, flags)?;
+        for page in 0..count {
+            let addr = va + page * PAGE_SIZE;
+            let indices = [pml4_index(addr), pdpt_index(addr), pd_index(addr), pt_index(addr)];
+            let mut table = self.root_paddr;
+            for (depth, index) in indices.into_iter().enumerate() {
+                let entry = table_ptr(table).add(index).read();
+                if entry & PTE_PRESENT == 0 || (depth < 3 && entry & PTE_HUGE != 0) { return Err(PageError::NotMapped); }
+                table = pte_to_paddr(entry);
+            }
+            if self.query(addr) != Some((frames.get(first + page).unwrap(), flags)) { return Err(PageError::NotMapped); }
         }
-        if !is_canonical(virt_addr) || pml4_index(virt_addr) >= 256 {
-            return Err(PageError::OutOfRange);
-        }
+        for page in 0..count { self.remove_leaf(va + page * PAGE_SIZE); }
+        Ok(())
+    }
 
-        // Level 4 (PML4) walk
-        let pml4 = table_ptr(self.root_paddr);
-        let l4_idx = pml4_index(virt_addr);
-        let pml4e = unsafe { pml4.add(l4_idx).read() };
-        if (pml4e & PTE_PRESENT) == 0 {
-            return Err(PageError::NotMapped);
+    unsafe fn unmap_page(&mut self, va: usize) -> Result<usize, PageError> {
+        if !va.is_multiple_of(PAGE_SIZE) { return Err(PageError::Unaligned); }
+        if !is_canonical(va) || pml4_index(va) >= 256 { return Err(PageError::OutOfRange); }
+        let indices = [pml4_index(va), pdpt_index(va), pd_index(va), pt_index(va)];
+        let mut table = self.root_paddr;
+        for (depth, index) in indices.into_iter().enumerate() {
+            let entry = table_ptr(table).add(index).read();
+            if entry & PTE_PRESENT == 0 || (depth < 3 && entry & PTE_HUGE != 0) { return Err(PageError::NotMapped); }
+            table = pte_to_paddr(entry);
         }
-        let pdpt = table_ptr(pte_to_paddr(pml4e));
-
-        // Level 3 (PDPT) walk
-        let l3_idx = pdpt_index(virt_addr);
-        let pdpte = unsafe { pdpt.add(l3_idx).read() };
-        if (pdpte & PTE_PRESENT) == 0 || (pdpte & PTE_HUGE) != 0 {
-            return Err(PageError::NotMapped);
-        }
-        let pd = table_ptr(pte_to_paddr(pdpte));
-
-        // Level 2 (PD) walk
-        let l2_idx = pd_index(virt_addr);
-        let pde = unsafe { pd.add(l2_idx).read() };
-        if (pde & PTE_PRESENT) == 0 || (pde & PTE_HUGE) != 0 {
-            return Err(PageError::NotMapped);
-        }
-        let pt = table_ptr(pte_to_paddr(pde));
-
-        // Level 1 (PT) walk
-        let l1_idx = pt_index(virt_addr);
-        let pte = unsafe { pt.add(l1_idx).read() };
-        if (pte & PTE_PRESENT) == 0 {
-            return Err(PageError::NotMapped);
-        }
-
-        let phys_addr = pte_to_paddr(pte);
-        unsafe {
-            pt.add(l1_idx).write(0);
-        }
-
-        self.flush_tlb_page(virt_addr);
-        Ok(phys_addr)
+        Ok(self.remove_leaf(va))
     }
 
     unsafe fn protect_page(&mut self, virt_addr: usize, flags: MapFlags) -> Result<(), PageError> {
@@ -690,6 +722,9 @@ impl AddressSpace for Pml4AddressSpace {
     }
 
     unsafe fn flush_tlb_page(&self, virt_addr: usize) {
+        #[cfg(test)]
+        { let _ = virt_addr; crate::test_flush(false); }
+        #[cfg(not(test))]
         core::arch::asm!(
             "invlpg [{}]",
             in(reg) virt_addr,
@@ -698,6 +733,9 @@ impl AddressSpace for Pml4AddressSpace {
     }
 
     unsafe fn flush_tlb_all(&self) {
+        #[cfg(test)]
+        crate::test_flush(true);
+        #[cfg(not(test))]
         core::arch::asm!(
             "mov rax, cr3",
             "mov cr3, rax",
@@ -853,5 +891,129 @@ mod tests {
         assert_eq!(rx_pte & PTE_USER, 0);
         assert_eq!(rx_pte & PTE_NO_EXECUTE, 0);
         assert_eq!(pte_to_paddr(rx_pte), phys);
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+
+    #[test]
+    fn production_range_transactions() {
+        let boot = allocate_table().unwrap();
+        BOOT_ROOT.store(boot, core::sync::atomic::Ordering::SeqCst);
+        let flags = MapFlags::user_rw();
+        let frames = VmoFrames::contiguous(0x1000, 2);
+        for boundary in [1usize << 21, 1 << 30, 1 << 39] {
+            let va = boundary - PAGE_SIZE;
+            for fail in 0..=6 {
+                let mut space = Pml4AddressSpace::new_user().unwrap();
+                let before = bitmap::stats().free_pages;
+                crate::mock_bitmap::STATE.lock().unwrap().1 = fail;
+                let map_flushes = crate::mock_bitmap::STATE.lock().unwrap().2;
+                let result = unsafe { space.map_pages(va, &frames, 0, 2, flags) };
+                assert_eq!(crate::mock_bitmap::STATE.lock().unwrap().2,
+                    map_flushes + usize::from(result.is_ok()));
+                crate::mock_bitmap::STATE.lock().unwrap().1 = usize::MAX;
+                if result.is_err() {
+                    assert_eq!(bitmap::stats().free_pages, before);
+                    assert_eq!(space.table_pages(), 1);
+                    assert!((0..256).all(|i| unsafe { table_ptr(space.root_paddr).add(i).read() == 0 }));
+                } else {
+                    let before_flush = crate::mock_bitmap::STATE.lock().unwrap().2;
+                    crate::mock_bitmap::EVENTS.lock().unwrap().clear();
+                    unsafe { space.unmap_pages_exact(va, &frames, 0, 2, flags).unwrap(); }
+                    let events = crate::mock_bitmap::EVENTS.lock().unwrap();
+                    for (i, flush) in events.iter().enumerate() {
+                        if !flush { assert!(i > 0 && events[i - 1], "table freed before full flush"); }
+                    }
+                    drop(events);
+                    assert_eq!(space.table_pages(), 1);
+                    assert_eq!(bitmap::stats().free_pages, before);
+                    assert!(crate::mock_bitmap::STATE.lock().unwrap().2 > before_flush);
+                }
+            }
+        }
+        let mut space = Pml4AddressSpace::new_user().unwrap();
+        unsafe {
+            space.map_page(0, 0x1000, flags).unwrap();
+            let root_slot = table_ptr(space.root_paddr);
+            root_slot.write((root_slot.read() & !(PTE_USER | PTE_WRITABLE)) | PTE_NO_EXECUTE);
+            let snapshot = (0..512).map(|i| root_slot.add(i).read()).collect::<Vec<_>>();
+            assert_eq!(space.map_pages(0, &frames, 0, 2, flags), Err(PageError::AlreadyMapped));
+            assert_eq!(snapshot, (0..512).map(|i| root_slot.add(i).read()).collect::<Vec<_>>());
+            assert_eq!(space.unmap_pages_exact(0, &frames, 0, 2, flags), Err(PageError::NotMapped));
+            assert!(space.query(0).is_some());
+            // Raw non-present reservations at every level must survive rejection.
+            for depth in 0..4 {
+                let mut table = space.root_paddr;
+                for _ in 0..depth { table = pte_to_paddr(table_ptr(table).read()); }
+                let slot = table_ptr(table).add(1);
+                let old = slot.read(); slot.write(0x200);
+                let va = 1usize << (39 - depth * 9);
+                let before = bitmap::stats().free_pages;
+                space.table_limit = space.table_pages;
+                assert_eq!(space.check_free_range(va, 1), Err(PageError::AlreadyMapped));
+                assert_eq!(space.check_free_range(va, 0), Err(PageError::OutOfRange));
+                assert_eq!(space.map_page(va, 0x2000, flags), Err(PageError::AlreadyMapped));
+                space.table_limit = 256;
+                assert_eq!(slot.read(), 0x200); assert_eq!(bitmap::stats().free_pages, before);
+                slot.write(old);
+            }
+        }
+        drop(space);
+        // Fail after every off-tree allocation with restrictive existing ancestors.
+        for fail in 0..3 {
+            let mut space = Pml4AddressSpace::new_user().unwrap();
+            unsafe {
+                space.map_page(0, 0x1000, flags).unwrap();
+                let root = table_ptr(space.root_paddr);
+                root.write((root.read() & !(PTE_USER | PTE_WRITABLE)) | PTE_NO_EXECUTE);
+                let mut saved = Vec::new();
+                let mut table = space.root_paddr;
+                for depth in 0..4 {
+                    saved.push((table, (0..512).map(|i| table_ptr(table).add(i).read()).collect::<Vec<_>>()));
+                    if depth < 3 { table = pte_to_paddr(table_ptr(table).read()); }
+                }
+                let before = bitmap::stats().free_pages;
+                crate::mock_bitmap::STATE.lock().unwrap().1 = fail;
+                let result = space.map_page(1 << 39, 0x2000, flags);
+                crate::mock_bitmap::STATE.lock().unwrap().1 = usize::MAX;
+                assert_eq!(result, Err(PageError::OutOfMemory));
+                assert_eq!(bitmap::stats().free_pages, before);
+                for (table, entries) in saved { assert_eq!(entries, (0..512).map(|i| table_ptr(table).add(i).read()).collect::<Vec<_>>()); }
+                // Reject huge leaves rather than splitting them during a 4 KiB request.
+                let pdpt = table_ptr(pte_to_paddr(root.read()));
+                let old = pdpt.add(1).read();
+                pdpt.add(1).write(0x4000_0000 | PTE_PRESENT | PTE_HUGE);
+                assert_eq!(space.map_page(1 << 30, 0x3000, flags), Err(PageError::AlreadyMapped));
+                assert_eq!(space.unmap_pages_exact(1 << 30, &frames, 0, 1, flags), Err(PageError::NotMapped));
+                pdpt.add(1).write(old);
+                let pd = table_ptr(pte_to_paddr(pdpt.read()));
+                pd.add(1).write(0x20_0000 | PTE_PRESENT | PTE_HUGE);
+                assert_eq!(space.map_page(1 << 21, 0x3000, flags), Err(PageError::AlreadyMapped));
+                assert_eq!(space.unmap_page(1 << 21), Err(PageError::NotMapped));
+                pd.add(1).write(0);
+                // A software reservation keeps its table alive after the last leaf leaves.
+                let pt = table_ptr(pte_to_paddr(pd.read()));
+                pt.add(1).write(0x200);
+                space.unmap_page(0).unwrap();
+                assert_eq!(space.table_pages(), 4);
+                assert_eq!(pt.add(1).read(), 0x200);
+                pt.add(1).write(0);
+                space.map_page(0, 0x1000, flags).unwrap();
+                space.unmap_page(0).unwrap();
+                assert_eq!(space.table_pages(), 1);
+            }
+        }
+        let mut space = Pml4AddressSpace::new_user().unwrap();
+        for i in 0..85 { unsafe { space.map_page(i << 39, 0x1000, flags).unwrap(); } }
+        assert_eq!(space.table_pages(), 256);
+        assert_eq!(unsafe { space.map_page(85 << 39, 0x1000, flags) }, Err(PageError::TableBudget));
+        for i in 0..85 { unsafe { space.unmap_page(i << 39).unwrap(); } }
+        assert_eq!(space.table_pages(), 1);
+        for i in 0..300 { unsafe { space.map_page((i % 128) << 39, 0x1000, flags).unwrap(); space.unmap_page((i % 128) << 39).unwrap(); } }
+        drop(space);
+        bitmap::free_frame(boot).unwrap();
     }
 }

@@ -44,6 +44,8 @@ impl MapFlags {
 pub enum PageError {
     /// Physical frame allocation failed (OOM).
     OutOfMemory,
+    /// Private user address-space table limit exceeded.
+    TableBudget,
     /// Virtual address range is not page-aligned.
     Unaligned,
     /// Virtual address range is out of bounds for this address space.
@@ -106,39 +108,55 @@ pub trait AddressSpace {
     /// permissions across every walk level, or `None` if not mapped.
     fn query(&self, virt_addr: usize) -> Option<(usize, MapFlags)>;
 
+    /// Reject occupied or reserved raw slots before quota checks or allocation.
+    fn check_free_range(&self, virt_addr: usize, frame_count: usize) -> Result<(), PageError>;
+
     /// Switch the active hardware page table to this address space.
     unsafe fn activate(&self);
 
-    /// Map contiguous frames from `frames` starting at `virt_addr`.
-    ///
-    /// On partial failure, already-mapped pages are unmapped before returning.
+    /// Install a frame subrange transactionally; errors leave existing translations unchanged.
+    unsafe fn map_pages(
+        &mut self,
+        virt_addr: usize,
+        frames: &VmoFrames,
+        first_frame: usize,
+        frame_count: usize,
+        flags: MapFlags,
+    ) -> Result<(), PageError>;
+
+    /// Validate the complete expected mapping before allocation-free removal and table retirement.
+    unsafe fn unmap_pages_exact(
+        &mut self,
+        virt_addr: usize,
+        frames: &VmoFrames,
+        first_frame: usize,
+        frame_count: usize,
+        flags: MapFlags,
+    ) -> Result<(), PageError>;
+
+    /// Map the complete VMO with the same transactional contract as `map_pages`.
     unsafe fn map_vmo(
         &mut self,
         virt_addr: usize,
         frames: &VmoFrames,
         flags: MapFlags,
     ) -> Result<(), PageError> {
-        const PAGE_SIZE: usize = 4096;
-        let mut mapped = 0;
-        for (i, phys) in frames.iter().enumerate() {
-            match self.map_page(virt_addr + i * PAGE_SIZE, phys, flags) {
-                Ok(()) => mapped += 1,
-                Err(e) => {
-                    for j in 0..mapped {
-                        let _ = self.unmap_page(virt_addr + j * PAGE_SIZE);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-        Ok(())
+        self.map_pages(virt_addr, frames, 0, frames.count(), flags)
     }
 
-    /// Unmap all pages that were mapped by `map_vmo`. Does NOT free frames.
+    /// Remove a complete existing 4 KiB-leaf range without freeing its data backing.
     unsafe fn unmap_vmo(&mut self, virt_addr: usize, frame_count: usize) -> Result<(), PageError> {
         const PAGE_SIZE: usize = 4096;
+        if frame_count == 0 || !virt_addr.is_multiple_of(PAGE_SIZE) {
+            return Err(PageError::Unaligned);
+        }
+        let bytes = frame_count.checked_mul(PAGE_SIZE).ok_or(PageError::OutOfRange)?;
+        virt_addr.checked_add(bytes).ok_or(PageError::OutOfRange)?;
         for i in 0..frame_count {
-            self.unmap_page(virt_addr + i * PAGE_SIZE)?;
+            self.query(virt_addr + i * PAGE_SIZE).ok_or(PageError::NotMapped)?;
+        }
+        for i in 0..frame_count {
+            self.unmap_page(virt_addr + i * PAGE_SIZE).expect("preflight stable unmap range");
         }
         Ok(())
     }

@@ -68,7 +68,7 @@ pub(super) fn run() {
         None,
     )));
     assert_eq!(call(&process, SYS_VMO_CREATE, [0; 6]), -22);
-    assert_eq!(call(&process, SYS_VMO_CREATE, [1, 1, 0, 0, 0, 0]), -22);
+    assert_eq!(call(&process, SYS_VMO_CREATE, [1, 2, 0, 0, 0, 0]), -22);
     assert_eq!(
         call(
             &process,
@@ -297,9 +297,85 @@ pub(super) fn run() {
     );
     drop(retained);
     assert_eq!(crate::kernel::memory::vmo::user_budget_stats(), budget);
+    mapping_tests(&process);
     drop(process);
     drop(backing);
     assert_eq!(CAP_NODE_ALLOCATOR.live_count(), nodes);
     assert_eq!(bitmap::stats().free_pages, frames);
     crate::kprintln!("[mem]   VMO syscall authority, snapshots, and rollback: ok");
+}
+
+
+fn mapping_tests(process: &Arc<SpinLock<Process>>) {
+    const TARGET: usize = BASE + 0x100000;
+    let budget = crate::kernel::memory::vmo::user_budget_stats();
+    let nodes = CAP_NODE_ALLOCATOR.live_count();
+    let handle = call(process, SYS_VMO_CREATE, [8193, VMO_CREATE_MAPPABLE, 0, 0, 0, 0]);
+    assert!(handle >= 0);
+    let node = {
+        let p = process.lock();
+        let table = p.handle_table().lock();
+        Arc::clone(table.lookup(handle as u32).unwrap())
+    };
+    assert_eq!(node.rights().bits(), 815);
+    let no_map = insert(process, CAP_NODE_ALLOCATOR.alloc_root(
+        Arc::new(Vmo::create(4096).unwrap()), ObjectType::Vmo, INITIAL_RIGHTS).unwrap());
+    assert_eq!(call(process, SYS_VMO_MAP, [no_map as usize, 0, TARGET, 4096, 1, 0]), -13);
+    close(process, no_map as isize);
+    let read_only = insert(process, node.attenuate(INITIAL_RIGHTS.union(Rights::MAP).difference(Rights::WRITE)).unwrap());
+    assert_eq!(call(process, SYS_VMO_MAP, [read_only as usize, 0, TARGET, 4096, 3, 0]), -13);
+    close(process, read_only as isize);
+    let wrong_type = insert(process, CAP_NODE_ALLOCATOR.alloc_root(
+        Arc::new(Resource), ObjectType::Vmo, INITIAL_RIGHTS.union(Rights::MAP)).unwrap());
+    assert_eq!(call(process, SYS_VMO_MAP, [wrong_type as usize, 0, TARGET, 4096, 1, 0]), -22);
+    close(process, wrong_type as isize);
+    let physical = insert(process, CAP_NODE_ALLOCATOR.alloc_root(
+        Arc::new(Vmo::create_physical(0, 4096).unwrap()), ObjectType::Vmo, INITIAL_RIGHTS.union(Rights::MAP)).unwrap());
+    assert_eq!(call(process, SYS_VMO_MAP, [physical as usize, 0, TARGET, 4096, 1, 0]), -22);
+    close(process, physical as isize);
+    // Reservations exclude both an unmapped stack and its preceding guard.
+    let thread = process.lock().create_thread(0, 4096).unwrap();
+    thread.lock().set_user_stack(Vmo::create(4096).unwrap());
+    thread.lock().set_user_stack_mapping(TARGET + 0x80000);
+    for address in [TARGET + 0x7f000, TARGET + 0x80000] {
+        assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, address, 4096, 1, 0]), -22);
+    }
+    let id = thread.lock().id();
+    let detached = process.lock().detach_thread(id);
+    drop(detached);
+    drop(thread);
+    let map = |offset, address, len, permissions| call(process, SYS_VMO_MAP, [handle as usize, offset, address, len, permissions, 0]);
+    assert_eq!(map(0, TARGET, 4096, 5), -22);
+    assert_eq!(map(8192, TARGET, 4096, 1), -22);
+    assert_eq!(map(0, 0, 4096, 1), -14);
+    assert_eq!(map(0, TARGET, 4096, 3), 0);
+    assert_eq!(map(0, TARGET, 4096, 1), -17);
+    assert_eq!(map(4096, TARGET + 8192, 4096, 1), 0);
+    let (physical, flags) = process.lock().address_space().query(TARGET + 8192).unwrap();
+    assert_eq!(physical, node.object_ref::<Vmo>().unwrap().frames().get(1).unwrap());
+    assert_eq!(flags, MapFlags::user_ro());
+    assert_eq!(call(process, SYS_VMO_UNMAP, [TARGET, 8192, 0, 0, 0, 0]), -22);
+    put(process, TARGET, &[0x5a; 8]);
+    node.revoke();
+    assert_eq!(map(0, TARGET + 16384, 4096, 1), -116);
+    close(process, handle);
+    drop(node);
+    assert_eq!(CAP_NODE_ALLOCATOR.live_count(), nodes);
+    assert_eq!(bytes(process, TARGET), [0x5a; 8]);
+    assert_eq!(crate::kernel::memory::vmo::user_budget_stats().1, budget.1 + 3);
+    assert_eq!(call(process, SYS_VMO_UNMAP, [TARGET, 4096, 0, 0, 0, 0]), 0);
+    assert_eq!(call(process, SYS_VMO_UNMAP, [TARGET + 8192, 4096, 0, 0, 0, 0]), 0);
+    assert_eq!(crate::kernel::memory::vmo::user_budget_stats(), budget);
+
+    let handle = call(process, SYS_VMO_CREATE, [4096, VMO_CREATE_MAPPABLE, 0, 0, 0, 0]);
+    for i in 0..64 {
+        assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, TARGET + i * 4096, 4096, 1, 0]), 0);
+    }
+    assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, TARGET + 64 * 4096, 4096, 1, 0]), -28);
+    close(process, handle);
+    let detached = process.lock().take_mappings();
+    assert!(process.lock().address_space().query(TARGET).is_none());
+    assert_eq!(crate::kernel::memory::vmo::user_budget_stats().1, budget.1 + 1);
+    drop(detached);
+    assert_eq!(crate::kernel::memory::vmo::user_budget_stats(), budget);
 }

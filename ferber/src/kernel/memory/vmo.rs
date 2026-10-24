@@ -102,7 +102,7 @@ impl VmoFrames {
         match &self.frames {
             FrameStorage::Scattered(frames) => frames.get(index).copied(),
             FrameStorage::Contiguous { base, count } => {
-                (index < *count).then(|| base + index * PAGE_SIZE)
+                (index < *count).then(|| index.checked_mul(PAGE_SIZE).and_then(|offset| base.checked_add(offset))).flatten()
             }
         }
     }

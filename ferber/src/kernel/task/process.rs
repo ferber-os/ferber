@@ -12,6 +12,7 @@ use super::TaskError;
 use crate::arch::ArchAddressSpace;
 use crate::kernel::capabilities::{HandleTable, KernelObject};
 use crate::kernel::memory::vmo::Vmo;
+use crate::kernel::memory::paging::{AddressSpace, MapFlags};
 use crate::kernel::sync::SpinLock;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -32,6 +33,14 @@ pub enum ProcessState {
     Dead,
 }
 
+pub(crate) struct MappingRecord {
+    pub base: usize,
+    pub len: usize,
+    pub offset: usize,
+    pub flags: MapFlags,
+    pub object: Arc<Vmo>,
+}
+
 pub struct Process {
     id: u64,
     name: &'static str,
@@ -40,6 +49,7 @@ pub struct Process {
     address_space: ArchAddressSpace,
     handle_table: SpinLock<HandleTable>,
     backing: Vec<Vmo>,
+    mappings: Vec<MappingRecord>,
     threads: Vec<Arc<SpinLock<Thread>>>,
     self_weak: Option<Weak<SpinLock<Process>>>,
 }
@@ -68,6 +78,7 @@ impl Process {
             address_space,
             handle_table: SpinLock::new(HandleTable::new()),
             backing: Vec::new(),
+            mappings: Vec::new(),
             threads: Vec::new(),
             self_weak: None,
         }
@@ -169,6 +180,29 @@ impl Process {
 
     pub fn threads(&self) -> &[Arc<SpinLock<Thread>>] {
         &self.threads
+    }
+
+    pub(crate) fn mappings(&self) -> &[MappingRecord] { &self.mappings }
+
+    pub(crate) fn mappings_mut(&mut self) -> &mut Vec<MappingRecord> { &mut self.mappings }
+
+    pub(crate) fn mapping_reserved(&self, base: usize, end: usize) -> bool {
+        self.threads.iter().any(|thread| {
+            thread.lock().user_stack_mapping().is_some_and(|(stack, size)| {
+                base < stack.saturating_add(size) && stack.saturating_sub(4096) < end
+            })
+        })
+    }
+
+    pub(crate) fn take_mappings(&mut self) -> Vec<MappingRecord> {
+        for record in &self.mappings {
+            unsafe {
+                self.address_space.unmap_pages_exact(record.base, record.object.frames(),
+                    record.offset / 4096, record.len / 4096, record.flags)
+                    .expect("unmap retired user mapping");
+            }
+        }
+        core::mem::take(&mut self.mappings)
     }
 
     pub fn address_space(&self) -> &ArchAddressSpace {

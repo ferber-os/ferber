@@ -82,7 +82,7 @@ pub unsafe extern "C" fn user_main(record: *const u8) -> ! {
     recv(channel, &mut message, &mut [], [1, 0]);
     if message[0] == 1 {
         check(syscall6(11, 0, 0, 0, 0, 0, 0) == -22);
-        check(syscall6(11, 1, 1, 0, 0, 0, 0) == -22);
+        check(syscall6(11, 1, 2, 0, 0, 0, 0) == -22);
         check(syscall6(11, 16 * 1024 * 1024 + 1, 0, 0, 0, 0, 0) == -90);
         let result = syscall6(11, 4097, 0, 0, 0, 0, 0);
         check(result >= 0);

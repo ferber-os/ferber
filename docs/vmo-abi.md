@@ -1,8 +1,9 @@
 # VMO byte ABI
 
 Syscalls 11–13 create and copy bytes through ordinary owned-RAM VMOs on both
-architectures. They introduce no user mappings, physical-address authority,
-executable publication or resizing. Existing startup ABI v1 and init's
+architectures. They introduce no physical-address authority, executable publication or
+resizing. [Mapping syscalls 14–15](vmo-mapping.md) provide a separate
+non-executable mapping contract. Existing startup ABI v1 and init's
 readiness protocol are unchanged.
 
 ## Calls complete exactly or return an error
@@ -14,7 +15,8 @@ readiness protocol are unchanged.
 | 13 | `sys_vmo_write` | Handle, offset, user source, length | `0` |
 
 The existing six-register calling convention applies. Unused registers are
-ignored. `options` must be zero. A handle must fit in `u32`; high bits are not
+ignored. Creation options are zero for the original byte-only rights or
+`VMO_CREATE_MAPPABLE = 1 << 0` to add MAP; other bits are invalid. A handle must fit in `u32`; high bits are not
 truncated. Read/write use explicit byte offsets, with no cursor, EOF truncation
 or short success. Requests must fit wholly within the exact logical size.
 
@@ -33,7 +35,8 @@ even for an empty copy.
 
 Creation follows channel creation: it creates a fresh object rather than naming
 existing memory. The process receives exactly `READ | WRITE | DUPLICATE |
-TRANSFER | INSPECT | MANAGE`. It receives no `MAP`, `EXECUTE`, `WAIT` or `SIGNAL`.
+TRANSFER | INSPECT | MANAGE`. Zero-option creation receives no `MAP`, `EXECUTE`, `WAIT` or `SIGNAL`.
+The explicit mappable option adds MAP only.
 Read requires READ; write requires WRITE. Existing attenuation, duplication,
 revocation, inspection and channel move semantics apply without another VMO
 handle representation. Generic inspect remains the eight-byte type/rights
@@ -121,24 +124,18 @@ logical range, then handle zero length, user preflight and allocation. Creation
 validates options and size, checks capacity before expensive allocation, and
 rechecks before publishing its privately constructed node.
 
-## Mapping and executable publication remain separate
+## Mappings have independent ownership
 
-Future user mappings need process-owned records that retain shared backing
-independently of handles, record VMO offsets and distinguish loader/stack
-mappings from user-managed mappings. Close, transfer and revoke must not free
-mapped frames. The existing rule that revocation does not remove mappings
-remains in force.
+[Non-executable mapping](vmo-mapping.md) uses process records retaining shared
+VMO backing independently of capability nodes. Existing mappings survive
+close, transfer and revoke until exact unmap or process teardown. Page-table
+preparation, reclamation and quotas are separate from backing charges.
 
-The current bulk protect/unmap helpers are not a transactional syscall ABI.
-Mapping failures must roll back their new translations and ownership; unmap
-must invalidate translations before releasing backing. Future SMP adds remote
-TLB synchronization.
-
-Portable permissions are RO, RW/NX and RX; write-only and execute-only cannot
-be promised by both architectures. A later executable publication/sealing policy
-must cover every writable capability and alias, not just forbid one RWX PTE.
-RISC-V also needs instruction-cache synchronization; translation fences alone
-are insufficient. This patch grants no new MAP or EXECUTE authority.
+Executable publication remains unavailable. A future sealing policy must cover
+all writable capabilities and mappings; per-PTE W^X alone is insufficient.
+RISC-V will additionally need instruction-cache publication and future SMP
+will need remote synchronization. The content lock does not serialize user
+stores through installed mappings.
 
 ## External verification keeps init separate
 

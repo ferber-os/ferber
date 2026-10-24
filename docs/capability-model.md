@@ -273,9 +273,16 @@ The simplicity isn't a compromise. It's a consequence of getting the model right
 ## VMO byte syscalls preserve shared backing
 
 [VMO creation](vmo-abi.md) returns fresh zeroed RAM with READ, WRITE, DUPLICATE,
-TRANSFER, INSPECT and MANAGE. It grants no MAP or EXECUTE rights. Duplicate and
+TRANSFER, INSPECT and MANAGE with creation options zero. The explicit
+mappable option adds MAP; no option grants EXECUTE. Duplicate and
 derived capabilities share the same backing and its byte-operation lock;
 attenuation limits a particular capability, not every other alias. Channel
 transfer retains the backing and its user-allocation charge through delivery or
 message discard. Final ownership, rather than creator exit or a handle count,
 determines reclamation. Generic inspection remains unchanged.
+
+[User mappings](vmo-mapping.md) retain `Arc<Vmo>` backing, not capability nodes.
+Closing or revoking every handle can therefore reclaim nodes while mapped
+frames remain owned and charged. Revocation prevents new capability operations
+but does not remove previously installed mapped access. Unmap is authorized by
+the caller's exact process mapping record and requires no surviving handle.

@@ -11,6 +11,8 @@ mod syscall_vmo;
 const SYS_VMO_CREATE: usize = 11;
 const SYS_VMO_READ: usize = 12;
 const SYS_VMO_WRITE: usize = 13;
+const SYS_VMO_MAP: usize = 14;
+const SYS_VMO_UNMAP: usize = 15;
 fn cap_errno(error: capabilities::CapError) -> isize {
     use capabilities::CapError::*;
     match error {
@@ -80,15 +82,30 @@ mod kernel {
     }
     pub mod task {
         use crate::{capabilities::HandleTable, sync::SpinLock};
+        pub mod process {
+            use crate::{vmo::Vmo, kernel::memory::paging::MapFlags};
+            use alloc::sync::Arc;
+            pub struct MappingRecord {
+                pub base: usize, pub len: usize, pub offset: usize,
+                pub flags: MapFlags, pub object: Arc<Vmo>,
+            }
+        }
         pub struct Process {
             pub table: SpinLock<HandleTable>,
+            pub space: super::memory::paging::Space,
+            pub mappings: Vec<process::MappingRecord>,
+            pub guards: Vec<(usize, usize)>,
         }
         impl Process {
             pub fn handle_table(&self) -> &SpinLock<HandleTable> {
                 &self.table
             }
-            pub fn address_space(&self) -> &Self {
-                self
+            pub fn address_space(&self) -> &super::memory::paging::Space { &self.space }
+            pub fn address_space_mut(&mut self) -> &mut super::memory::paging::Space { &mut self.space }
+            pub fn mappings(&self) -> &[process::MappingRecord] { &self.mappings }
+            pub fn mappings_mut(&mut self) -> &mut Vec<process::MappingRecord> { &mut self.mappings }
+            pub fn mapping_reserved(&self, base: usize, end: usize) -> bool {
+                self.guards.iter().any(|&(start, len)| base < start + len && start < end)
             }
         }
     }
@@ -138,10 +155,41 @@ mod kernel {
             }
         }
         pub mod paging {
+            use std::collections::BTreeMap;
+            use crate::vmo::VmoFrames;
+            #[derive(Clone, Copy, Debug, PartialEq, Eq)]
             pub struct MapFlags {
-                pub readable: bool,
-                pub writable: bool,
-                pub executable: bool,
+                pub readable: bool, pub writable: bool, pub executable: bool, pub user: bool,
+            }
+            impl MapFlags {
+                pub fn user_ro() -> Self { Self { readable: true, writable: false, executable: false, user: true } }
+                pub fn user_rw() -> Self { Self { writable: true, ..Self::user_ro() } }
+            }
+            #[derive(Debug, PartialEq, Eq)]
+            pub enum PageError { OutOfMemory, TableBudget, AlreadyMapped, NotMapped }
+            #[derive(Default)]
+            pub struct Space(pub BTreeMap<usize, (usize, MapFlags)>);
+            pub trait AddressSpace {
+                fn check_free_range(&self, base: usize, count: usize) -> Result<(), PageError>;
+                fn query(&self, base: usize) -> Option<(usize, MapFlags)>;
+                unsafe fn map_pages(&mut self, base: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError>;
+                unsafe fn unmap_pages_exact(&mut self, base: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError>;
+            }
+            impl AddressSpace for Space {
+                fn check_free_range(&self, base: usize, count: usize) -> Result<(), PageError> {
+                    if (0..count).any(|i| self.0.contains_key(&(base + i * 4096))) { Err(PageError::AlreadyMapped) } else { Ok(()) }
+                }
+                fn query(&self, base: usize) -> Option<(usize, MapFlags)> { self.0.get(&base).copied() }
+                unsafe fn map_pages(&mut self, base: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
+                    self.check_free_range(base, count)?;
+                    for i in 0..count { self.0.insert(base + i * 4096, (frames.get(first+i).unwrap(), flags)); }
+                    Ok(())
+                }
+                unsafe fn unmap_pages_exact(&mut self, base: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
+                    if (0..count).any(|i| self.0.get(&(base + i * 4096)) != Some(&(frames.get(first+i).unwrap(), flags))) { return Err(PageError::NotMapped); }
+                    for i in 0..count { self.0.remove(&(base + i * 4096)); }
+                    Ok(())
+                }
             }
         }
         pub mod phys_map {
@@ -215,6 +263,7 @@ fn production_syscall_allocation_rollback() {
     vmo::init_user_budget(65536);
     let process = Arc::new(sync::SpinLock::new(Process {
         table: sync::SpinLock::new(HandleTable::new()),
+        space: Default::default(), mappings: Vec::new(), guards: Vec::new(),
     }));
     // Warm host-only frame bookkeeping before injecting production allocations.
     drop(vmo::Vmo::create(4096).unwrap());
@@ -315,4 +364,93 @@ fn production_syscall_allocation_rollback() {
     assert_eq!(bitmap::count(), 0);
     assert_eq!(vmo::user_budget_stats(), baseline);
     assert_eq!(CAP_NODE_ALLOCATOR.live_count(), 0);
+    // Actual dispatcher: metadata OOM precedes PTE publication and releases ownership.
+    let mapped = syscall_vmo::dispatch(&process, SYS_VMO_CREATE, [8193, 1, 0, 0, 0, 0]);
+    assert!(mapped >= 0);
+    const BASE: usize = 0x100000;
+    let call_map = |offset, base, len, perms| syscall_vmo::dispatch(&process, SYS_VMO_MAP, [mapped as usize, offset, base, len, perms, 0]);
+    process.lock().guards.push((BASE + 0x80000, 8192));
+    assert_eq!(call_map(0, BASE + 0x80000, 4096, 1), -22);
+    assert_eq!(call_map(8192, BASE, 4096, 1), -22);
+    assert_eq!(call_map(0, BASE, 4096, 5), -22);
+    FAIL_AFTER.with(|left| left.set(Some(0)));
+    assert_eq!(call_map(0, BASE, 4096, 3), -12);
+    FAIL_AFTER.with(|left| left.set(None));
+    assert!(process.lock().space.0.is_empty());
+    assert!(process.lock().mappings.is_empty());
+    assert_eq!(call_map(0, BASE, 4096, 3), 0);
+    assert_eq!(call_map(4096, BASE + 8192, 4096, 1), 0);
+    assert_eq!(call_map(0, BASE, 4096, 1), -17);
+    assert_eq!(syscall_vmo::dispatch(&process, SYS_VMO_UNMAP, [BASE, 8192, 0, 0, 0, 0]), -22);
+    assert_eq!(syscall_vmo::dispatch(&process, SYS_VMO_UNMAP, [0, 4096, 0, 0, 0, 0]), -14);
+    assert_eq!(syscall_vmo::dispatch(&process, SYS_VMO_UNMAP, [1usize << 47, 4096, 0, 0, 0, 0]), -14);
+    {
+        let mut p = process.lock();
+        let raw = *p.space.0.get(&BASE).unwrap();
+        p.space.0.insert(BASE + 0x40000, raw);
+        while p.mappings.len() < 64 {
+            let source = &p.mappings[0];
+            let record = kernel::task::process::MappingRecord {
+                base: source.base, len: source.len, offset: source.offset,
+                flags: source.flags, object: Arc::clone(&source.object),
+            };
+            p.mappings.push(record);
+        }
+    }
+    assert_eq!(call_map(0, BASE + 0x40000, 4096, 1), -17);
+    process.lock().mappings.truncate(2);
+    process.lock().space.0.remove(&(BASE + 0x40000));
+    let pte = process.lock().space.0.remove(&BASE).unwrap();
+    assert_eq!(syscall_vmo::dispatch(&process, SYS_VMO_UNMAP, [BASE, 4096, 0, 0, 0, 0]), -22);
+    assert_eq!(process.lock().mappings.len(), 2);
+    assert!(process.lock().space.0.contains_key(&(BASE + 8192)));
+    process.lock().space.0.insert(BASE, pte);
+    let node = process.lock().table.lock().remove(mapped as u32).unwrap();
+    node.revoke();
+    drop(node);
+    assert_eq!(CAP_NODE_ALLOCATOR.live_count(), 0);
+    assert_eq!(bitmap::count(), 3);
+    assert_eq!(syscall_vmo::dispatch(&process, SYS_VMO_UNMAP, [BASE, 4096, 0, 0, 0, 0]), 0);
+    assert_eq!(bitmap::count(), 3);
+    assert_eq!(syscall_vmo::dispatch(&process, SYS_VMO_UNMAP, [BASE + 8192, 4096, 0, 0, 0, 0]), 0);
+    assert_eq!(bitmap::count(), 0);
+    assert_eq!(vmo::user_budget_stats(), baseline);
+
+    // Four aliases charge 16,384 mapped pages while retaining one 4,096-page VMO.
+    const LARGE: usize = 16 * 1024 * 1024;
+    const ALIASES: usize = 0x1000_0000;
+    let large = syscall_vmo::dispatch(&process, SYS_VMO_CREATE, [LARGE, 1, 0, 0, 0, 0]);
+    assert!(large >= 0);
+    let map_alias = |base, len| syscall_vmo::dispatch(&process, SYS_VMO_MAP, [large as usize, 0, base, len, 3, 0]);
+    let unmap_alias = |base| syscall_vmo::dispatch(&process, SYS_VMO_UNMAP, [base, LARGE, 0, 0, 0, 0]);
+    for i in 0..4 {
+        assert_eq!(map_alias(ALIASES + i * LARGE, LARGE), 0);
+    }
+    let charged = vmo::user_budget_stats();
+    assert_eq!(charged.1, baseline.1 + 4096);
+    assert_eq!(bitmap::count(), 4096);
+    let snapshot = process.lock().space.0.clone();
+    assert_eq!(snapshot.len(), 16384);
+    assert_eq!(process.lock().mappings.iter().map(|record| record.len / 4096).sum::<usize>(), 16384);
+    assert_eq!(map_alias(ALIASES + 4 * LARGE, 4096), -28);
+    assert_eq!(process.lock().space.0, snapshot);
+    assert_eq!(process.lock().mappings.len(), 4);
+    assert_eq!(bitmap::count(), 4096);
+    assert_eq!(vmo::user_budget_stats(), charged);
+    assert_eq!(unmap_alias(ALIASES), 0);
+    assert_eq!(map_alias(ALIASES + 4 * LARGE, LARGE), 0);
+    assert_eq!(process.lock().space.0.len(), 16384);
+    assert_eq!(process.lock().mappings.len(), 4);
+    assert_eq!(bitmap::count(), 4096);
+    assert_eq!(vmo::user_budget_stats(), charged);
+    for i in 1..=4 {
+        assert_eq!(unmap_alias(ALIASES + i * LARGE), 0);
+    }
+    drop(process.lock().table.lock().remove(large as u32).unwrap());
+    assert!(process.lock().space.0.is_empty());
+    assert!(process.lock().mappings.is_empty());
+    assert_eq!(bitmap::count(), 0);
+    assert_eq!(vmo::user_budget_stats(), baseline);
+    assert_eq!(CAP_NODE_ALLOCATOR.live_count(), 0);
+
 }

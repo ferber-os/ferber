@@ -211,6 +211,11 @@ impl CapNode {
     }
 
     /// Verify the concrete backing; a serializable type tag is not a cast.
+    pub fn object_arc<T: KernelObject>(&self) -> Option<Arc<T>> {
+        let object: Arc<dyn Any + Send + Sync> = self.object.clone();
+        object.downcast::<T>().ok()
+    }
+
     pub fn object_ref<T: KernelObject>(&self) -> Option<&T> {
         (self.object.as_ref() as &dyn Any).downcast_ref::<T>()
     }

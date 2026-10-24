@@ -4,9 +4,17 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 program=${1:?usage: build-user.sh PROGRAM TARGET PROFILE [OUTPUT]}
 shift
+user_cfg=()
+linker="$repo_root/userspace/common/linker.ld"
 case "$program" in
     init) source_dir=init; output_dir=userspace-init; basename=init ;;
     vmo-probe) source_dir=vmo-probe; output_dir=userspace-vmo; basename=probe ;;
+    vmo-map-probe|vmo-map-write|vmo-map-execute)
+        source_dir=vmo-map-probe; output_dir=userspace-$program; basename=probe
+        linker="$repo_root/userspace/vmo-map-probe/linker.ld"
+        [[ "$program" != vmo-map-write ]] || user_cfg+=(--cfg vmo_map_write)
+        [[ "$program" != vmo-map-execute ]] || user_cfg+=(--cfg vmo_map_execute)
+        ;;
     elf-probe) source_dir=elf-probe; output_dir=userspace-elf; basename=probe ;;
     *) echo "unsupported userspace program: $program" >&2; exit 2 ;;
 esac
@@ -29,7 +37,7 @@ output=$(realpath "$output")
 rustc +nightly --edition=2021 --crate-name "ferber_${basename}" \
     --target "$rust_target" -D warnings -C panic=abort -C opt-level="$opt_level" \
     -C relocation-model=static -C linker=rust-lld \
-    -C link-arg=-T"$repo_root/userspace/common/linker.ld" \
+    -C link-arg=-T"$linker" "${user_cfg[@]}" \
     -C link-arg=--no-relax -C link-arg=--no-dynamic-linker -C link-arg=--build-id=none \
     "$repo_root/userspace/$source_dir/main.rs" -o "$output"
 readelf -h "$output" | grep -Eq 'Class:.*ELF64'

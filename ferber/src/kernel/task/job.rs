@@ -93,7 +93,7 @@ impl Job {
         self.processes
             .try_reserve(1)
             .map_err(|_| TaskError::OutOfMemory)?;
-        let address_space = ArchAddressSpace::new().map_err(|_| TaskError::OutOfMemory)?;
+        let address_space = ArchAddressSpace::new_user().map_err(|_| TaskError::OutOfMemory)?;
         let proc_id = super::process::next_process_id();
         let process = Arc::try_new(SpinLock::new(Process::new(
             proc_id,

@@ -421,7 +421,7 @@ fn reap() {
             let thread = task.thread.lock();
             (thread.id(), thread.user_stack_mapping())
         };
-        let (detached, handles, job, process_id, last) = {
+        let (detached, handles, mappings, job, process_id, last) = {
             let mut process = task.process.lock();
             if let Some((base, size)) = mapping {
                 unsafe {
@@ -439,8 +439,10 @@ fn reap() {
             } else {
                 None
             };
-            (detached, handles, process.job(), process.id(), last)
+            let mappings = if last { process.take_mappings() } else { Vec::new() };
+            (detached, handles, mappings, process.job(), process.id(), last)
         };
+        drop(mappings);
         drop(handles);
         drop(detached);
         if last {

@@ -49,7 +49,7 @@ jobs:
       - name: Clippy (user probes)
         working-directory: ferber
         run: |
-          for feature in userspace-vmo-probe minimal-init user-isolation-probe user-write-probe user-execute-probe cooperative-deadlock-probe; do
+          for feature in userspace-vmo-map-probe user-vmo-map-write-probe user-vmo-map-execute-probe userspace-vmo-probe minimal-init user-isolation-probe user-write-probe user-execute-probe cooperative-deadlock-probe; do
             cargo clippy --target riscv64gc-unknown-none-elf --features "$feature" -- -D warnings
             cargo clippy --target x86_64-unknown-none --features "qemu-debug-port,$feature" -- -D warnings
           done
@@ -61,12 +61,15 @@ jobs:
             scripts/build-user-elf.sh "$target" debug
             scripts/build-user.sh init "$target" debug
             scripts/build-user.sh vmo-probe "$target" debug
+            scripts/build-user.sh vmo-map-probe "$target" debug
+            scripts/build-user.sh vmo-map-write "$target" debug
+            scripts/build-user.sh vmo-map-execute "$target" debug
             (cd ferber && cargo clippy --target "$target" --features userspace-elf-probe -- -D warnings)
           done
 
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
@@ -75,6 +78,11 @@ jobs:
         run: |
           bash scripts/vmo-core-tests.sh
           bash scripts/vmo-syscall-tests.sh
+
+      - name: Test production page-table walkers
+        run: |
+          bash scripts/riscv-paging-tests.sh
+          bash scripts/x86-paging-tests.sh
 
       - name: Test physical memory models
         run: bash scripts/memory-tests.sh
@@ -109,6 +117,7 @@ jobs:
           bash scripts/x86-iso-smoke.sh elf
           bash scripts/x86-iso-smoke.sh init
           bash scripts/x86-iso-smoke.sh vmo
+          bash scripts/x86-iso-smoke.sh vmo-map
 
   release:
     name: Release

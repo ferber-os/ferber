@@ -38,6 +38,8 @@ pub(crate) const SYS_CHAN_RECV_WAIT: usize = 10;
 pub(crate) const SYS_VMO_CREATE: usize = 11;
 pub(crate) const SYS_VMO_READ: usize = 12;
 pub(crate) const SYS_VMO_WRITE: usize = 13;
+pub(crate) const SYS_VMO_MAP: usize = 14;
+pub(crate) const SYS_VMO_UNMAP: usize = 15;
 
 #[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
 compile_error!("user-write-probe and user-execute-probe must run separately");
@@ -62,6 +64,15 @@ compile_error!("minimal-init must run separately from other probe scenarios");
     feature = "x86-exception-probe",
 )))]
 compile_error!("userspace-vmo-probe must run separately from other probe scenarios");
+
+#[cfg(all(feature = "userspace-vmo-map-probe", any(
+    feature = "minimal-init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
+    feature = "user-isolation-probe", feature = "cooperative-deadlock-probe",
+    feature = "x86-exception-probe",
+)))]
+compile_error!("userspace-vmo-map-probe must run separately from other probe scenarios");
+#[cfg(all(feature = "user-vmo-map-write-probe", feature = "user-vmo-map-execute-probe"))]
+compile_error!("VMO mapping write and execute fault probes must run separately");
 
 pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
 pub(crate) const USER_STACK: usize = 0x0000_0020_0000_0000;
@@ -162,6 +173,11 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
     vmo::self_test();
     scheduler::init();
     scheduler::self_test(&root);
+    if cfg!(feature = "userspace-vmo-map-probe") {
+        #[cfg(feature = "userspace-vmo-map-probe")]
+        super::vmo_map_probe::run(&root);
+        halt();
+    }
     if cfg!(feature = "minimal-init") {
         #[cfg(feature = "minimal-init")]
         super::init::run(&root);
@@ -291,7 +307,7 @@ pub(crate) fn dispatch_for_process(
     if matches!(nr, SYS_CHAN_CREATE | SYS_CHAN_SEND | SYS_CHAN_RECV) {
         return channel::dispatch(process, nr, args);
     }
-    if matches!(nr, SYS_VMO_CREATE | SYS_VMO_READ | SYS_VMO_WRITE) {
+    if matches!(nr, SYS_VMO_CREATE | SYS_VMO_READ | SYS_VMO_WRITE | SYS_VMO_MAP | SYS_VMO_UNMAP) {
         return vmo::dispatch(process, nr, args);
     }
     if !matches!(
@@ -430,6 +446,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
             super::elf_probe::finish(args[0], handles);
             #[cfg(feature = "userspace-vmo-probe")]
             super::vmo_probe::finish(args[0], handles);
+            #[cfg(feature = "userspace-vmo-map-probe")]
+            super::vmo_map_probe::finish(args[0], handles);
             let state = PROBE.lock().take();
             if let Some(state) = state {
                 state.observer.finish(args[0], handles, state.isolation);
@@ -486,10 +504,16 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
     super::elf_probe::observe(nr, result);
     #[cfg(feature = "userspace-vmo-probe")]
     super::vmo_probe::observe(nr, result);
+    #[cfg(feature = "userspace-vmo-map-probe")]
+    super::vmo_map_probe::observe(nr, result);
     result
 }
 
 pub fn user_fault(pc: usize, addr: usize, cause: usize) -> ! {
+    if cfg!(any(feature = "user-vmo-map-write-probe", feature = "user-vmo-map-execute-probe")) {
+        #[cfg(any(feature = "user-vmo-map-write-probe", feature = "user-vmo-map-execute-probe"))]
+        super::vmo_map_probe::fault(pc, addr, cause);
+    }
     let state = PROBE.lock();
     let task = state.as_ref().expect("fault without current user task");
     assert!(

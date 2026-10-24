@@ -147,9 +147,9 @@ extern "C" fn x86_trap_handler(frame: *const TrapFrame) -> ! {
     // SAFETY: assembly passes a pointer to the hardware frame on this stack.
     let frame = unsafe { &*frame };
     if frame.vector == 14 && frame.cs & 3 == 3 {
-        let expected = if cfg!(feature = "user-write-probe") {
+        let expected = if cfg!(any(feature = "user-write-probe", feature = "user-vmo-map-write-probe")) {
             0x7
-        } else if cfg!(feature = "user-execute-probe") {
+        } else if cfg!(any(feature = "user-execute-probe", feature = "user-vmo-map-execute-probe")) {
             0x15
         } else {
             0x5
@@ -159,7 +159,8 @@ extern "C" fn x86_trap_handler(frame: *const TrapFrame) -> ! {
         unsafe {
             asm!("mov {}, cr2", out(reg) address, options(nomem, nostack));
         }
-        crate::kernel::syscall::user_fault(frame.rip as usize, address, 14);
+        let cause = if cfg!(any(feature = "user-vmo-map-write-probe", feature = "user-vmo-map-execute-probe")) { frame.error as usize } else { 14 };
+        crate::kernel::syscall::user_fault(frame.rip as usize, address, cause);
     }
     panic!(
         "x86 exception vector={} error={:#x} rip={:#x} cs={:#x} rflags={:#x}",
