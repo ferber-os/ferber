@@ -152,12 +152,13 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.11** exposes bounded VMO creation,
-read and write through capability handles on both ports. Fresh backing is
-zeroed, byte copies are staged, and allocation charges follow the object
-through aliases and channel transfer until final destruction. The release ISO
-continues to boot minimal Ferrum init. User mapping/unmapping, executable
-publication and service launch remain pending.
+Current milestone: **Uranium-238-v0.2.12** exposes owned-RAM VMO byte I/O
+and non-executable mappings through capability handles on both ports. MAP
+authority is requested explicitly at creation; RO and RW/NX mappings retain
+their backing independently of handles. Mapping publication is transactional,
+and exact unmap reclaims empty private page tables. The release ISO continues
+to boot minimal Ferrum init. Executable publication and service launch remain
+pending.
 Phase 2 concluded with `v0.1.7`.
 
 ---
