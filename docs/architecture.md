@@ -122,4 +122,4 @@ Three isolation tiers — all userspace.
 ## The Invariant
 
 A process can only access resources it holds explicit capability handles for.
-Enforced at: capability system (runtime), type system (compile time), MMU (hardware).
+Enforced at: capability system (runtime), type system (compile time), MMU (hardware)
