@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-  <em>A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch</em>
+  <em>A capability-based microkernel. Zero ambient authority. Programs earn every resource they touch.</em>
 </p>
 
 <p align="center">
