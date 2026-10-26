@@ -13,6 +13,7 @@ const SYS_VMO_READ: usize = 12;
 const SYS_VMO_WRITE: usize = 13;
 const SYS_VMO_MAP: usize = 14;
 const SYS_VMO_UNMAP: usize = 15;
+const SYS_VMO_SEAL: usize = 16;
 fn cap_errno(error: capabilities::CapError) -> isize {
     use capabilities::CapError::*;
     match error {
@@ -88,6 +89,7 @@ mod kernel {
             pub struct MappingRecord {
                 pub base: usize, pub len: usize, pub offset: usize,
                 pub flags: MapFlags, pub object: Arc<Vmo>,
+                pub _writable: Option<crate::vmo::WritableMapping>,
             }
         }
         pub struct Process {
@@ -117,7 +119,13 @@ mod kernel {
                 UserMemory,
                 Overlap,
             }
-            pub fn preflight(_: &impl Sized, start: usize, len: usize, _: bool) -> Result<(), ()> {
+            pub fn preflight(space: &super::paging::Space, start: usize, len: usize, write: bool) -> Result<(), ()> {
+                use super::paging::AddressSpace;
+                for page in (0..len.div_ceil(4096)).map(|i| (start & !4095) + i * 4096) {
+                    if let Some((_, flags)) = space.query(page) {
+                        if !flags.user || (write && !flags.writable) || (!write && !flags.readable) { return Err(()); }
+                    }
+                }
                 if start == 0 && len != 0 {
                     Err(())
                 } else {
@@ -125,7 +133,7 @@ mod kernel {
                 }
             }
             pub fn validate_outputs(
-                space: &impl Sized,
+                space: &super::paging::Space,
                 spans: &[(usize, usize)],
             ) -> Result<(), OutputError> {
                 for &(start, len) in spans {
@@ -157,6 +165,7 @@ mod kernel {
         pub mod paging {
             use std::collections::BTreeMap;
             use crate::vmo::VmoFrames;
+            pub static FAIL_MAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             #[derive(Clone, Copy, Debug, PartialEq, Eq)]
             pub struct MapFlags {
                 pub readable: bool, pub writable: bool, pub executable: bool, pub user: bool,
@@ -164,6 +173,7 @@ mod kernel {
             impl MapFlags {
                 pub fn user_ro() -> Self { Self { readable: true, writable: false, executable: false, user: true } }
                 pub fn user_rw() -> Self { Self { writable: true, ..Self::user_ro() } }
+                pub fn user_rx() -> Self { Self { executable: true, ..Self::user_ro() } }
             }
             #[derive(Debug, PartialEq, Eq)]
             pub enum PageError { OutOfMemory, TableBudget, AlreadyMapped, NotMapped }
@@ -182,6 +192,11 @@ mod kernel {
                 fn query(&self, base: usize) -> Option<(usize, MapFlags)> { self.0.get(&base).copied() }
                 unsafe fn map_pages(&mut self, base: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
                     self.check_free_range(base, count)?;
+                    match FAIL_MAP.swap(0, std::sync::atomic::Ordering::Relaxed) {
+                        1 => return Err(PageError::OutOfMemory),
+                        2 => return Err(PageError::TableBudget),
+                        _ => (),
+                    }
                     for i in 0..count { self.0.insert(base + i * 4096, (frames.get(first+i).unwrap(), flags)); }
                     Ok(())
                 }
@@ -372,7 +387,7 @@ fn production_syscall_allocation_rollback() {
     process.lock().guards.push((BASE + 0x80000, 8192));
     assert_eq!(call_map(0, BASE + 0x80000, 4096, 1), -22);
     assert_eq!(call_map(8192, BASE, 4096, 1), -22);
-    assert_eq!(call_map(0, BASE, 4096, 5), -22);
+    assert_eq!(call_map(0, BASE, 4096, 5), -13);
     FAIL_AFTER.with(|left| left.set(Some(0)));
     assert_eq!(call_map(0, BASE, 4096, 3), -12);
     FAIL_AFTER.with(|left| left.set(None));
@@ -393,6 +408,7 @@ fn production_syscall_allocation_rollback() {
             let record = kernel::task::process::MappingRecord {
                 base: source.base, len: source.len, offset: source.offset,
                 flags: source.flags, object: Arc::clone(&source.object),
+                _writable: None,
             };
             p.mappings.push(record);
         }
@@ -452,5 +468,115 @@ fn production_syscall_allocation_rollback() {
     assert_eq!(bitmap::count(), 0);
     assert_eq!(vmo::user_budget_stats(), baseline);
     assert_eq!(CAP_NODE_ALLOCATOR.live_count(), 0);
+    seal_regressions(&process);
+}
 
+fn seal_regressions(process: &alloc::sync::Arc<sync::SpinLock<kernel::task::Process>>) {
+    use alloc::sync::Arc;
+    use capabilities::{HandleTable, Rights, CAP_NODE_ALLOCATOR};
+    use kernel::{memory::{bitmap, paging}, task::Process};
+    use std::sync::atomic::Ordering;
+    let baseline = vmo::user_budget_stats();
+    let frames = bitmap::count();
+    let peer = Arc::new(sync::SpinLock::new(Process {
+        table: sync::SpinLock::new(HandleTable::new()),
+        space: Default::default(), mappings: Vec::new(), guards: Vec::new(),
+    }));
+    const BASE: usize = 0x6000_0000;
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_CREATE, [4096, 2, 0, 0, 0, 0]), -22);
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_CREATE, [4096, 4, 0, 0, 0, 0]), -22);
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_SEAL, [u32::MAX as usize, 1, 0, 0, 0, 0]), -9);
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_SEAL, [1usize << 32, 0, 0, 0, 0, 0]), -9);
+    let handle = syscall_vmo::dispatch(process, SYS_VMO_CREATE, [8192, 3, 0, 0, 0, 0]) as u32;
+    let node = Arc::clone(process.lock().table.lock().lookup(handle).unwrap());
+    let object = node.object_arc::<vmo::Vmo>().unwrap();
+    assert_eq!(node.rights().bits(), 831);
+    let seal = || syscall_vmo::dispatch(process, SYS_VMO_SEAL, [handle as usize, 0, 0, 0, 0, 0]);
+    let map = |target: &Arc<sync::SpinLock<Process>>, h, base, perms| syscall_vmo::dispatch(target, SYS_VMO_MAP, [h, 0, base, 4096, perms, 0]);
+    let unmap = |target: &Arc<sync::SpinLock<Process>>, base| syscall_vmo::dispatch(target, SYS_VMO_UNMAP, [base, 4096, 0, 0, 0, 0]);
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_SEAL, [handle as usize, 1, 0, 0, 0, 0]), -22);
+    assert_eq!(map(process, handle as usize, BASE, 5), -13);
+    for removed in [Rights::MANAGE, Rights::EXECUTE] {
+        let child = node.attenuate(node.rights().difference(removed)).unwrap();
+        let restricted = process.lock().table.lock().insert(child).unwrap();
+        assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_SEAL, [restricted as usize, 0, 0, 0, 0, 0]), -13);
+        drop(process.lock().table.lock().remove(restricted).unwrap());
+    }
+    paging::FAIL_MAP.store(1, Ordering::Relaxed);
+    assert_eq!(map(process, handle as usize, BASE, 3), -12);
+    assert!(!object.is_sealed());
+    assert_eq!(map(process, handle as usize, BASE, 3), 0);
+    assert_eq!(map(process, handle as usize, BASE + 4096, 1), 0);
+    let child = node.attenuate(node.rights().difference(Rights::EXECUTE)).unwrap();
+    let peer_handle = peer.lock().table.lock().insert(Arc::clone(&child)).unwrap();
+    assert_eq!(map(&peer, peer_handle as usize, BASE, 3), 0);
+    assert_eq!(seal(), -16);
+    child.revoke();
+    drop(peer.lock().table.lock().remove(peer_handle).unwrap());
+    drop(child);
+    assert_eq!(seal(), -16);
+    assert_eq!(unmap(process, BASE), 0);
+    assert_eq!(seal(), -16);
+    assert_eq!(syscall_vmo::dispatch(&peer, SYS_VMO_UNMAP, [BASE, 8192, 0, 0, 0, 0]), -22);
+    assert_eq!(seal(), -16);
+    assert_eq!(unmap(&peer, BASE), 0);
+    assert_eq!(seal(), 0);
+    assert!(object.is_sealed());
+    assert_eq!(seal(), 0);
+    assert_eq!(map(process, handle as usize, BASE, 3), -13);
+    assert_eq!(map(process, handle as usize, BASE, 7), -22);
+    assert_eq!(map(process, handle as usize, BASE, 5), 0);
+    let bytes = [11u8; 8];
+    for length in [0, 8] {
+        FAIL_AFTER.with(|left| left.set(Some(0)));
+        assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_WRITE,
+            [handle as usize, 0, bytes.as_ptr() as usize, length, 0, 0]), -13);
+        FAIL_AFTER.with(|left| left.set(None));
+    }
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_READ, [handle as usize, 0, BASE, 8, 0, 0]), -14);
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_READ, [handle as usize, 0, BASE + 4096, 8, 0, 0]), -14);
+    let mut output = [0xffu8; 8];
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_READ, [handle as usize, 0, output.as_mut_ptr() as usize, 8, 0, 0]), 0);
+    assert_eq!(output, [0; 8]);
+    node.revoke();
+    assert_eq!(seal(), -116);
+    drop(process.lock().table.lock().remove(handle).unwrap());
+    drop(node);
+    assert_eq!(unmap(process, BASE), 0);
+    assert_eq!(unmap(process, BASE + 4096), 0);
+    drop(object);
+    drop(peer);
+    assert_eq!(bitmap::count(), frames);
+    assert_eq!(vmo::user_budget_stats(), baseline);
+    assert_eq!(CAP_NODE_ALLOCATOR.live_count(), 0);
+
+    // A failed provisional RW publication must not prevent a subsequent seal.
+    let handle = syscall_vmo::dispatch(process, SYS_VMO_CREATE, [4096, 3, 0, 0, 0, 0]);
+    for (failure, expected) in [(1, -12), (2, -28)] {
+        paging::FAIL_MAP.store(failure, Ordering::Relaxed);
+        assert_eq!(map(process, handle as usize, BASE, 3), expected);
+    }
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_SEAL, [handle as usize, 0, 0, 0, 0, 0]), 0);
+    drop(process.lock().table.lock().remove(handle as u32).unwrap());
+    assert_eq!(bitmap::count(), frames);
+    assert_eq!(vmo::user_budget_stats(), baseline);
+
+    let handle = syscall_vmo::dispatch(process, SYS_VMO_CREATE, [4096, 3, 0, 0, 0, 0]);
+    for i in 0..64 { assert_eq!(map(process, handle as usize, BASE + i * 4096, 1), 0); }
+    assert_eq!(map(process, handle as usize, BASE + 64 * 4096, 3), -28);
+    assert_eq!(syscall_vmo::dispatch(process, SYS_VMO_SEAL, [handle as usize, 0, 0, 0, 0, 0]), 0);
+    for i in 0..64 { assert_eq!(unmap(process, BASE + i * 4096), 0); }
+    drop(process.lock().table.lock().remove(handle as u32).unwrap());
+    let empty = Arc::new(sync::SpinLock::new(Process {
+        table: sync::SpinLock::new(HandleTable::new()),
+        space: Default::default(), mappings: Vec::new(), guards: Vec::new(),
+    }));
+    let handle = syscall_vmo::dispatch(&empty, SYS_VMO_CREATE, [4096, 3, 0, 0, 0, 0]);
+    FAIL_AFTER.with(|left| left.set(Some(0)));
+    assert_eq!(map(&empty, handle as usize, BASE, 3), -12);
+    FAIL_AFTER.with(|left| left.set(None));
+    assert_eq!(syscall_vmo::dispatch(&empty, SYS_VMO_SEAL, [handle as usize, 0, 0, 0, 0, 0]), 0);
+    drop(empty);
+    assert_eq!(bitmap::count(), frames);
+    assert_eq!(vmo::user_budget_stats(), baseline);
 }

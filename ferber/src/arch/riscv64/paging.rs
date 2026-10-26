@@ -336,6 +336,13 @@ impl AddressSpace for Sv39AddressSpace {
             table(l0).add(vpn0(address)).write(make_leaf_pte(frames.get(first + i).unwrap(), flags));
         }
         self.flush_tlb_all();
+        if flags.executable {
+            // Translation fences do not publish prior RAM-alias writes to instruction fetch.
+            #[cfg(test)]
+            crate::paging_test_publish(self, va, count);
+            #[cfg(not(test))]
+            core::arch::asm!("fence.i", options(nostack));
+        }
         Ok(())
     }
 

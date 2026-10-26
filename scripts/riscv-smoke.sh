@@ -25,6 +25,15 @@ run_case() {
     local initrd_args=() payload=
     [[ "$profile" != release ]] || cargo_args+=(--release)
     case "$scenario" in
+        vmo-seal|vmo-seal-write)
+            if [[ "$scenario" == vmo-seal ]]; then
+                cargo_args+=(--features userspace-vmo-seal-probe); program=vmo-seal-probe
+            else
+                cargo_args+=(--features user-vmo-seal-write-probe); program=vmo-seal-write
+            fi
+            payload=$("$repo_dir/scripts/build-user.sh" "$program" riscv64gc-unknown-none-elf "$profile")
+            initrd_args=(-initrd "$payload")
+            ;;
         vmo-map|vmo-map-write|vmo-map-execute)
             case "$scenario" in
                 vmo-map) cargo_args+=(--features userspace-vmo-map-probe); program=vmo-map-probe ;;
@@ -102,6 +111,8 @@ for profile in debug release; do
     run_case "$profile" init 128 1
     run_case "$profile" vmo 128 1
     run_case "$profile" vmo-map 128 1
+    run_case "$profile" vmo-seal 128 1
+    run_case "$profile" vmo-seal-write 128 1
     run_case "$profile" vmo-map-write 128 1
     run_case "$profile" vmo-map-execute 128 1
 done
@@ -110,6 +121,7 @@ run_case debug elf 256 4
 run_case debug init 256 4
 run_case debug vmo 256 4
 run_case debug vmo-map 256 4
+run_case debug vmo-seal 256 4
 run_case debug payload-missing 128 1
 run_case debug payload-invalid 128 1
 run_case debug payload-exit 128 1

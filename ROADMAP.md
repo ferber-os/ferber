@@ -158,7 +158,7 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
     - [x] Bounded owned-RAM `sys_vmo_create`, `sys_vmo_read`, `sys_vmo_write`; synchronized staged byte copies and object-lifetime user budget
     - [x] RO/RW-NX `sys_vmo_map`, exact-record `sys_vmo_unmap`; explicit MAP creation, shared backing ownership and safe teardown
     - [x] Transactional range installation, empty-table pruning and bounded user mapping/table resources
-    - [ ] Executable VMO publication/sealing across writable aliases
+    - [x] Executable VMO publication/sealing across writable aliases: explicit EXECUTE creation, global writable-mapping permits, irreversible seal, RX mapping and local instruction synchronization on both ports
   - [ ] Task creation: `sys_process_create`, `sys_thread_create`
   - [x] Cooperative resident yield and thread/last-thread process exit reclamation on a permanent-root dispatcher stack; repeated-run frame/node baselines and empty registry checks
   - [ ] Extend scheduling and exit reclamation to user-created tasks

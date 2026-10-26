@@ -37,11 +37,12 @@ harness's fatal exception path.
 | `8` | Channel send | Endpoint handle, bytes address, byte count, handles address, handle count | `0` |
 | `9` | Channel receive | Endpoint handle, bytes address, byte capacity, handles address, handle capacity, counts output address | `0` |
 | `10` | Blocking channel receive | Same six arguments as `9` | `0` |
-| `11` | VMO create | Size, options (bit 0 grants MAP) | New handle number |
+| `11` | VMO create | Size, options (0, 1 or 3; MAP/EXECUTE opt-in) | New handle number |
 | `12` | VMO read | Handle, offset, destination, length | `0` |
 | `13` | VMO write | Handle, offset, source, length | `0` |
 | `14` | VMO map | Handle, offset, address, length, permissions, options (`0`) | `0` |
 | `15` | VMO unmap | Address, length; exact user record | `0` |
+| `16` | VMO seal | Handle, options (`0`); requires MANAGE and EXECUTE | `0` |
 
 Every handle is resolved through the trusted calling process's table. Processes
 are born with zero handles; delegation is explicit. Handle zero is valid.
@@ -84,8 +85,9 @@ object lifetime. Read/write require READ/WRITE respectively, copy exactly at
 most 64 KiB and preflight complete ranges before staged copying. Physical VMOs
 are excluded. See [the VMO byte ABI](vmo-abi.md) for exact rights, errors,
 zero-length behavior, the global budget and aliasing guarantees. [Mapping and unmapping](vmo-mapping.md) require explicit MAP authority and
-retain backing independently of handles. Only RO/RW-NX mappings are supported;
-executable publication remains unavailable.
+retain backing independently of handles. RO/RW-NX mappings remain supported; RX additionally requires explicit EXECUTE
+authority and [irreversible object sealing](vmo-sealing.md). Seal fails busy
+while any writable mapping survives; sealed backing denies writes and RW maps.
 
 ## Capability Mutation and Ownership
 
@@ -204,8 +206,9 @@ same syscall table; ELF loading adds no syscall numbers.
 | `-9` | Invalid handle, including nonzero bits above bit 31, or suspended receive cancelled by source-slot close |
 | `-11` | Channel queue is full, or empty with its peer still open |
 | `-12` | Capability-node, endpoint, message, queue, VMO frame/metadata/object, page-table, or staging allocation failed |
-| `-13` | Required right is absent |
+| `-13` | Required right is absent, write/RW map targets sealed backing, or RX map targets mutable backing |
 | `-14` | User buffer range is invalid or lacks the required user permissions |
+| `-16` | VMO seal is blocked by a live writable-mapping permit |
 | `-22` | Invalid rights mask, options, permissions, alignment, logical VMO range or backing/type; repeated transfer slot; unsupported payload; or overlapping output bytes |
 | `-17` | Mapping destination is already occupied |
 | `-24` | Handle table is full |

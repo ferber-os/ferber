@@ -3,6 +3,17 @@ USERSPACE_ELF_PROBE ?= 0
 MINIMAL_INIT ?= 0
 VMO_PROBE ?= 0
 VMO_MAP_PROBE ?= 0
+VMO_SEAL_PROBE ?= 0
+
+ifeq ($(VMO_SEAL_PROBE),1)
+ifneq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE)$(VMO_MAP_PROBE),0000)
+$(error VMO_SEAL_PROBE must run separately from other payloads)
+endif
+KERNEL_FEATURES = --features userspace-vmo-seal-probe
+RISCV_PAYLOAD = -initrd target/userspace-vmo-seal-probe/riscv64gc-unknown-none-elf/debug/probe.elf
+X86_PAYLOAD = target/userspace-vmo-seal-probe/x86_64-unknown-none/release/probe.elf
+X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-vmo-seal-probe
+endif
 
 ifeq ($(VMO_MAP_PROBE),1)
 ifneq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE),000)
@@ -40,7 +51,7 @@ KERNEL_FEATURES = --features userspace-elf-probe
 RISCV_PAYLOAD = -initrd target/userspace-elf/riscv64gc-unknown-none-elf/debug/probe.elf
 X86_PAYLOAD = target/userspace-elf/x86_64-unknown-none/release/probe.elf
 X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-elf-probe
-else ifeq ($(MINIMAL_INIT)$(VMO_PROBE)$(VMO_MAP_PROBE),000)
+else ifeq ($(MINIMAL_INIT)$(VMO_PROBE)$(VMO_MAP_PROBE)$(VMO_SEAL_PROBE),0000)
 X86_ISO_BUILD = scripts/x86-preview.sh --release
 endif
 
@@ -52,6 +63,9 @@ build:
 	cd ferber && cargo build $(KERNEL_FEATURES)
 
 riscv-payload:
+ifeq ($(VMO_SEAL_PROBE),1)
+	scripts/build-user.sh vmo-seal-probe riscv64gc-unknown-none-elf debug >/dev/null
+endif
 ifeq ($(VMO_MAP_PROBE),1)
 	scripts/build-user.sh vmo-map-probe riscv64gc-unknown-none-elf debug >/dev/null
 endif
@@ -89,6 +103,9 @@ x86-smoke:
 	scripts/x86-smoke.sh
 
 x86-iso:
+ifeq ($(VMO_SEAL_PROBE),1)
+	scripts/build-user.sh vmo-seal-probe x86_64-unknown-none release >/dev/null
+endif
 ifeq ($(VMO_MAP_PROBE),1)
 	scripts/build-user.sh vmo-map-probe x86_64-unknown-none release >/dev/null
 endif

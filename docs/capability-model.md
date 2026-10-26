@@ -274,7 +274,8 @@ The simplicity isn't a compromise. It's a consequence of getting the model right
 
 [VMO creation](vmo-abi.md) returns fresh zeroed RAM with READ, WRITE, DUPLICATE,
 TRANSFER, INSPECT and MANAGE with creation options zero. The explicit
-mappable option adds MAP; no option grants EXECUTE. Duplicate and
+mappable option adds MAP; the executable creation option requires MAP opt-in
+and adds EXECUTE. RX requires [sealed backing](vmo-sealing.md). Duplicate and
 derived capabilities share the same backing and its byte-operation lock;
 attenuation limits a particular capability, not every other alias. Channel
 transfer retains the backing and its user-allocation charge through delivery or
@@ -286,3 +287,7 @@ Closing or revoking every handle can therefore reclaim nodes while mapped
 frames remain owned and charged. Revocation prevents new capability operations
 but does not remove previously installed mapped access. Unmap is authorized by
 the caller's exact process mapping record and requires no surviving handle.
+Sealing requires MANAGE and EXECUTE, affects the entire shared object and is
+irreversible. Writable mappings anywhere block sealing; old WRITE rights do
+not bypass a sealed object's state. Capability inspection still reports rights,
+not object mutability.

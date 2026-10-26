@@ -11,7 +11,7 @@ use super::thread::{Thread, ThreadState};
 use super::TaskError;
 use crate::arch::ArchAddressSpace;
 use crate::kernel::capabilities::{HandleTable, KernelObject};
-use crate::kernel::memory::vmo::Vmo;
+use crate::kernel::memory::vmo::{Vmo, WritableMapping};
 use crate::kernel::memory::paging::{AddressSpace, MapFlags};
 use crate::kernel::sync::SpinLock;
 use alloc::sync::{Arc, Weak};
@@ -39,6 +39,7 @@ pub(crate) struct MappingRecord {
     pub offset: usize,
     pub flags: MapFlags,
     pub object: Arc<Vmo>,
+    pub _writable: Option<WritableMapping>,
 }
 
 pub struct Process {

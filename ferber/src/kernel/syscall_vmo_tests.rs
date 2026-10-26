@@ -298,6 +298,7 @@ pub(super) fn run() {
     drop(retained);
     assert_eq!(crate::kernel::memory::vmo::user_budget_stats(), budget);
     mapping_tests(&process);
+    seal_tests(&process);
     drop(process);
     drop(backing);
     assert_eq!(CAP_NODE_ALLOCATOR.live_count(), nodes);
@@ -345,7 +346,7 @@ fn mapping_tests(process: &Arc<SpinLock<Process>>) {
     drop(detached);
     drop(thread);
     let map = |offset, address, len, permissions| call(process, SYS_VMO_MAP, [handle as usize, offset, address, len, permissions, 0]);
-    assert_eq!(map(0, TARGET, 4096, 5), -22);
+    assert_eq!(map(0, TARGET, 4096, 5), -13);
     assert_eq!(map(8192, TARGET, 4096, 1), -22);
     assert_eq!(map(0, 0, 4096, 1), -14);
     assert_eq!(map(0, TARGET, 4096, 3), 0);
@@ -378,4 +379,112 @@ fn mapping_tests(process: &Arc<SpinLock<Process>>) {
     assert_eq!(crate::kernel::memory::vmo::user_budget_stats().1, budget.1 + 1);
     drop(detached);
     assert_eq!(crate::kernel::memory::vmo::user_budget_stats(), budget);
+}
+
+fn seal_tests(process: &Arc<SpinLock<Process>>) {
+    use crate::kernel::syscall::{SYS_CAP_INSPECT, SYS_CHAN_CREATE, SYS_CHAN_SEND, SYS_CHAN_RECV};
+    const TARGET: usize = BASE + 0x200000;
+    let budget = crate::kernel::memory::vmo::user_budget_stats();
+    let nodes = CAP_NODE_ALLOCATOR.live_count();
+    let handle = call(process, SYS_VMO_CREATE, [8192, 3, 0, 0, 0, 0]);
+    assert!(handle >= 0);
+    let node = {
+        let p = process.lock();
+        let table = p.handle_table().lock();
+        Arc::clone(table.lookup(handle as u32).unwrap())
+    };
+    let object = node.object_arc::<Vmo>().unwrap();
+    assert_eq!(node.rights().bits(), 831);
+    let seal = || call(process, SYS_VMO_SEAL, [handle as usize, 0, 0, 0, 0, 0]);
+    assert_eq!(call(process, SYS_VMO_SEAL, [1usize << 32, 0, 0, 0, 0, 0]), -9);
+    assert_eq!(call(process, SYS_VMO_SEAL, [handle as usize, 1, 0, 0, 0, 0]), -22);
+    for removed in [Rights::MANAGE, Rights::EXECUTE] {
+        let child = insert(process, node.attenuate(node.rights().difference(removed)).unwrap());
+        assert_eq!(call(process, SYS_VMO_SEAL, [child as usize, 0, 0, 0, 0, 0]), -13);
+        close(process, child as isize);
+    }
+    for object in [
+        Arc::new(Vmo::create_physical(0, 4096).unwrap()) as Arc<dyn crate::kernel::capabilities::KernelObject>,
+        Arc::new(Resource),
+    ] {
+        let bad = insert(process, CAP_NODE_ALLOCATOR.alloc_root(object, ObjectType::Vmo, node.rights()).unwrap());
+        assert_eq!(call(process, SYS_VMO_SEAL, [bad as usize, 0, 0, 0, 0, 0]), -22);
+        close(process, bad as isize);
+    }
+    assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, TARGET, 4096, 5, 0]), -13);
+    assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, TARGET, 4096, 3, 0]), 0);
+    assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, TARGET + 4096, 4096, 1, 0]), 0);
+    put(process, TARGET, &[0x74; 8]);
+    let peer = Arc::new(SpinLock::new(Process::new(0x534c, "seal_peer", ArchAddressSpace::new_user().unwrap(), None)));
+    let child = node.attenuate(node.rights().difference(Rights::EXECUTE)).unwrap();
+    let peer_handle = insert(&peer, Arc::clone(&child));
+    assert_eq!(call(&peer, SYS_VMO_MAP, [peer_handle as usize, 0, TARGET, 4096, 3, 0]), 0);
+    assert_eq!(seal(), -16);
+    child.revoke();
+    close(&peer, peer_handle as isize);
+    drop(child);
+    assert_eq!(call(process, SYS_VMO_UNMAP, [TARGET, 4096, 0, 0, 0, 0]), 0);
+    assert_eq!(seal(), -16);
+    peer.lock().kill();
+    assert_eq!(seal(), -16);
+    let detached = peer.lock().take_mappings();
+    assert!(peer.lock().address_space().query(TARGET).is_none());
+    assert_eq!(seal(), -16, "retired records conservatively retain writable permits");
+    drop(detached);
+    assert_eq!(seal(), 0);
+    assert_eq!(seal(), 0);
+    assert!(object.is_sealed());
+    assert_eq!(bytes(process, TARGET + 4096), [0x74; 8]);
+    assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, TARGET, 4096, 3, 0]), -13);
+    assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, TARGET, 4096, 7, 0]), -22);
+    assert_eq!(call(process, SYS_VMO_MAP, [handle as usize, 0, TARGET, 4096, 5, 0]), 0);
+    assert_eq!(process.lock().address_space().query(TARGET).unwrap().1, MapFlags::user_rx());
+    for length in [0, 8] {
+        assert_eq!(call(process, SYS_VMO_WRITE, [handle as usize, 0, BASE, length, 0, 0]), -13);
+    }
+    assert_eq!(call(process, SYS_VMO_READ, [handle as usize, 0, BASE + 64, 8, 0, 0]), 0);
+    assert_eq!(bytes(process, BASE + 64), [0x74; 8]);
+    for destination in [TARGET, TARGET + 4096] {
+        let handles = process.lock().handle_table().lock().count();
+        assert_eq!(call(process, SYS_CAP_INSPECT, [handle as usize, destination, 0, 0, 0, 0]), -14);
+        assert_eq!(call(process, SYS_CHAN_CREATE, [destination, 0, 0, 0, 0, 0]), -14);
+        assert_eq!(process.lock().handle_table().lock().count(), handles);
+        assert_eq!(call(process, SYS_VMO_READ, [handle as usize, 0, destination, 8, 0, 0]), -14);
+        assert_eq!(bytes(process, destination), [0x74; 8]);
+    }
+    assert_eq!(call(process, SYS_CHAN_CREATE, [BASE + 128, 0, 0, 0, 0, 0]), 0);
+    let pair = bytes(process, BASE + 128);
+    let sender = u32::from_le_bytes(pair[..4].try_into().unwrap());
+    let receiver = u32::from_le_bytes(pair[4..].try_into().unwrap());
+    let moved = call(process, SYS_HANDLE_DUPLICATE, [handle as usize, 0, 0, 0, 0, 0]);
+    put(process, BASE + 144, &(moved as u32).to_le_bytes());
+    assert_eq!(call(process, SYS_CHAN_SEND, [sender as usize, BASE + 64, 8, BASE + 144, 1, 0]), 0);
+    for args in [
+        [receiver as usize, TARGET, 8, BASE + 160, 1, BASE + 168],
+        [receiver as usize, BASE + 152, 8, TARGET, 1, BASE + 168],
+        [receiver as usize, BASE + 152, 8, BASE + 160, 1, TARGET],
+    ] {
+        let handles = process.lock().handle_table().lock().count();
+        assert_eq!(call(process, SYS_CHAN_RECV, args), -14);
+        assert_eq!(process.lock().handle_table().lock().count(), handles);
+        assert_eq!(bytes(process, TARGET), [0x74; 8]);
+    }
+    assert_eq!(call(process, SYS_CHAN_RECV, [receiver as usize, BASE + 152, 8, BASE + 160, 1, BASE + 168]), 0);
+    assert_eq!(bytes(process, BASE + 152), [0x74; 8]);
+    let received = u32::from_le_bytes(bytes(process, BASE + 160)[..4].try_into().unwrap());
+    assert_eq!(call(process, SYS_VMO_WRITE, [received as usize, 0, BASE, 8, 0, 0]), -13);
+    close(process, received as isize);
+    close(process, sender as isize);
+    close(process, receiver as isize);
+    node.revoke();
+    assert_eq!(seal(), -116);
+    close(process, handle);
+    drop(node);
+    assert_eq!(bytes(process, TARGET), [0x74; 8]);
+    assert_eq!(call(process, SYS_VMO_UNMAP, [TARGET, 4096, 0, 0, 0, 0]), 0);
+    assert_eq!(call(process, SYS_VMO_UNMAP, [TARGET + 4096, 4096, 0, 0, 0, 0]), 0);
+    drop(object);
+    drop(peer);
+    assert_eq!(crate::kernel::memory::vmo::user_budget_stats(), budget);
+    assert_eq!(CAP_NODE_ALLOCATOR.live_count(), nodes);
 }

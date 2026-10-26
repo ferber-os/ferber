@@ -49,7 +49,7 @@ jobs:
       - name: Clippy (user probes)
         working-directory: ferber
         run: |
-          for feature in userspace-vmo-map-probe user-vmo-map-write-probe user-vmo-map-execute-probe userspace-vmo-probe minimal-init user-isolation-probe user-write-probe user-execute-probe cooperative-deadlock-probe; do
+          for feature in userspace-vmo-seal-probe user-vmo-seal-write-probe userspace-vmo-map-probe user-vmo-map-write-probe user-vmo-map-execute-probe userspace-vmo-probe minimal-init user-isolation-probe user-write-probe user-execute-probe cooperative-deadlock-probe; do
             cargo clippy --target riscv64gc-unknown-none-elf --features "$feature" -- -D warnings
             cargo clippy --target x86_64-unknown-none --features "qemu-debug-port,$feature" -- -D warnings
           done
@@ -61,6 +61,8 @@ jobs:
             scripts/build-user-elf.sh "$target" debug
             scripts/build-user.sh init "$target" debug
             scripts/build-user.sh vmo-probe "$target" debug
+            scripts/build-user.sh vmo-seal-probe "$target" debug
+            scripts/build-user.sh vmo-seal-write "$target" debug
             scripts/build-user.sh vmo-map-probe "$target" debug
             scripts/build-user.sh vmo-map-write "$target" debug
             scripts/build-user.sh vmo-map-execute "$target" debug
@@ -118,6 +120,7 @@ jobs:
           bash scripts/x86-iso-smoke.sh init
           bash scripts/x86-iso-smoke.sh vmo
           bash scripts/x86-iso-smoke.sh vmo-map
+          bash scripts/x86-iso-smoke.sh vmo-seal
 
   release:
     name: Release

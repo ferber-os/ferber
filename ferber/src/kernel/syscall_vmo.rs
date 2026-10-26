@@ -1,6 +1,6 @@
 //! Capability-authorized byte operations; staging makes aliased copies transactional.
 
-use super::{cap_errno, SYS_VMO_CREATE, SYS_VMO_READ, SYS_VMO_WRITE, SYS_VMO_MAP, SYS_VMO_UNMAP};
+use super::{cap_errno, SYS_VMO_CREATE, SYS_VMO_READ, SYS_VMO_WRITE, SYS_VMO_MAP, SYS_VMO_UNMAP, SYS_VMO_SEAL};
 use crate::kernel::capabilities::{CapNode, ObjectType, Rights, CAP_NODE_ALLOCATOR};
 use crate::kernel::memory::{
     user_mem,
@@ -16,6 +16,7 @@ use alloc::{sync::Arc, vec::Vec};
 mod tests;
 
 pub(super) const VMO_CREATE_MAPPABLE: usize = 1;
+pub(super) const VMO_CREATE_EXECUTABLE: usize = 2;
 pub(super) const MAX_COPY: usize = 64 * 1024;
 pub(super) const INITIAL_RIGHTS: Rights = Rights::READ
     .union(Rights::WRITE)
@@ -29,6 +30,8 @@ fn errno(error: VmoError) -> isize {
         VmoError::OutOfMemory => -12isize,
         VmoError::UserBudget => -28isize,
         VmoError::TooLarge => -90isize,
+        VmoError::PermissionDenied => -13isize,
+        VmoError::Busy => -16isize,
         _ => -22isize,
     }
 }
@@ -40,6 +43,8 @@ pub(super) fn dispatch(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize
         map(process, args).map(|()| 0)
     } else if nr == SYS_VMO_UNMAP {
         unmap(process, args[0], args[1]).map(|()| 0)
+    } else if nr == SYS_VMO_SEAL {
+        seal(process, args[0], args[1]).map(|()| 0)
     } else {
         copy(process, nr, args).map(|()| 0)
     };
@@ -47,7 +52,7 @@ pub(super) fn dispatch(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize
 }
 
 fn create(process: &Arc<SpinLock<Process>>, size: usize, options: usize) -> Result<isize, isize> {
-    if options & !VMO_CREATE_MAPPABLE != 0 || size == 0 {
+    if !matches!(options, 0 | VMO_CREATE_MAPPABLE | 3) || size == 0 {
         return Err(-22isize);
     }
     if size > MAX_USER_VMO_SIZE {
@@ -60,8 +65,11 @@ fn create(process: &Arc<SpinLock<Process>>, size: usize, options: usize) -> Resu
         }
     }
     let object = Arc::try_new(Vmo::create_user(size).map_err(errno)?).map_err(|_| -12isize)?;
+    let mut rights = INITIAL_RIGHTS;
+    if options & VMO_CREATE_MAPPABLE != 0 { rights |= Rights::MAP; }
+    if options & VMO_CREATE_EXECUTABLE != 0 { rights |= Rights::EXECUTE; }
     let node = CAP_NODE_ALLOCATOR
-        .alloc_root(object, ObjectType::Vmo, if options == VMO_CREATE_MAPPABLE { INITIAL_RIGHTS.union(Rights::MAP) } else { INITIAL_RIGHTS })
+        .alloc_root(object, ObjectType::Vmo, rights)
         .map_err(cap_errno)?;
     let result = {
         let process = process.lock();
@@ -103,14 +111,22 @@ fn page_errno(error: PageError) -> isize {
     }
 }
 
+fn seal(process: &Arc<SpinLock<Process>>, handle: usize, options: usize) -> Result<(), isize> {
+    let node;
+    let process = process.lock();
+    node = lookup(&process, handle, Rights::MANAGE | Rights::EXECUTE)?;
+    if options != 0 { return Err(-22); }
+    node.object_ref::<Vmo>().expect("checked VMO backing").seal().map_err(errno)
+}
+
 fn map(process: &Arc<SpinLock<Process>>, args: [usize; 6]) -> Result<(), isize> {
     // The object outlives both the process guard and every published PTE.
     let object;
     let mut process = process.lock();
     let node = lookup(&process, args[0], Rights::MAP)?;
     object = node.object_arc::<Vmo>().ok_or(-22isize)?;
-    if args[5] != 0 || !matches!(args[4], 1 | 3) { return Err(-22); }
-    let flags = if args[4] == 3 { MapFlags::user_rw() } else { MapFlags::user_ro() };
+    if args[5] != 0 || !matches!(args[4], 1 | 3 | 5) { return Err(-22); }
+    let flags = match args[4] { 3 => MapFlags::user_rw(), 5 => MapFlags::user_rx(), _ => MapFlags::user_ro() };
     Vmo::check_mapping_rights(node.rights(), flags).map_err(|_| -13isize)?;
     drop(node);
     let (offset, base, len) = (args[1], args[2], args[3]);
@@ -124,12 +140,13 @@ fn map(process: &Arc<SpinLock<Process>>, args: [usize; 6]) -> Result<(), isize> 
         return Err(-17);
     }
     process.address_space().check_free_range(base, len / 4096).map_err(page_errno)?;
+    let writable = object.mapping_permit(flags).map_err(errno)?;
     if process.mappings().len() >= 64 || process.mappings().iter().map(|r| r.len / 4096).sum::<usize>() + len / 4096 > 16384 {
         return Err(-28);
     }
     process.mappings_mut().try_reserve(1).map_err(|_| -12isize)?;
     unsafe { process.address_space_mut().map_pages(base, object.frames(), offset / 4096, len / 4096, flags).map_err(page_errno)?; }
-    process.mappings_mut().push(MappingRecord { base, len, offset, flags, object: Arc::clone(&object) });
+    process.mappings_mut().push(MappingRecord { base, len, offset, flags, object: Arc::clone(&object), _writable: writable });
     Ok(())
 }
 
@@ -167,6 +184,7 @@ fn copy(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize; 6]) -> Result
     object
         .validate_owned_range(args[1], args[3])
         .map_err(errno)?;
+    if !reading { object.check_writable().map_err(errno)?; }
     if args[3] == 0 {
         return Ok(());
     }

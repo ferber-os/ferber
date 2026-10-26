@@ -15,6 +15,11 @@ case "$program" in
         [[ "$program" != vmo-map-write ]] || user_cfg+=(--cfg vmo_map_write)
         [[ "$program" != vmo-map-execute ]] || user_cfg+=(--cfg vmo_map_execute)
         ;;
+    vmo-seal-probe|vmo-seal-write)
+        source_dir=vmo-seal-probe; output_dir=userspace-$program; basename=probe
+        linker="$repo_root/userspace/vmo-seal-probe/linker.ld"
+        [[ "$program" != vmo-seal-write ]] || user_cfg+=(--cfg vmo_seal_write)
+        ;;
     elf-probe) source_dir=elf-probe; output_dir=userspace-elf; basename=probe ;;
     *) echo "unsupported userspace program: $program" >&2; exit 2 ;;
 esac

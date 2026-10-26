@@ -171,6 +171,52 @@ fn production_backing_and_budget_lifecycle() {
     assert_eq!(vmo::user_budget_stats().1, 16);
     drop(kernel_owned);
     drop(full);
+    let sealed = Arc::new(Vmo::create_user(4096).unwrap());
+    let rw = || kernel::memory::paging::MapFlags { readable: true, writable: true, executable: false };
+    let rx = || kernel::memory::paging::MapFlags { readable: true, writable: false, executable: true };
+    assert!(matches!(sealed.mapping_permit(rx()), Err(VmoError::PermissionDenied)));
+    let first = sealed.mapping_permit(rw()).unwrap();
+    let second = sealed.mapping_permit(rw()).unwrap();
+    assert_eq!(sealed.seal(), Err(VmoError::Busy));
+    drop(first);
+    assert_eq!(sealed.seal(), Err(VmoError::Busy));
+    drop(second);
+    sealed.write_owned(0, &[0x74]).unwrap();
+    assert_eq!(sealed.seal(), Ok(()));
+    assert_eq!(sealed.seal(), Ok(()));
+    assert!(sealed.is_sealed());
+    assert!(matches!(sealed.mapping_permit(rw()), Err(VmoError::PermissionDenied)));
+    assert!(sealed.mapping_permit(rx()).unwrap().is_none());
+    assert_eq!(sealed.write_owned(0, &[0x99]), Err(VmoError::PermissionDenied));
+    assert_eq!(sealed.write_owned(0, &[]), Err(VmoError::PermissionDenied));
+    let mut byte = [0];
+    sealed.read_owned(0, &mut byte).unwrap();
+    assert_eq!(byte, [0x74]);
+    let mut sealed = Arc::try_unwrap(sealed).unwrap_or_else(|_| panic!("unexpected sealing owner"));
+    assert_eq!(sealed.write(0, &[0x99]), Err(VmoError::PermissionDenied));
+    assert_eq!(sealed.write(0, &[]), Err(VmoError::PermissionDenied));
+    drop(sealed);
+    assert_eq!(vmo::user_budget_stats().1, 0);
+    // Competing admission and publication cannot both succeed while the permit stays live.
+    for _ in 0..16 {
+        let memory = Arc::new(Vmo::create_user(4096).unwrap());
+        let gate = Arc::new(Barrier::new(2));
+        let publisher_memory = memory.clone();
+        let publisher_gate = gate.clone();
+        let publisher = std::thread::spawn(move || {
+            publisher_gate.wait();
+            let result = publisher_memory.seal();
+            publisher_gate.wait();
+            result
+        });
+        gate.wait();
+        let permit = memory.mapping_permit(rw());
+        gate.wait();
+        let published = publisher.join().unwrap();
+        assert_ne!(published.is_ok(), permit.is_ok());
+        drop(permit);
+        assert_eq!(memory.seal(), Ok(()));
+    }
     let barrier = Arc::new(Barrier::new(32));
     let workers: Vec<_> = (0..32).map(|_| {
         let barrier = barrier.clone();

@@ -588,6 +588,17 @@ impl AddressSpace for Pml4AddressSpace {
         }
         debug_assert!(pending.0.is_empty());
         self.flush_tlb_all();
+        if flags.executable {
+            // Code written through a different linear alias requires instruction serialization.
+            #[cfg(test)]
+            crate::paging_test_publish(self, va, count);
+            #[cfg(not(test))]
+            {
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+                core::arch::x86_64::__cpuid(0);
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            }
+        }
         Ok(())
     }
 
@@ -897,6 +908,36 @@ mod tests {
 #[cfg(test)]
 mod transaction_tests {
     use super::*;
+
+    #[test]
+    fn executable_publication_follows_commit_and_flush_only_on_success() {
+        let boot = allocate_table().unwrap();
+        BOOT_ROOT.store(boot, core::sync::atomic::Ordering::SeqCst);
+        let frames = VmoFrames::contiguous(0x1000, 2);
+        let va = (1 << 39) - PAGE_SIZE;
+        for flags in [MapFlags::user_ro(), MapFlags::user_rw(), MapFlags::user_rx()] {
+            for fail in 0..=6 {
+                let mut space = Pml4AddressSpace::new_user().unwrap();
+                crate::mock_bitmap::STATE.lock().unwrap().1 = fail;
+                crate::mock_bitmap::EVENTS.lock().unwrap().clear();
+                crate::PUBLICATIONS.lock().unwrap().clear();
+                let result = unsafe { space.map_pages(va, &frames, 0, 2, flags) };
+                crate::mock_bitmap::STATE.lock().unwrap().1 = usize::MAX;
+                assert_eq!(crate::PUBLICATIONS.lock().unwrap().as_slice(),
+                    if result.is_ok() && flags.executable { vec![(va, 2)] } else { vec![] }.as_slice());
+                if result.is_ok() {
+                    assert_eq!(*crate::mock_bitmap::EVENTS.lock().unwrap(), [true]);
+                    assert_eq!(space.query(va), Some((0x1000, flags)));
+                    assert_eq!(space.query(va + PAGE_SIZE), Some((0x2000, flags)));
+                } else {
+                    assert_eq!(result, Err(PageError::OutOfMemory));
+                    assert!(space.query(va).is_none());
+                }
+            }
+        }
+        bitmap::free_frame(boot).unwrap();
+        BOOT_ROOT.store(0, core::sync::atomic::Ordering::SeqCst);
+    }
 
     #[test]
     fn production_range_transactions() {

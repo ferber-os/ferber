@@ -70,6 +70,13 @@ mod kernel {
     }
 }
 fn paging_test_flush() { kernel::memory::bitmap::STATE.lock().unwrap().events.push(0); }
+fn paging_test_publish(space: &Sv39AddressSpace, va: usize, count: usize) {
+    assert_eq!(bitmap::STATE.lock().unwrap().events.last(), Some(&0), "publish before translation flush");
+    for page in 0..count {
+        assert!(space.query(va + page * PAGE).unwrap().1.executable, "publish before executable leaf");
+    }
+    bitmap::STATE.lock().unwrap().events.push(1);
+}
 use kernel::memory::{bitmap, vmo::VmoFrames};
 use paging::{AddressSpace, MapFlags, PageError};
 use sv39::Sv39AddressSpace;
@@ -218,4 +225,31 @@ fn metadata_oom_and_late_physical_oom_keep_existing_prefixes_intact() {
     assert_eq!(bitmap::snapshot(),before);
     unsafe { space.map_pages(PAGE,&frames,0,513,MapFlags::user_rw()).unwrap(); }
     assert_eq!(space.table_pages(),4);
+}
+
+#[test]
+fn executable_publication_follows_commit_and_flush_only_on_success() {
+    let _lock = bitmap::LOCK.lock().unwrap();
+    let frames = VmoFrames::contiguous(0x1000, 2);
+    for flags in [MapFlags::user_ro(), MapFlags::user_rw(), MapFlags::user_rx()] {
+        for fail in 0..=4 {
+            let mut space = Sv39AddressSpace::new_user().unwrap();
+            bitmap::fail_after(Some(fail));
+            bitmap::STATE.lock().unwrap().events.clear();
+            let result = unsafe { space.map_pages(0x3ffff000, &frames, 0, 2, flags) };
+            bitmap::fail_after(None);
+            let events = bitmap::STATE.lock().unwrap().events.clone();
+            assert_eq!(events.iter().filter(|&&event| event == 1).count(),
+                usize::from(result.is_ok() && flags.executable));
+            if result.is_ok() {
+                assert_eq!(events, if flags.executable { vec![0, 1] } else { vec![0] });
+                assert_eq!(space.query(0x3ffff000), Some((0x1000, flags)));
+                assert_eq!(space.query(0x40000000), Some((0x2000, flags)));
+            } else {
+                assert_eq!(result, Err(PageError::OutOfMemory));
+                assert!(space.query(0x3ffff000).is_none());
+            }
+        }
+    }
+    assert_eq!(bitmap::count(), 0);
 }

@@ -6,8 +6,8 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repo_root/scripts/smoke-log.sh"
 scenario=${1:-normal}
 case "$scenario" in
-    normal|elf|init|vmo|vmo-map) ;;
-    *) echo "usage: $0 [normal|elf|init|vmo|vmo-map]" >&2; exit 2 ;;
+    normal|elf|init|vmo|vmo-map|vmo-seal) ;;
+    *) echo "usage: $0 [normal|elf|init|vmo|vmo-map|vmo-seal]" >&2; exit 2 ;;
 esac
 ovmf_code=${OVMF_CODE:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}
 ovmf_vars=${OVMF_VARS:-/usr/share/edk2/x64/OVMF_VARS.4m.fd}
@@ -52,6 +52,10 @@ fi
 if [[ "$scenario" == vmo-map ]]; then
     payload=$("$repo_root/scripts/build-user.sh" vmo-map-probe x86_64-unknown-none release)
     cargo_args+=(--features userspace-vmo-map-probe)
+fi
+if [[ "$scenario" == vmo-seal ]]; then
+    payload=$("$repo_root/scripts/build-user.sh" vmo-seal-probe x86_64-unknown-none release)
+    cargo_args+=(--features userspace-vmo-seal-probe)
 fi
 # Debug-port diagnostics are used only for automated log capture.
 CARGO_TARGET_DIR="$trial_dir/kernel-target" \

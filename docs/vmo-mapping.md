@@ -1,16 +1,16 @@
-# Non-executable VMO mappings
+# VMO mappings
 
 Syscalls 14 and 15 install and remove owned-RAM VMO mappings in the calling
-process. Permissions are RO or RW/NX. There is no executable publication,
-remote mapping, automatic placement, overwrite, protection change or partial
+process. Permissions are RO, RW/NX, or RX after [executable sealing](vmo-sealing.md).
+There is no remote mapping, automatic placement, overwrite, protection change or partial
 unmap operation. Startup ABI v1 and minimal init's protocol are unchanged.
 
 ## MAP authority is requested at creation
 
 `sys_vmo_create(size, 0)` preserves its original rights. Setting option
-`VMO_CREATE_MAPPABLE = 1 << 0` adds MAP to the new capability. Other bits are
-invalid. Existing handles cannot acquire MAP through MANAGE, duplication,
-attenuation or transfer. No option grants EXECUTE. The byte API, exact logical
+`VMO_CREATE_MAPPABLE = 1 << 0` adds MAP to the new capability. Bit 1 requests EXECUTE and requires bit 0; valid creation options are 0, 1
+and 3. Other combinations are invalid. Existing handles cannot acquire MAP through MANAGE, duplication,
+attenuation or transfer. Options 3 additionally grant EXECUTE; RX still requires sealed backing. The byte API, exact logical
 size, 16 MiB object maximum and backing charge remain unchanged.
 
 | Number | Call | Arguments | Success |
@@ -19,9 +19,10 @@ size, 16 MiB object maximum and backing charge remain unchanged.
 | 15 | `sys_vmo_unmap` | Virtual address, length | `0` |
 
 Map options must be zero. Permission 1 is RO and requires MAP plus READ;
-permission 3 is RW/NX and requires MAP, READ and WRITE. Every other permission
-encoding is rejected, including executable or write-only requests. All mapped
-leaves are user accessible and non-executable. Physical/nonowning VMOs are
+permission 3 is RW/NX and requires MAP, READ and WRITE plus mutable backing.
+Permission 5 is RX and requires MAP, READ and EXECUTE plus sealed backing.
+Other encodings, including RWX and write-only, are rejected. All mapped leaves
+are user accessible. Physical/nonowning VMOs are
 rejected even if their backing happens to have a RAM alias.
 
 ## Only complete logical pages are mapped
@@ -94,7 +95,7 @@ settle that accounting before becoming available.
 | --- | --- |
 | `-9` | Invalid handle or high bits |
 | `-116` | Revoked capability or ancestor |
-| `-13` | Missing MAP or requested access rights |
+| `-13` | Missing MAP/access rights, sealed RW map or mutable RX map |
 | `-22` | Unsupported options/permissions, wrong backing, alignment/logical bounds, protected range or invalid exact unmap |
 | `-14` | Invalid user virtual interval |
 | `-17` | Existing translation or mapping occupies the destination |
@@ -104,7 +105,7 @@ settle that accounting before becoming available.
 
 Map checks handle validity and MAP, actual owned-RAM backing, options and
 permission encoding, access rights, bounds, protected ranges and raw occupancy,
-then limits and allocation. Guard reservations return -22; present mappings
+then object-state eligibility, limits and allocation. Guard reservations return -22; present mappings
 return -17. Raw reservations are checked before quotas. Exact unmap validates
 alignment and the user interval before record lookup. Failed preflight does
 not partially remove mappings or release their backing.
@@ -120,8 +121,8 @@ they do not establish remote shootdown safety.
 Mapped user stores bypass the VMO content lock. Today's cooperative single-CPU
 execution prevents concurrent user execution during kernel copies. This is
 not a mapped-writer, DMA, interrupt-reentrancy or SMP guarantee. Executable
-sealing, instruction-cache publication, partial unmap and coordinated mapped
-revocation remain separate work.
+sealing and local instruction publication follow the [sealing contract](vmo-sealing.md).
+Partial unmap and coordinated mapped revocation remain separate work.
 
 ## External probes exercise actual accesses
 

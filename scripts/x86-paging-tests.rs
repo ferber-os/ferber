@@ -48,3 +48,12 @@ pub mod mock_bitmap {
     pub fn stats() -> Stats { Stats { free_pages: usize::MAX - STATE.lock().unwrap().0.len() } }
 }
 pub fn test_flush(full: bool) { if full { mock_bitmap::EVENTS.lock().unwrap().push(true); mock_bitmap::STATE.lock().unwrap().2 += 1; } }
+pub static PUBLICATIONS: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+pub fn paging_test_publish(space: &paging::Pml4AddressSpace, va: usize, count: usize) {
+    use paging_hal::AddressSpace;
+    assert_eq!(mock_bitmap::EVENTS.lock().unwrap().last(), Some(&true), "publish before translation flush");
+    for page in 0..count {
+        assert!(space.query(va + page * 4096).unwrap().1.executable, "publish before executable leaf");
+    }
+    PUBLICATIONS.lock().unwrap().push((va, count));
+}

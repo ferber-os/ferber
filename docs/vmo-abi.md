@@ -1,9 +1,9 @@
 # VMO byte ABI
 
 Syscalls 11–13 create and copy bytes through ordinary owned-RAM VMOs on both
-architectures. They introduce no physical-address authority, executable publication or
-resizing. [Mapping syscalls 14–15](vmo-mapping.md) provide a separate
-non-executable mapping contract. Existing startup ABI v1 and init's
+architectures. They introduce no physical-address authority or resizing.
+[Mapping syscalls 14–15](vmo-mapping.md) and [executable sealing](vmo-sealing.md)
+provide separate mapping and publication contracts. Existing startup ABI v1 and init's
 readiness protocol are unchanged.
 
 ## Calls complete exactly or return an error
@@ -16,7 +16,8 @@ readiness protocol are unchanged.
 
 The existing six-register calling convention applies. Unused registers are
 ignored. Creation options are zero for the original byte-only rights or
-`VMO_CREATE_MAPPABLE = 1 << 0` to add MAP; other bits are invalid. A handle must fit in `u32`; high bits are not
+`VMO_CREATE_MAPPABLE = 1 << 0` to add MAP. Bit 1 requests EXECUTE and requires
+bit 0; valid options are 0, 1 and 3. Other combinations are invalid. A handle must fit in `u32`; high bits are not
 truncated. Read/write use explicit byte offsets, with no cursor, EOF truncation
 or short success. Requests must fit wholly within the exact logical size.
 
@@ -27,7 +28,8 @@ promised. Read/write length is at most 65,536 bytes, independent of the heap's
 single-allocation ceiling.
 
 Zero-length operations still validate the handle, revocation, required right,
-backing kind and `offset <= size`. They then return zero without examining the
+backing kind and `offset <= size`. An otherwise valid write to sealed backing fails with -13, even when empty.
+Eligible operations then return zero without examining the
 user pointer or allocating scratch memory. An offset beyond the end is invalid
 even for an empty copy.
 
@@ -36,7 +38,8 @@ even for an empty copy.
 Creation follows channel creation: it creates a fresh object rather than naming
 existing memory. The process receives exactly `READ | WRITE | DUPLICATE |
 TRANSFER | INSPECT | MANAGE`. Zero-option creation receives no `MAP`, `EXECUTE`, `WAIT` or `SIGNAL`.
-The explicit mappable option adds MAP only.
+The explicit mappable option adds MAP only; options 3 add MAP and EXECUTE.
+Executable mapping additionally requires irreversible object sealing.
 Read requires READ; write requires WRITE. Existing attenuation, duplication,
 revocation, inspection and channel move semantics apply without another VMO
 handle representation. Generic inspect remains the eight-byte type/rights
@@ -111,7 +114,7 @@ synchronization or DMA synchronization.
 | --- | --- |
 | `-9` | Invalid handle, including high bits |
 | `-116` | Revoked capability or ancestor |
-| `-13` | Required right absent |
+| `-13` | Required right absent or write to sealed backing |
 | `-22` | Invalid options, zero creation size, wrong type/backing, physical VMO, invalid logical range or contradictory output aliases |
 | `-90` | Per-object or per-copy size limit exceeded |
 | `-14` | Invalid user mapping, address or permission |
@@ -120,7 +123,7 @@ synchronization or DMA synchronization.
 | `-28` | User-VMO budget or capability-node capacity exhausted |
 
 Read/write check handle validity, rights and backing before copy length and
-logical range, then handle zero length, user preflight and allocation. Creation
+logical range, then check write eligibility before zero length, user preflight and allocation. Creation
 validates options and size, checks capacity before expensive allocation, and
 rechecks before publishing its privately constructed node.
 
@@ -131,11 +134,11 @@ VMO backing independently of capability nodes. Existing mappings survive
 close, transfer and revoke until exact unmap or process teardown. Page-table
 preparation, reclamation and quotas are separate from backing charges.
 
-Executable publication remains unavailable. A future sealing policy must cover
-all writable capabilities and mappings; per-PTE W^X alone is insufficient.
-RISC-V will additionally need instruction-cache publication and future SMP
-will need remote synchronization. The content lock does not serialize user
-stores through installed mappings.
+[Executable sealing](vmo-sealing.md) blocks all VMO writes and new writable
+mappings after verifying no writable mapping survives in any process. RX
+installation synchronizes local instruction fetch. The content lock does not
+serialize user stores through installed mappings; future SMP needs remote
+synchronization and a concurrent mapped-writer contract.
 
 ## External verification keeps init separate
 

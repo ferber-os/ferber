@@ -206,4 +206,8 @@ the whole bounded request and validate all aliases before committing. A content
 lock serializes kernel copies; future mapped user stores and SMP need separate
 synchronization. [User mappings](vmo-mapping.md) retain shared backing independently of handles,
 use transactional page-table preparation and reclaim empty private tables.
-Executable sealing remains pending.
+[Executable sealing](vmo-sealing.md) rejects publication while any writable
+user mapping survives, then prevents byte writes and new RW mappings across
+all aliases. RX installation synchronizes local instruction fetch on both
+ports. Supervisor RAM aliases remain trusted RW/NX kernel machinery; this
+does not establish remote synchronization or DMA/SMP safety.

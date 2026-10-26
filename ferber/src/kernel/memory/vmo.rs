@@ -4,7 +4,7 @@
 
 #![allow(dead_code)]
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::kernel::sync::SpinLock;
@@ -65,6 +65,7 @@ pub enum VmoError {
     OutOfBounds,
     /// Operation denied due to missing capability rights.
     PermissionDenied,
+    Busy,
     /// Physical frame address is unaligned.
     InvalidAlignment,
 }
@@ -117,8 +118,27 @@ pub struct Vmo {
     size: usize,
     frames: VmoFrames,
     is_physical: bool,
-    content: SpinLock<()>,
+    content: SpinLock<ContentState>,
     user_charge: Option<UserCharge>,
+}
+
+#[derive(Default)]
+struct ContentState {
+    sealed: bool,
+    writable_mappings: usize,
+}
+
+/// Retain until the corresponding writable translations have been invalidated.
+pub(crate) struct WritableMapping {
+    object: Arc<Vmo>,
+}
+
+impl Drop for WritableMapping {
+    fn drop(&mut self) {
+        let mut state = self.object.content.lock();
+        assert!(state.writable_mappings != 0, "writable mapping permit underflow");
+        state.writable_mappings -= 1;
+    }
 }
 
 unsafe impl Send for Vmo {}
@@ -141,6 +161,31 @@ impl Vmo {
     }
 
     pub fn is_owned_ram(&self) -> bool { !self.is_physical }
+
+    pub fn is_sealed(&self) -> bool { self.content.lock().sealed }
+
+    pub fn check_writable(&self) -> Result<(), VmoError> {
+        if self.content.lock().sealed { Err(VmoError::PermissionDenied) } else { Ok(()) }
+    }
+
+    pub fn seal(&self) -> Result<(), VmoError> {
+        if !self.is_owned_ram() { return Err(VmoError::InvalidBacking); }
+        let mut state = self.content.lock();
+        if state.writable_mappings != 0 { return Err(VmoError::Busy); }
+        // WRITE bits on old handles are now collector's items.
+        state.sealed = true;
+        Ok(())
+    }
+
+    pub(crate) fn mapping_permit(self: &Arc<Self>, flags: MapFlags) -> Result<Option<WritableMapping>, VmoError> {
+        let mut state = self.content.lock();
+        if (flags.writable && (state.sealed || flags.executable)) || (flags.executable && !state.sealed) {
+            return Err(VmoError::PermissionDenied);
+        }
+        if !flags.writable { return Ok(None); }
+        state.writable_mappings = state.writable_mappings.checked_add(1).ok_or(VmoError::UserBudget)?;
+        Ok(Some(WritableMapping { object: Arc::clone(self) }))
+    }
 
     pub fn validate_owned_range(&self, offset: usize, length: usize) -> Result<(), VmoError> {
         if !self.is_owned_ram() { return Err(VmoError::InvalidBacking); }
@@ -166,8 +211,9 @@ impl Vmo {
 
     /// Caller supplies a kernel snapshot disjoint from this VMO's physical backing.
     pub fn write_owned(&self, offset: usize, buffer: &[u8]) -> Result<(), VmoError> {
-        let _content = self.content.lock();
+        let content = self.content.lock();
         self.validate_owned_range(offset, buffer.len())?;
+        if content.sealed { return Err(VmoError::PermissionDenied); }
         self.copy_owned(offset, buffer.as_ptr().cast_mut(), buffer.len(), true);
         Ok(())
     }
@@ -227,7 +273,7 @@ impl Vmo {
             size,
             frames: VmoFrames::new(frames),
             is_physical: false,
-            content: SpinLock::new(()),
+            content: SpinLock::new(ContentState::default()),
             user_charge: None,
         })
     }
@@ -252,7 +298,7 @@ impl Vmo {
             size,
             frames: VmoFrames::contiguous(base, num_pages),
             is_physical: false,
-            content: SpinLock::new(()),
+            content: SpinLock::new(ContentState::default()),
             user_charge: None,
         })
     }
@@ -274,7 +320,7 @@ impl Vmo {
             size,
             frames: VmoFrames::contiguous(base, num_pages),
             is_physical: true,
-            content: SpinLock::new(()),
+            content: SpinLock::new(ContentState::default()),
             user_charge: None,
         })
     }
@@ -358,13 +404,15 @@ impl Vmo {
     }
 
     fn write_shared(&self, offset: usize, buffer: &[u8]) -> Result<(), VmoError> {
-        let _content = self.content.lock();
+        let content = self.content.lock();
         if offset
             .checked_add(buffer.len())
             .is_none_or(|end| end > self.size)
         {
             return Err(VmoError::OutOfBounds);
         }
+
+        if content.sealed { return Err(VmoError::PermissionDenied); }
 
         let mut bytes_written = 0;
         while bytes_written < buffer.len() {
