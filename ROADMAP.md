@@ -87,7 +87,7 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
   - [x] Singleton root job (`Job::create_root()`)
   - [x] Acyclic job hierarchy with weak parent references
   - [x] Memory policy fields (`memory_limit`, `memory_used`)
-  - [ ] Enforce hierarchical Job memory charges and limits
+  - [x] Enforce [hierarchical Job memory charges and limits](docs/job-accounting.md)
   - [x] Recursive subtree destruction (`Job::kill()`): synchronous cascade teardown guaranteeing **zero orphan processes**
 - [x] Process Containers (`process.rs`):
   - [x] Isolated `ArchAddressSpace` bound at creation

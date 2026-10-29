@@ -1,11 +1,33 @@
 //! Run the production x86 walker against an instrumented frame allocator.
 #![allow(dead_code)]
+#![feature(allocator_ext)]
 extern crate alloc;
+#[path = "../ferber/src/kernel/sync.rs"] pub mod sync;
+// The production ledger is exercised; host metadata uses the host allocator.
+mod heap {
+    pub struct Arena;
+    impl Arena { pub const fn new() -> Self { Self } pub fn is_empty(&self) -> bool { true } }
+}
+#[path = "../ferber/src/kernel/memory/accounting.rs"] pub mod accounting;
+std::thread_local! {
+    static CHARGE_OBSERVER: std::cell::RefCell<Option<accounting::BudgetRef>> = const { std::cell::RefCell::new(None) };
+}
+static FREE_CHARGES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+fn observe_charge_before_free() {
+    CHARGE_OBSERVER.with(|observer| {
+        if let Some(owner) = observer.borrow().as_ref() {
+            FREE_CHARGES.lock().unwrap().push(owner.used());
+        }
+    });
+}
+
+
 #[path = "../ferber/src/boot_info.rs"] mod boot_info;
 #[path = "../ferber/src/kernel/memory/paging.rs"] pub mod paging_hal;
 #[path = "../ferber/src/arch/x86_64/paging.rs"] mod paging;
 mod arch { pub use crate::paging::Pml4AddressSpace as ArchAddressSpace; }
-mod kernel { pub mod memory {
+mod kernel { pub use crate::sync; pub mod memory {
+    pub use crate::accounting;
     pub use crate::paging_hal as paging;
     pub use crate::mock_bitmap as bitmap;
     pub use crate::mock_phys as phys_map;
@@ -38,6 +60,7 @@ pub mod mock_bitmap {
         assert_ne!(pa, 0); state.0.push(pa); Some(pa)
     }
     pub fn free_frame(pa: usize) -> Result<(), ()> {
+        crate::observe_charge_before_free();
         EVENTS.lock().unwrap().push(false);
         let mut state = STATE.lock().unwrap();
         let i = state.0.iter().position(|p| *p == pa).unwrap(); state.0.remove(i);

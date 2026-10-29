@@ -2,6 +2,8 @@
 //! VMO-everything. No anonymous memory. No implicit backing. Ever.
 
 pub mod bitmap;
+pub mod accounting;
+pub(crate) mod accounting_tests;
 pub mod heap;
 pub mod paging;
 pub mod phys_map;
@@ -23,6 +25,7 @@ pub fn init_from_boot_info(info: &BootInfo) -> bitmap::MemoryStats {
     crate::arch::paging::bootstrap_aliases(info).expect("bootstrap RAM aliases");
     phys_map::activate();
     bitmap::init_from_boot_info(info);
+    accounting::adopt_bootstrap(bitmap::stats().bootstrap_reserved_pages);
     crate::arch::paging::finalize(info).expect("permanent kernel mappings");
     retain_kernel_backing(info);
     crate::kernel::boot_payload::retain(info);
@@ -157,6 +160,7 @@ pub fn init(device_tree: usize, device_tree_physical: usize) -> bitmap::MemorySt
     unsafe { crate::arch::bootstrap_aliases() };
     phys_map::activate();
     bitmap::init_from_boot_info(&info);
+    accounting::adopt_bootstrap(bitmap::stats().bootstrap_reserved_pages);
     unsafe { crate::arch::finalize_kernel_space(&info) };
     retain_kernel_backing(&info);
     crate::kernel::boot_payload::retain(&info);

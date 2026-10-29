@@ -10,6 +10,7 @@ use crate::arch::{self, CpuContext};
 use crate::kernel::capabilities::CapNode;
 use crate::kernel::ipc::channel::{WaitRegistration, WaitToken};
 use crate::kernel::memory::{paging::AddressSpace, Vmo};
+use crate::kernel::memory::accounting::{self, AllocError};
 use crate::kernel::sync::SpinLock;
 use crate::kernel::task::{Process, ProcessState, TaskError, Thread, ThreadState};
 
@@ -79,6 +80,11 @@ static CONTEXTS: Contexts = Contexts {
 };
 
 pub fn init() {
+    let owner = accounting::BudgetRef::system();
+    accounting::with_budget(&owner, init_in_budget);
+}
+
+fn init_in_budget() {
     let mut runtime = RUNTIME.lock();
     if runtime.stack.is_some() {
         return;
@@ -98,15 +104,13 @@ pub fn admit(
     process: Arc<SpinLock<Process>>,
     thread: Arc<SpinLock<Thread>>,
 ) -> Result<(), TaskError> {
-    let token = Arc::try_new(WaitToken::new()).map_err(|_| TaskError::OutOfMemory)?;
-    let task = Box::try_new(Task {
-        process,
-        thread,
-        token,
-        generation: 0,
-        pending: None,
-    })
-    .map_err(|_| TaskError::OutOfMemory)?;
+    let owner = process.lock().budget().clone();
+    let task = accounting::with_budget(&owner, || {
+        let token = accounting::attempt(|| Arc::try_new(WaitToken::new())).map_err(alloc_error)?;
+        accounting::attempt(|| Box::try_new(Task {
+            process, thread, token, generation: 0, pending: None,
+        })).map_err(alloc_error)
+    })?;
     let mut runtime = RUNTIME.lock();
     assert!(runtime.current.is_none(), "admission during user execution");
     assert!(
@@ -123,17 +127,13 @@ pub fn admit(
         .position(Option::is_none)
         .unwrap_or(runtime.tasks.len());
     if index == runtime.tasks.len() {
-        runtime
-            .tasks
-            .try_reserve(1)
-            .map_err(|_| TaskError::OutOfMemory)?;
+        accounting::with_budget(&accounting::BudgetRef::system(), ||
+            accounting::attempt(|| runtime.tasks.try_reserve(1))).map_err(alloc_error)?;
     }
     let capacity = runtime.tasks.len().max(index + 1);
     let additional = capacity.saturating_sub(runtime.ready.len());
-    runtime
-        .ready
-        .try_reserve(additional)
-        .map_err(|_| TaskError::OutOfMemory)?;
+    accounting::with_budget(&accounting::BudgetRef::system(), ||
+        accounting::attempt(|| runtime.ready.try_reserve(additional))).map_err(alloc_error)?;
     drop(runtime);
     {
         let mut thread = task.thread.lock();
@@ -223,6 +223,8 @@ fn suspend(state: ThreadState) {
         }
     }
     let context = current_context();
+    accounting::assert_switch_safe();
+    accounting::set_system();
     unsafe {
         arch::switch_context(context, CONTEXTS.dispatcher.get());
     }
@@ -573,6 +575,8 @@ fn finish_init(mut session: super::init::Session) -> bool {
 
 extern "C" fn dispatch_loop() -> ! {
     loop {
+        accounting::assert_switch_safe();
+        accounting::set_system();
         unsafe {
             arch::activate_kernel_address_space();
         }
@@ -602,18 +606,22 @@ extern "C" fn dispatch_loop() -> ! {
             let context = unsafe { state.context_ptr() };
             let top = state.kernel_stack_top();
             drop(state);
+            let owner = process.lock().budget().clone();
             unsafe {
                 process.lock().address_space().activate();
                 arch::bind_user_kernel_stack(top);
             }
-            break Some((index, context));
+            break Some((index, context, owner));
         };
-        if let Some((index, context)) = next {
+        if let Some((index, context, owner)) = next {
             {
                 let mut runtime = RUNTIME.lock();
                 runtime.current = Some(index);
                 runtime.stats.switches += 1;
             }
+            accounting::assert_switch_safe();
+            accounting::set_current(&owner);
+            drop(owner);
             unsafe {
                 arch::switch_context(CONTEXTS.dispatcher.get(), context);
             }
@@ -657,6 +665,8 @@ extern "C" fn first_entry() -> ! {
 
 /// Run admitted tasks until every task has exited and been reaped.
 pub fn run() -> Stats {
+    accounting::assert_switch_safe();
+    accounting::set_system();
     {
         let mut runtime = RUNTIME.lock();
         assert!(runtime.current.is_none());
@@ -682,4 +692,8 @@ pub(crate) fn run_init_closure_probe(session: super::init::Session) {
     super::init::install(session);
     let stats = run();
     assert_eq!(stats.reaped, 1, "init closure did not reap its task");
+}
+
+fn alloc_error(error: AllocError) -> TaskError {
+    match error { AllocError::Quota => TaskError::QuotaExceeded, AllocError::OutOfMemory => TaskError::OutOfMemory }
 }

@@ -1,5 +1,6 @@
 use super::{CapError, CapNode, KernelObject, ObjectType, Rights};
 use alloc::sync::Arc;
+use crate::kernel::memory::accounting::{self, AllocError};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub const NODE_CAPACITY: usize = 1024;
@@ -55,15 +56,15 @@ impl CapNodeAllocator {
         parent: Option<Arc<CapNode>>,
     ) -> Result<Arc<CapNode>, CapError> {
         let (permit, id) = self.reserve()?;
-        Arc::try_new(CapNode::new(
+        accounting::attempt(|| Arc::try_new(CapNode::new(
             id,
             rights,
             object,
             object_type,
             parent,
             permit,
-        ))
-        .map_err(|_| CapError::OutOfMemory)
+        )))
+        .map_err(|error| match error { AllocError::Quota => CapError::JobQuota, AllocError::OutOfMemory => CapError::OutOfMemory })
     }
 
     pub fn alloc_root(

@@ -45,6 +45,10 @@ run_case() {
         cargo_args+=(--release)
     fi
     case "$scenario" in
+        accounting)
+            cargo_args+=(--features userspace-job-accounting-probe)
+            payload=$("$repo_root/scripts/build-user.sh" job-accounting-probe x86_64-unknown-none "$profile")
+            ;;
         vmo-seal|vmo-seal-write)
             if [[ "$scenario" == vmo-seal ]]; then
                 cargo_args+=(--features userspace-vmo-seal-probe); program=vmo-seal-probe
@@ -166,6 +170,7 @@ run_case release vmo 512
 for profile in debug release; do
     run_case "$profile" vmo-map 512
     run_case "$profile" vmo-seal 512
+    run_case "$profile" accounting 512
     run_case "$profile" vmo-seal-write 512
     run_case "$profile" vmo-map-write 512
     run_case "$profile" vmo-map-execute 512

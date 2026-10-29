@@ -23,6 +23,7 @@ use crate::kernel::memory::vmo::VmoFrames;
 use crate::boot_info::{BootInfo, BOOT_INFO_VA, BOOT_REGIONS_VA, MMIO_BASE};
 use crate::kernel::memory::paging::{AddressSpace, MapFlags, PageError};
 use crate::kernel::memory::{bitmap, phys_map};
+use crate::kernel::memory::accounting::{self, AllocError, BudgetRef, FrameCharge};
 
 /// 4 KiB page size.
 pub const PAGE_SIZE: usize = 4096;
@@ -128,12 +129,36 @@ fn make_leaf_entry(paddr: usize, flags: MapFlags) -> u64 {
 }
 
 /// Allocate a 4 KiB frame for a page table and zero its contents.
-fn allocate_table() -> Result<usize, PageError> {
-    let paddr = bitmap::allocate_frame().ok_or(PageError::OutOfMemory)?;
+fn accounting_error(error: AllocError) -> PageError {
+    match error { AllocError::Quota => PageError::JobQuota, AllocError::OutOfMemory => PageError::OutOfMemory }
+}
+
+fn allocate_owned_table(charge: &mut FrameCharge) -> Result<usize, PageError> {
+    charge.grow(1).map_err(accounting_error)?;
+    let Some(paddr) = bitmap::allocate_frame() else {
+        charge.release(1);
+        return Err(PageError::OutOfMemory);
+    };
     unsafe {
         core::ptr::write_bytes(table_ptr(paddr).cast::<u8>(), 0, PAGE_SIZE);
     }
     Ok(paddr)
+}
+
+fn allocate_table() -> Result<usize, PageError> {
+    #[cfg(not(test))]
+    {
+        let mut charge = FrameCharge::reserve(&BudgetRef::system(), 0).map_err(accounting_error)?;
+        let pa = allocate_owned_table(&mut charge)?;
+        core::mem::forget(charge);
+        Ok(pa)
+    }
+    #[cfg(test)]
+    {
+        let pa = bitmap::allocate_frame().ok_or(PageError::OutOfMemory)?;
+        unsafe { core::ptr::write_bytes(table_ptr(pa).cast::<u8>(), 0, PAGE_SIZE); }
+        Ok(pa)
+    }
 }
 
 fn table_ptr(physical: usize) -> *mut u64 {
@@ -145,7 +170,7 @@ fn physical_bits() -> u32 {
     if extended >= 0x8000_0008 { (core::arch::x86_64::__cpuid(0x8000_0008).eax & 255).min(52) } else { 36 }
 }
 
-struct PendingTables(Vec<usize>);
+struct PendingTables(Vec<usize>, FrameCharge);
 impl Drop for PendingTables {
     fn drop(&mut self) {
         for pa in self.0.drain(..) { bitmap::free_frame(pa).expect("unpublished table frame"); }
@@ -158,6 +183,7 @@ pub struct Pml4AddressSpace {
     root_paddr: usize,
     table_pages: usize,
     table_limit: usize,
+    charge: FrameCharge,
 }
 
 static BOOT_ROOT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
@@ -445,15 +471,21 @@ unsafe fn open_table(slot: *mut u64, flags: MapFlags) {
 
 impl Pml4AddressSpace {
     pub fn new() -> Result<Self, PageError> {
+        Self::with_owner(BudgetRef::system())
+    }
+
+    fn with_owner(owner: BudgetRef) -> Result<Self, PageError> {
         let source = BOOT_ROOT.load(core::sync::atomic::Ordering::SeqCst);
         assert_ne!(
             source, 0,
             "boot CR3 must be captured before process creation"
         );
+        let mut charge = FrameCharge::reserve(&owner, 0).map_err(accounting_error)?;
         let result = Self {
-            root_paddr: allocate_table()?,
+            root_paddr: allocate_owned_table(&mut charge)?,
             table_pages: 1,
             table_limit: usize::MAX,
+            charge,
         };
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -466,12 +498,14 @@ impl Pml4AddressSpace {
     }
 
     pub fn new_user() -> Result<Self, PageError> {
-        let mut result = Self::new()?;
+        let mut result = Self::with_owner(accounting::current())?;
         result.table_limit = 256;
         Ok(result)
     }
 
     pub fn table_pages(&self) -> usize { self.table_pages }
+
+    pub fn budget(&self) -> &BudgetRef { self.charge.owner() }
 
     fn validate_virtual_range(va: usize, count: usize) -> Result<(), PageError> {
         if !va.is_multiple_of(PAGE_SIZE) { return Err(PageError::Unaligned); }
@@ -541,6 +575,7 @@ impl Pml4AddressSpace {
             // Retiring a nonleaf invalidates paging-structure caches before reuse.
             self.flush_tlb_all();
             bitmap::free_frame(tables[depth]).expect("owned private page table");
+            self.charge.release(1);
             self.table_pages -= 1;
         }
         pa
@@ -569,9 +604,10 @@ impl AddressSpace for Pml4AddressSpace {
         Self::validate_range(va, frames, first, count, flags)?;
         let needed = self.preflight_free_range(va, count)?;
         if needed > self.table_limit - self.table_pages { return Err(PageError::TableBudget); }
-        let mut pending = PendingTables(Vec::new());
-        pending.0.try_reserve_exact(needed).map_err(|_| PageError::OutOfMemory)?;
-        for _ in 0..needed { pending.0.push(allocate_table()?); }
+        let mut pending = PendingTables(Vec::new(), FrameCharge::reserve(self.budget(), 0).map_err(accounting_error)?);
+        accounting::with_budget(self.budget(), || accounting::attempt(|| pending.0.try_reserve_exact(needed)))
+            .map_err(accounting_error)?;
+        for _ in 0..needed { pending.0.push(allocate_owned_table(&mut pending.1)?); }
         for page in 0..count {
             let addr = va + page * PAGE_SIZE;
             let indices = [pml4_index(addr), pdpt_index(addr), pd_index(addr), pt_index(addr)];
@@ -587,6 +623,8 @@ impl AddressSpace for Pml4AddressSpace {
             table_ptr(table).add(indices[3]).write(make_leaf_entry(frames.get(first + page).unwrap(), flags));
         }
         debug_assert!(pending.0.is_empty());
+        self.charge.merge(core::mem::replace(&mut pending.1,
+            FrameCharge::reserve(self.budget(), 0).expect("zero table charge")));
         self.flush_tlb_all();
         if flags.executable {
             // Code written through a different linear alias requires instruction serialization.
@@ -762,6 +800,7 @@ impl Drop for Pml4AddressSpace {
         unsafe {
             free_table(self.root_paddr, 4, 256);
         }
+        self.charge.release(self.charge.pages());
     }
 }
 
@@ -908,6 +947,44 @@ mod tests {
 #[cfg(test)]
 mod transaction_tests {
     use super::*;
+
+    #[test]
+    fn retained_owner_ancestor_quota_and_free_before_decharge() {
+        use accounting::{BudgetRef, JobBudget, with_budget};
+        let boot = allocate_table().unwrap();
+        BOOT_ROOT.store(boot, core::sync::atomic::Ordering::SeqCst);
+        let system_before = BudgetRef::system().used();
+        let parent = JobBudget::child(&BudgetRef::system(), 5 * PAGE_SIZE).unwrap();
+        let owner = JobBudget::child(&parent, 9 * PAGE_SIZE).unwrap();
+        let mut space = with_budget(&owner, Pml4AddressSpace::new_user).unwrap();
+        assert!(space.budget().same_owner(&owner));
+        assert_eq!(owner.used(), PAGE_SIZE);
+        unsafe { space.map_page(0, 0x1000, MapFlags::user_rw()).unwrap(); }
+        assert_eq!(owner.used(), 4 * PAGE_SIZE);
+        assert_eq!(parent.used(), owner.used());
+        crate::CHARGE_OBSERVER.with(|observer| *observer.borrow_mut() = Some(owner.clone()));
+        assert_eq!(unsafe { space.map_page(1 << 39, 0x2000, MapFlags::user_ro()) }, Err(PageError::JobQuota));
+        assert!(space.query(1 << 39).is_none());
+        assert_eq!(space.table_pages(), 4);
+        assert_eq!(owner.used(), 4 * PAGE_SIZE);
+        assert_eq!(*crate::FREE_CHARGES.lock().unwrap(), [5 * PAGE_SIZE]);
+        crate::FREE_CHARGES.lock().unwrap().clear();
+        owner.close();
+        assert_eq!(unsafe { space.map_page(PAGE_SIZE, 0x2000, MapFlags::user_ro()) }, Err(PageError::JobQuota));
+        unsafe { space.unmap_page(0).unwrap(); }
+        assert_eq!(owner.used(), PAGE_SIZE);
+        drop(space);
+        assert_eq!(*crate::FREE_CHARGES.lock().unwrap(), [4 * PAGE_SIZE, 3 * PAGE_SIZE, 2 * PAGE_SIZE, PAGE_SIZE]);
+        crate::CHARGE_OBSERVER.with(|observer| *observer.borrow_mut() = None);
+        crate::FREE_CHARGES.lock().unwrap().clear();
+        assert_eq!(owner.used(), 0);
+        assert_eq!(parent.used(), 0);
+        drop(owner);
+        drop(parent);
+        assert_eq!(BudgetRef::system().used(), system_before);
+        bitmap::free_frame(boot).unwrap();
+        BOOT_ROOT.store(0, core::sync::atomic::Ordering::SeqCst);
+    }
 
     #[test]
     fn executable_publication_follows_commit_and_flush_only_on_success() {

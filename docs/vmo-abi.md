@@ -74,11 +74,10 @@ frees frames before releasing the charge. Duplicate and derived capabilities,
 transferred handles, queued messages and surviving recipients retain the same
 charge without recharging. Creator exit alone cannot release it.
 
-Kernel-created VMOs and other kernel allocation paths are not charged here.
-This bounds this allocation surface; it is neither hierarchical job quota
-accounting nor a reservation guaranteeing free kernel RAM. Existing Job memory
-limit/usage fields are not enforced by these calls. A request within the 16 MiB
-object limit may still exceed the machine's budget.
+Kernel-created VMOs and other kernel allocation paths are outside this additional
+user-VMO policy counter. All owned backing and allocator storage also obey
+[hierarchical Job accounting](job-accounting.md). A request within the 16 MiB
+object limit may exceed either budget; neither reserves free kernel RAM.
 
 ## Staging preserves failure and aliasing contracts
 
@@ -120,7 +119,7 @@ synchronization or DMA synchronization.
 | `-14` | Invalid user mapping, address or permission |
 | `-12` | Actual frame, metadata, object or staging allocation failure |
 | `-24` | Full handle table |
-| `-28` | User-VMO budget or capability-node capacity exhausted |
+| `-28` | Job or user-VMO budget, or capability-node capacity exhausted |
 
 Read/write check handle validity, rights and backing before copy length and
 logical range, then check write eligibility before zero length, user preflight and allocation. Creation

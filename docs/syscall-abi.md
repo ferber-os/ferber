@@ -212,7 +212,7 @@ same syscall table; ELF loading adds no syscall numbers.
 | `-22` | Invalid rights mask, options, permissions, alignment, logical VMO range or backing/type; repeated transfer slot; unsupported payload; or overlapping output bytes |
 | `-17` | Mapping destination is already occupied |
 | `-24` | Handle table is full |
-| `-28` | User-VMO backing, mapping/alias/table limit, node quota, node IDs, or wait generations exhausted |
+| `-28` | Hierarchical Job allocation budget (including closed ancestry), user-VMO backing, mapping/alias/table limit, node quota, node IDs, or wait generations exhausted |
 | `-32` | Channel peer is closed and no queued message can be received |
 | `-38` | Unknown syscall number |
 | `-90` | VMO/mapping size, byte-copy or message limit exceeded, or receive buffers are too small |

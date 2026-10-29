@@ -1,6 +1,27 @@
 //! Production Sv39 walkers with only physical allocation and privileged instructions mocked.
 #![allow(dead_code)]
+#![feature(allocator_ext)]
 extern crate alloc;
+#[path = "../ferber/src/kernel/sync.rs"] pub mod sync;
+// The production ledger is exercised; host metadata uses the host allocator.
+mod heap {
+    pub struct Arena;
+    impl Arena { pub const fn new() -> Self { Self } pub fn is_empty(&self) -> bool { true } }
+}
+#[path = "../ferber/src/kernel/memory/accounting.rs"] pub mod accounting;
+std::thread_local! {
+    static CHARGE_OBSERVER: std::cell::RefCell<Option<accounting::BudgetRef>> = const { std::cell::RefCell::new(None) };
+}
+static FREE_CHARGES: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+fn observe_charge_before_free() {
+    CHARGE_OBSERVER.with(|observer| {
+        if let Some(owner) = observer.borrow().as_ref() {
+            FREE_CHARGES.lock().unwrap().push(owner.used());
+        }
+    });
+}
+
+
 #[path = "../ferber/src/arch/riscv64/paging.rs"]
 mod sv39;
 #[path = "../ferber/src/kernel/memory/paging.rs"]
@@ -20,7 +41,9 @@ unsafe impl GlobalAlloc for TestAllocator {
 static ALLOCATOR: TestAllocator = TestAllocator;
 mod arch { pub type ArchAddressSpace = crate::sv39::Sv39AddressSpace; }
 mod kernel {
+    pub use crate::sync;
     pub mod memory {
+        pub use crate::accounting;
         pub use crate::paging;
         pub mod vmo {
             pub struct VmoFrames(Vec<usize>);
@@ -56,6 +79,7 @@ mod kernel {
             pub fn free_frame(pa: usize) -> Result<(), ()> {
                 let mut state = STATE.lock().unwrap();
                 assert!(state.frames.remove(&pa), "free of unowned table");
+                crate::observe_charge_before_free();
                 state.events.push(pa);
                 unsafe { dealloc(pa as *mut u8, Layout::from_size_align(4096,4096).unwrap()); }
                 Ok(())
@@ -251,5 +275,41 @@ fn executable_publication_follows_commit_and_flush_only_on_success() {
             }
         }
     }
+    assert_eq!(bitmap::count(), 0);
+}
+
+#[test]
+fn retained_owner_ancestor_quota_and_free_before_decharge() {
+    use accounting::{BudgetRef, JobBudget, with_budget};
+    let _lock = bitmap::LOCK.lock().unwrap();
+    let system_before = BudgetRef::system().used();
+    let parent = JobBudget::child(&BudgetRef::system(), 4 * PAGE).unwrap();
+    let owner = JobBudget::child(&parent, 8 * PAGE).unwrap();
+    let mut space = with_budget(&owner, Sv39AddressSpace::new_user).unwrap();
+    assert!(space.budget().same_owner(&owner));
+    assert_eq!(owner.used(), PAGE);
+    unsafe { space.map_page(0, 0x1000, MapFlags::user_rw()).unwrap(); }
+    assert_eq!(owner.used(), 3 * PAGE);
+    assert_eq!(parent.used(), owner.used());
+    CHARGE_OBSERVER.with(|observer| *observer.borrow_mut() = Some(owner.clone()));
+    let before = bitmap::snapshot();
+    assert_eq!(unsafe { space.map_page(1 << 30, 0x2000, MapFlags::user_ro()) }, Err(PageError::JobQuota));
+    assert_eq!(bitmap::snapshot(), before, "ancestor rejection published partial tables");
+    assert_eq!(owner.used(), 3 * PAGE);
+    assert_eq!(*FREE_CHARGES.lock().unwrap(), [4 * PAGE], "pending frame decharged before raw free");
+    FREE_CHARGES.lock().unwrap().clear();
+    owner.close();
+    assert_eq!(unsafe { space.map_page(PAGE, 0x2000, MapFlags::user_ro()) }, Err(PageError::JobQuota));
+    unsafe { space.unmap_page(0).unwrap(); }
+    assert_eq!(owner.used(), PAGE);
+    drop(space);
+    assert_eq!(*FREE_CHARGES.lock().unwrap(), [3 * PAGE, 2 * PAGE, PAGE]);
+    CHARGE_OBSERVER.with(|observer| *observer.borrow_mut() = None);
+    FREE_CHARGES.lock().unwrap().clear();
+    assert_eq!(owner.used(), 0);
+    assert_eq!(parent.used(), 0);
+    drop(owner);
+    drop(parent);
+    assert_eq!(BudgetRef::system().used(), system_before);
     assert_eq!(bitmap::count(), 0);
 }

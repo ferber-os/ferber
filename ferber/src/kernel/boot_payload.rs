@@ -37,7 +37,7 @@ pub fn retain(info: &BootInfo) {
     *source = Some((info.boot_payload, backing));
 }
 
-#[cfg(any(feature = "userspace-elf-probe", feature = "minimal-init", feature = "userspace-vmo-probe", feature = "userspace-vmo-map-probe", feature = "userspace-vmo-seal-probe"))]
+#[cfg(any(feature = "userspace-elf-probe", feature = "minimal-init", feature = "userspace-vmo-probe", feature = "userspace-vmo-map-probe", feature = "userspace-vmo-seal-probe", feature = "userspace-job-accounting-probe"))]
 pub fn bytes() -> Option<&'static [u8]> {
     let source = SOURCE.lock();
     let (payload, _) = source.as_ref()?;

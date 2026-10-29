@@ -122,7 +122,7 @@ fn kernel_start(
         let ptr_4k = unsafe { alloc(layout_4k) };
         assert!(!ptr_4k.is_null());
         unsafe { dealloc(ptr_4k, layout_4k) };
-        kprintln!("[mem]     [4/6] max order block allocation (4096 B): ok");
+        kprintln!("[mem]     [4/6] page-aligned payload allocation (4096 B plus header): ok");
         
         // llvm convinced itself null pointers don't exist
         let layout_huge = Layout::from_size_align(256 * 1024 * 1024, 4096).unwrap();
@@ -263,7 +263,7 @@ fn kernel_start(
     kprintln!("[cap]   capability system: global node quota ready");
     kprintln!("[cap]   handle table & rights subsystem ready for Phase 2");
 
-    let root_job = kernel::task::Job::create_root();
+    let root_job = kernel::task::Job::create_root(memory.total_pages / 2 * 4096);
     kprintln!("[task]  running Job, Process, and Thread subsystem tests...");
     {
         use crate::kernel::task::job::JobState;
@@ -298,7 +298,7 @@ fn kernel_start(
         let thread = proc.lock()
             .create_thread(0x1000, 4096)
             .expect("failed to create thread in process");
-        assert_eq!(thread.lock().name(), "init_proc/thread_0");
+        assert_eq!(thread.lock().name(), "init_proc");
         assert_eq!(thread.lock().state(), ThreadState::Ready);
         assert_eq!(proc.lock().thread_count(), 1);
         kprintln!("[task]    [3/5] thread creation with isolated dual-stack context: ok");

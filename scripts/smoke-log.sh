@@ -67,6 +67,7 @@ smoke_log_ok() {
         execute-nx) expected='[FERBER_TEST] privilege_execute_nx: PASS' ;;
         init) expected='[FERBER_TEST] init_waiting: PASS' ;;
         vmo) expected='[FERBER_TEST] vmo_syscalls: PASS' ;;
+        accounting) expected='[FERBER_TEST] job_accounting: PASS' ;;
         vmo-seal) expected='[FERBER_TEST] vmo_sealing: PASS' ;;
         vmo-seal-write) expected='[FERBER_TEST] vmo_sealing_write_rx: PASS' ;;
         vmo-map) expected='[FERBER_TEST] vmo_mapping: PASS' ;;
@@ -98,7 +99,7 @@ smoke_log_ok() {
             bootstrap_count=$((bootstrap_count + 1))
         elif [[ "$scenario" == init && "$line" == '[FERBER_TEST] init_ready: PASS' ]]; then
             init_ready_count=$((init_ready_count + 1))
-        elif [[ ( "$scenario" == elf || "$scenario" == init || "$scenario" == vmo || "$scenario" == vmo-map* || "$scenario" == vmo-seal* ) && "$line" == '[FERBER_TEST] boot_payload: PASS' ]]; then
+        elif [[ ( "$scenario" == elf || "$scenario" == init || "$scenario" == vmo || "$scenario" == vmo-map* || "$scenario" == vmo-seal* || "$scenario" == accounting ) && "$line" == '[FERBER_TEST] boot_payload: PASS' ]]; then
             payload_count=$((payload_count + 1))
         elif [[ "$line" == '[FERBER_TEST] memory_verification: PASS' ]]; then
             memory_count=$((memory_count + 1))
@@ -111,7 +112,7 @@ smoke_log_ok() {
     if [[ "$scenario" == init ]]; then
         [[ "$init_ready_count" -eq 1 && "$payload_count" -eq 1 ]] || return 1
     fi
-    if [[ "$scenario" == vmo || "$scenario" == vmo-map* || "$scenario" == vmo-seal* ]]; then
+    if [[ "$scenario" == vmo || "$scenario" == vmo-map* || "$scenario" == vmo-seal* || "$scenario" == accounting ]]; then
         [[ "$payload_count" -eq 1 ]] || return 1
     fi
     if [[ "$scenario" == elf ]]; then
@@ -131,8 +132,8 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     [[ "${1:-}" == --self-test ]] || exit 2
     test_log=$(mktemp)
     trap 'rm -f -- "$test_log"' EXIT
-    markers=(privilege_switch_roundtrip privilege_isolation privilege_write_rx privilege_execute_nx userspace_elf init_waiting vmo_syscalls vmo_mapping vmo_mapping_write_ro vmo_mapping_execute_nx vmo_sealing vmo_sealing_write_rx)
-    scenarios=(normal isolation write-rx execute-nx elf init vmo vmo-map vmo-map-write vmo-map-execute vmo-seal vmo-seal-write)
+    markers=(privilege_switch_roundtrip privilege_isolation privilege_write_rx privilege_execute_nx userspace_elf init_waiting vmo_syscalls vmo_mapping vmo_mapping_write_ro vmo_mapping_execute_nx vmo_sealing vmo_sealing_write_rx job_accounting)
+    scenarios=(normal isolation write-rx execute-nx elf init vmo vmo-map vmo-map-write vmo-map-execute vmo-seal vmo-seal-write accounting)
     handle_marker='[FERBER_TEST] handle_syscalls: PASS'
     mutation_marker='[FERBER_TEST] capability_mutation: PASS'
     memory_marker='[FERBER_TEST] memory_verification: PASS'
@@ -149,7 +150,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         valid="$memory_marker"$'\n'"$expected"$'\n'
         [[ "$scenario" != normal ]] || valid+="$handle_marker"$'\n'"$mutation_marker"$'\n'"$channel_marker"$'\n'"$scheduling_marker"$'\n'"$blocking_marker"$'\n'"$reclamation_marker"$'\n'
         [[ "$scenario" != elf ]] || valid+="$bootstrap_marker"$'\n'"$payload_marker"$'\n'
-        [[ "$scenario" != vmo && "$scenario" != vmo-map* && "$scenario" != vmo-seal* ]] || valid+="$payload_marker"$'\n'
+        [[ "$scenario" != vmo && "$scenario" != vmo-map* && "$scenario" != vmo-seal* && "$scenario" != accounting ]] || valid+="$payload_marker"$'\n'
         [[ "$scenario" != init ]] || valid+="$init_ready_marker"$'\n'"$payload_marker"$'\n'
         printf '%s' "$valid" > "$test_log"
         smoke_log_ok "$test_log" "$scenario"
@@ -175,7 +176,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         required=("$memory_marker" "$expected")
         [[ "$scenario" != normal ]] || required+=("$handle_marker" "$mutation_marker" "$channel_marker" "$scheduling_marker" "$blocking_marker" "$reclamation_marker")
         [[ "$scenario" != elf ]] || required+=("$bootstrap_marker" "$payload_marker")
-        [[ "$scenario" != vmo && "$scenario" != vmo-map* && "$scenario" != vmo-seal* ]] || required+=("$payload_marker")
+        [[ "$scenario" != vmo && "$scenario" != vmo-map* && "$scenario" != vmo-seal* && "$scenario" != accounting ]] || required+=("$payload_marker")
         [[ "$scenario" != init ]] || required+=("$init_ready_marker" "$payload_marker")
         for missing in "${required[@]}"; do
             printf '%s' "${valid/"$missing"$'\n'/}" > "$test_log"

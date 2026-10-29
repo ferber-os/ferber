@@ -83,6 +83,13 @@ compile_error!("VMO mapping write and execute fault probes must run separately")
 )))]
 compile_error!("userspace-vmo-seal-probe must run separately from other probe scenarios");
 
+#[cfg(all(feature = "userspace-job-accounting-probe", any(
+    feature = "minimal-init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
+    feature = "userspace-vmo-map-probe", feature = "userspace-vmo-seal-probe",
+    feature = "user-isolation-probe", feature = "cooperative-deadlock-probe", feature = "x86-exception-probe",
+)))]
+compile_error!("userspace-job-accounting-probe must run separately from other scenarios");
+
 pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
 pub(crate) const USER_STACK: usize = 0x0000_0020_0000_0000;
 pub(crate) const STACK_SIZE: usize = 16384;
@@ -176,12 +183,18 @@ fn cooperative_batch(root: &Arc<SpinLock<Job>>) -> scheduler::Stats {
 }
 
 pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
+    super::memory::accounting_tests::run();
     address_space_lifecycle(memory);
     probe::self_test();
     channel::self_test();
     vmo::self_test();
     scheduler::init();
     scheduler::self_test(&root);
+    if cfg!(feature = "userspace-job-accounting-probe") {
+        #[cfg(feature = "userspace-job-accounting-probe")]
+        super::job_accounting_probe::run(&root);
+        halt();
+    }
     if cfg!(feature = "userspace-vmo-seal-probe") {
         #[cfg(feature = "userspace-vmo-seal-probe")]
         super::vmo_seal_probe::run(&root);
@@ -304,7 +317,14 @@ fn cap_errno(error: CapError) -> isize {
         CapError::Revoked => -116,
         CapError::InvalidRights => -22,
         CapError::OutOfMemory => -12,
-        CapError::NodeCapacity => -28,
+        CapError::NodeCapacity | CapError::JobQuota => -28,
+    }
+}
+
+fn allocation_errno(error: crate::kernel::memory::accounting::AllocError) -> isize {
+    match error {
+        crate::kernel::memory::accounting::AllocError::Quota => -28,
+        crate::kernel::memory::accounting::AllocError::OutOfMemory => -12,
     }
 }
 
@@ -315,6 +335,11 @@ pub(crate) fn dispatch_for_process(
     nr: usize,
     args: [usize; 6],
 ) -> isize {
+    let owner = process.lock().budget().clone();
+    crate::kernel::memory::accounting::with_budget(&owner, || dispatch_in_budget(process, nr, args))
+}
+
+fn dispatch_in_budget(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize; 6]) -> isize {
     if nr == SYS_YIELD {
         return 0;
     }
@@ -456,6 +481,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
         {
             let process = scheduler::current_process();
             let handles = process.lock().handle_table().lock().count();
+            #[cfg(feature = "userspace-job-accounting-probe")]
+            super::job_accounting_probe::finish(args[0], handles);
             #[cfg(feature = "userspace-elf-probe")]
             super::elf_probe::finish(args[0], handles);
             #[cfg(feature = "userspace-vmo-probe")]
@@ -516,6 +543,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
     if let Some(probe) = PROBE.lock().as_mut() {
         probe.observer.observe(nr, args, result, probe.isolation);
     }
+    #[cfg(feature = "userspace-job-accounting-probe")]
+    super::job_accounting_probe::observe(nr, result);
     #[cfg(feature = "userspace-elf-probe")]
     super::elf_probe::observe(nr, result);
     #[cfg(feature = "userspace-vmo-probe")]

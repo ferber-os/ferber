@@ -2,6 +2,9 @@
 #![feature(allocator_ext)]
 #![allow(dead_code)]
 extern crate alloc;
+#[path = "accounting-host.rs"]
+mod accounting_host;
+pub use accounting_host::accounting;
 
 #[path = "../ferber/src/kernel/ipc/channel.rs"]
 mod channel;
@@ -10,6 +13,7 @@ pub mod sync;
 
 // Only capability ownership is needed here; in-kernel tests use real CapNodes.
 mod kernel {
+    pub mod memory { pub use crate::accounting; }
     pub use crate::sync;
     pub mod capabilities {
         pub trait KernelObject: Send + Sync {
@@ -22,17 +26,28 @@ mod kernel {
 
 use channel::{Channel, ChannelError, ChannelMessage, SIGNAL_PEER_CLOSED, SIGNAL_WRITABLE};
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::{mpsc, Arc, Barrier};
 use std::time::Duration;
 
 thread_local! {
     static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+    static EXPECT_OWNER: RefCell<Option<accounting::BudgetRef>> = const { RefCell::new(None) };
+    static OWNER_CHECKS: Cell<usize> = const { Cell::new(0) };
+    static WRONG_OWNER: Cell<usize> = const { Cell::new(0) };
 }
 
 struct TestAllocator;
 unsafe impl GlobalAlloc for TestAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let _ = EXPECT_OWNER.try_with(|expected| {
+            if let Some(owner) = expected.borrow().as_ref() {
+                OWNER_CHECKS.with(|count| count.set(count.get() + 1));
+                if !owner.same_owner(&accounting::current()) {
+                    WRONG_OWNER.with(|count| count.set(count.get() + 1));
+                }
+            }
+        });
         let fail = FAIL_AFTER
             .try_with(|remaining| match remaining.get() {
                 Some(0) => true,
@@ -354,4 +369,30 @@ fn repeated_wait_generations_release_all_weak_registrations() {
     drop(sender);
     assert!(token.is_notified(2048));
     assert_eq!(Arc::weak_count(&token), 0);
+}
+
+#[test]
+fn foreign_queue_and_waiter_growth_uses_container_owner() {
+    let owner = accounting::JobBudget::child(&accounting::BudgetRef::system(), 1 << 20).unwrap();
+    let foreign = accounting::JobBudget::child(&accounting::BudgetRef::system(), 1 << 20).unwrap();
+    let (sender, receiver) = accounting::with_budget(&owner, || Channel::create().unwrap());
+    let message = accounting::with_budget(&foreign, || ChannelMessage::new(vec![0x74], vec![]));
+    EXPECT_OWNER.with(|slot| *slot.borrow_mut() = Some(owner.clone()));
+    OWNER_CHECKS.set(0);
+    WRONG_OWNER.set(0);
+    accounting::with_budget(&foreign, || sender.send(message).unwrap());
+    EXPECT_OWNER.with(|slot| *slot.borrow_mut() = None);
+    assert!(OWNER_CHECKS.get() > 0);
+    assert_eq!(WRONG_OWNER.get(), 0);
+    drop(receiver.recv().unwrap());
+    let token = Arc::new(channel::WaitToken::new());
+    token.start(1);
+    EXPECT_OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+    OWNER_CHECKS.set(0);
+    WRONG_OWNER.set(0);
+    assert!(accounting::with_budget(&foreign, || receiver.register_wait(&token, 1).unwrap()));
+    EXPECT_OWNER.with(|slot| *slot.borrow_mut() = None);
+    assert!(OWNER_CHECKS.get() > 0);
+    assert_eq!(WRONG_OWNER.get(), 0);
+    receiver.unregister_wait(&token, 1);
 }

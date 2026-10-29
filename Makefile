@@ -4,6 +4,17 @@ MINIMAL_INIT ?= 0
 VMO_PROBE ?= 0
 VMO_MAP_PROBE ?= 0
 VMO_SEAL_PROBE ?= 0
+JOB_ACCOUNTING_PROBE ?= 0
+
+ifeq ($(JOB_ACCOUNTING_PROBE),1)
+ifneq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE)$(VMO_MAP_PROBE)$(VMO_SEAL_PROBE),00000)
+$(error JOB_ACCOUNTING_PROBE must run separately from other payloads)
+endif
+KERNEL_FEATURES = --features userspace-job-accounting-probe
+RISCV_PAYLOAD = -initrd target/userspace-job-accounting-probe/riscv64gc-unknown-none-elf/debug/probe.elf
+X86_PAYLOAD = target/userspace-job-accounting-probe/x86_64-unknown-none/release/probe.elf
+X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-job-accounting-probe
+endif
 
 ifeq ($(VMO_SEAL_PROBE),1)
 ifneq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE)$(VMO_MAP_PROBE),0000)
@@ -51,7 +62,7 @@ KERNEL_FEATURES = --features userspace-elf-probe
 RISCV_PAYLOAD = -initrd target/userspace-elf/riscv64gc-unknown-none-elf/debug/probe.elf
 X86_PAYLOAD = target/userspace-elf/x86_64-unknown-none/release/probe.elf
 X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-elf-probe
-else ifeq ($(MINIMAL_INIT)$(VMO_PROBE)$(VMO_MAP_PROBE)$(VMO_SEAL_PROBE),0000)
+else ifeq ($(MINIMAL_INIT)$(VMO_PROBE)$(VMO_MAP_PROBE)$(VMO_SEAL_PROBE)$(JOB_ACCOUNTING_PROBE),00000)
 X86_ISO_BUILD = scripts/x86-preview.sh --release
 endif
 
@@ -63,6 +74,9 @@ build:
 	cd ferber && cargo build $(KERNEL_FEATURES)
 
 riscv-payload:
+ifeq ($(JOB_ACCOUNTING_PROBE),1)
+	scripts/build-user.sh job-accounting-probe riscv64gc-unknown-none-elf debug >/dev/null
+endif
 ifeq ($(VMO_SEAL_PROBE),1)
 	scripts/build-user.sh vmo-seal-probe riscv64gc-unknown-none-elf debug >/dev/null
 endif
@@ -103,6 +117,9 @@ x86-smoke:
 	scripts/x86-smoke.sh
 
 x86-iso:
+ifeq ($(JOB_ACCOUNTING_PROBE),1)
+	scripts/build-user.sh job-accounting-probe x86_64-unknown-none release >/dev/null
+endif
 ifeq ($(VMO_SEAL_PROBE),1)
 	scripts/build-user.sh vmo-seal-probe x86_64-unknown-none release >/dev/null
 endif

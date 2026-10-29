@@ -1,202 +1,221 @@
-//! Buddy Allocator for the Ferber Kernel Heap.
-//!
-//! Provides dynamic memory for kernel objects (Capabilities, VMO structs, etc).
-//! Max buddy size is 4 KiB (1 page). Allocations > 4 KiB are forwarded directly
-//! to the physical bitmap allocator.
-
-use crate::kernel::memory::{bitmap, phys_map};
+//! Per-owner buddy arenas. Every backing page is charged once, including slack.
+use super::{
+    accounting::{self, AllocError, BudgetRef, JobBudget},
+    bitmap, phys_map,
+};
+use crate::kernel::sync::SpinLock;
 use core::alloc::{GlobalAlloc, Layout};
-use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{mem, ptr};
 
 const PAGE_SIZE: usize = 4096;
 const MIN_BLOCK_SIZE: usize = 32;
-const MAX_ORDER: usize = 7; // 4096 = 32 * 2^7
+const MAX_ORDER: usize = 7;
 pub const MAX_ALLOC_SIZE: usize = 128 * 1024 * 1024;
 
-struct FreeBlock {
-    next: Option<*mut FreeBlock>,
+pub(super) struct Arena {
+    free: [*mut u8; MAX_ORDER + 1],
 }
-
-struct BuddyState {
-    free_lists: [Option<*mut FreeBlock>; MAX_ORDER + 1],
-}
-
-pub struct BuddyAllocator {
-    state: core::cell::UnsafeCell<BuddyState>,
-    lock: AtomicBool,
-}
-
-unsafe impl Sync for BuddyAllocator {}
-
-#[global_allocator]
-static HEAP_ALLOCATOR: BuddyAllocator = BuddyAllocator {
-    state: core::cell::UnsafeCell::new(BuddyState {
-        free_lists: [None; MAX_ORDER + 1],
-    }),
-    lock: AtomicBool::new(false),
-};
-
-impl BuddyAllocator {
-    fn with<R>(&self, f: impl FnOnce(&mut BuddyState) -> R) -> R {
-        while self
-            .lock
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
+impl Arena {
+    pub const fn new() -> Self {
+        Self {
+            free: [ptr::null_mut(); MAX_ORDER + 1],
         }
-        let result = f(unsafe { &mut *self.state.get() });
-        self.lock.store(false, Ordering::Release);
-        result
+    }
+    pub fn is_empty(&self) -> bool {
+        self.free.iter().all(|p| p.is_null())
     }
 }
-
-fn size_to_order(size: usize) -> usize {
-    let size = size.next_power_of_two().max(MIN_BLOCK_SIZE);
-    size.trailing_zeros() as usize - MIN_BLOCK_SIZE.trailing_zeros() as usize
+#[repr(C)]
+struct Header {
+    owner: *const JobBudget,
+    base: *mut u8,
+    span: usize,
+    large: usize,
 }
+pub const HEADER_SIZE: usize = mem::size_of::<Header>();
+static HEAP_LOCK: SpinLock<()> = SpinLock::new(());
+pub struct BuddyAllocator;
+#[cfg_attr(not(test), global_allocator)]
+static HEAP_ALLOCATOR: BuddyAllocator = BuddyAllocator;
 
-fn order_to_size(order: usize) -> usize {
-    MIN_BLOCK_SIZE << order
+fn extent(layout: Layout) -> Option<(usize, usize)> {
+    if layout.size() == 0
+        || layout.size().max(layout.align()) > MAX_ALLOC_SIZE
+        || layout.align() > PAGE_SIZE
+    {
+        return None;
+    }
+    let align = layout.align().max(mem::align_of::<Header>());
+    let offset = HEADER_SIZE.checked_add(align - 1)? & !(align - 1);
+    Some((offset, offset.checked_add(layout.size())?))
 }
-
+fn order(size: usize) -> usize {
+    size.next_power_of_two()
+        .max(MIN_BLOCK_SIZE)
+        .trailing_zeros() as usize
+        - 5
+}
+unsafe fn pop(arena: &mut Arena, index: usize) -> *mut u8 {
+    let block = arena.free[index];
+    arena.free[index] = unsafe { block.cast::<*mut u8>().read() };
+    block
+}
+unsafe fn push(arena: &mut Arena, index: usize, block: *mut u8) {
+    unsafe {
+        block.cast::<*mut u8>().write(arena.free[index]);
+    }
+    arena.free[index] = block;
+}
+impl BuddyAllocator {
+    unsafe fn allocate(&self, layout: Layout, owner: &BudgetRef) -> *mut u8 {
+        let Some((offset, required)) = extent(layout) else {
+            accounting::failed(AllocError::OutOfMemory);
+            return ptr::null_mut();
+        };
+        let result = {
+            let _heap = HEAP_LOCK.lock();
+            accounting::transaction(|ledger| {
+                owner.open_locked(ledger)?;
+                let (base, span, large) = if required > PAGE_SIZE {
+                    let pages = required.div_ceil(PAGE_SIZE);
+                    let span = pages * PAGE_SIZE;
+                    owner.reserve_locked(span, ledger)?;
+                    let Some(physical) = bitmap::allocate_frames(pages) else {
+                        owner.release_locked(span, ledger);
+                        return Err(AllocError::OutOfMemory);
+                    };
+                    (
+                        phys_map::phys_to_virt(physical).expect("heap RAM alias") as *mut u8,
+                        span,
+                        1,
+                    )
+                } else {
+                    let wanted = order(required);
+                    let arena = unsafe { &mut *owner.budget().arena.get() };
+                    let available =
+                        (wanted..=MAX_ORDER).find(|index| !arena.free[*index].is_null());
+                    let (block, mut level) = if let Some(level) = available {
+                        (unsafe { pop(arena, level) }, level)
+                    } else {
+                        owner.reserve_locked(PAGE_SIZE, ledger)?;
+                        let Some(physical) = bitmap::allocate_frame() else {
+                            owner.release_locked(PAGE_SIZE, ledger);
+                            return Err(AllocError::OutOfMemory);
+                        };
+                        (
+                            phys_map::phys_to_virt(physical).expect("heap RAM alias") as *mut u8,
+                            MAX_ORDER,
+                        )
+                    };
+                    while level > wanted {
+                        level -= 1;
+                        unsafe {
+                            push(arena, level, block.add(MIN_BLOCK_SIZE << level));
+                        }
+                    }
+                    (block, MIN_BLOCK_SIZE << wanted, 0)
+                };
+                let user = unsafe { base.add(offset) };
+                unsafe {
+                    user.sub(HEADER_SIZE).cast::<Header>().write(Header {
+                        owner: owner.retain_raw(),
+                        base,
+                        span,
+                        large,
+                    });
+                }
+                Ok(user)
+            })
+        };
+        match result {
+            Ok(pointer) => pointer,
+            Err(error) => {
+                accounting::failed(error);
+                ptr::null_mut()
+            }
+        }
+    }
+}
 unsafe impl GlobalAlloc for BuddyAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size = layout.size().max(layout.align());
-        if size == 0 || size > MAX_ALLOC_SIZE {
+        let owner = accounting::current();
+        unsafe { self.allocate(layout, &owner) }
+    }
+    unsafe fn dealloc(&self, pointer: *mut u8, _: Layout) {
+        if pointer.is_null() {
+            return;
+        }
+        let header = unsafe { pointer.sub(HEADER_SIZE).cast::<Header>().read() };
+        let owner = unsafe { BudgetRef::from_raw(header.owner) };
+        {
+            let _heap = HEAP_LOCK.lock();
+            accounting::transaction(|ledger| {
+                if header.large != 0 {
+                    bitmap::free_frames(
+                        phys_map::virt_to_phys(header.base as usize)
+                            .expect("heap physical address"),
+                        header.span / PAGE_SIZE,
+                    )
+                    .expect("invalid heap span free");
+                    owner.release_locked(header.span, ledger);
+                } else {
+                    let arena = unsafe { &mut *owner.budget().arena.get() };
+                    let mut block = header.base as usize;
+                    let mut level = order(header.span);
+                    while level < MAX_ORDER {
+                        let buddy = (block ^ (MIN_BLOCK_SIZE << level)) as *mut u8;
+                        let mut link = &mut arena.free[level] as *mut *mut u8;
+                        while unsafe { !(*link).is_null() && *link != buddy } {
+                            link = unsafe { (*link).cast::<*mut u8>() };
+                        }
+                        if unsafe { (*link).is_null() } {
+                            break;
+                        }
+                        unsafe {
+                            *link = buddy.cast::<*mut u8>().read();
+                        }
+                        block = block.min(buddy as usize);
+                        level += 1;
+                    }
+                    if level == MAX_ORDER {
+                        bitmap::free_frame(
+                            phys_map::virt_to_phys(block).expect("heap physical address"),
+                        )
+                        .expect("invalid heap page free");
+                        owner.release_locked(PAGE_SIZE, ledger);
+                    } else {
+                        unsafe {
+                            push(arena, level, block as *mut u8);
+                        }
+                    }
+                }
+            });
+        }
+        // The last budget reference may free parent-owned ledger storage recursively.
+        drop(owner);
+    }
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let Ok(next_layout) = Layout::from_size_align(new_size, layout.align()) else {
+            accounting::failed(AllocError::OutOfMemory);
+            return ptr::null_mut();
+        };
+        if extent(next_layout).is_none() {
+            accounting::failed(AllocError::OutOfMemory);
             return ptr::null_mut();
         }
-
-        if size > PAGE_SIZE {
-            if layout.align() > PAGE_SIZE {
-                // The physical bitmap allocator only guarantees PAGE_SIZE alignment.
-                // For now, fail allocations requiring larger alignments.
-                return ptr::null_mut();
-            }
-            let count = size.div_ceil(PAGE_SIZE);
-            return bitmap::allocate_frames(count)
-                .map(|addr| phys_map::phys_to_virt(addr).expect("heap RAM alias") as *mut u8)
-                .unwrap_or(ptr::null_mut());
+        let header = unsafe { &*pointer.sub(HEADER_SIZE).cast::<Header>() };
+        let offset = pointer as usize - header.base as usize;
+        if new_size != 0 && new_size <= header.span - offset {
+            return pointer;
         }
-
-        let order = size_to_order(size);
-
-        self.with(|state| {
-            for o in order..=MAX_ORDER {
-                if let Some(block) = state.free_lists[o] {
-                    state.free_lists[o] = unsafe { (*block).next };
-
-                    // Split down to the required order
-                    let mut current_order = o;
-                    let current_block = block as usize;
-
-                    while current_order > order {
-                        current_order -= 1;
-                        let half_size = order_to_size(current_order);
-                        let buddy = (current_block + half_size) as *mut FreeBlock;
-
-                        unsafe {
-                            (*buddy).next = state.free_lists[current_order];
-                        }
-                        state.free_lists[current_order] = Some(buddy);
-                    }
-
-                    return current_block as *mut u8;
-                }
+        let owner = unsafe { BudgetRef::clone_raw(header.owner) };
+        let replacement = unsafe { self.allocate(next_layout, &owner) };
+        if !replacement.is_null() {
+            unsafe {
+                ptr::copy_nonoverlapping(pointer, replacement, layout.size().min(new_size));
+                self.dealloc(pointer, layout);
             }
-
-            // Need a new page
-            if let Some(frame) = bitmap::allocate_frame() {
-                let mut current_order = MAX_ORDER;
-                let current_block = phys_map::phys_to_virt(frame).expect("heap RAM alias");
-
-                while current_order > order {
-                    current_order -= 1;
-                    let half_size = order_to_size(current_order);
-                    let buddy = (current_block + half_size) as *mut FreeBlock;
-
-                    unsafe {
-                        (*buddy).next = state.free_lists[current_order];
-                    }
-                    state.free_lists[current_order] = Some(buddy);
-                }
-
-                return current_block as *mut u8;
-            }
-
-            ptr::null_mut()
-        })
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if ptr.is_null() {
-            return;
         }
-
-        let size = layout.size().max(layout.align());
-        if size > PAGE_SIZE {
-            let count = size.div_ceil(PAGE_SIZE);
-            bitmap::free_frames(
-                phys_map::virt_to_phys(ptr as usize).expect("heap physical address"),
-                count,
-            )
-            .expect("invalid free");
-            return;
-        }
-
-        let order = size_to_order(size);
-
-        self.with(|state| {
-            let mut current_block = ptr as usize;
-            let mut current_order = order;
-
-            while current_order < MAX_ORDER {
-                let buddy = current_block ^ order_to_size(current_order);
-
-                // Search for buddy in current free list
-                let mut prev: Option<*mut FreeBlock> = None;
-                let mut curr = state.free_lists[current_order];
-                let mut found = false;
-
-                while let Some(node) = curr {
-                    if node as usize == buddy {
-                        // Remove buddy from list
-                        if let Some(p) = prev {
-                            unsafe { (*p).next = (*node).next };
-                        } else {
-                            state.free_lists[current_order] = unsafe { (*node).next };
-                        }
-                        found = true;
-                        break;
-                    }
-                    prev = Some(node);
-                    curr = unsafe { (*node).next };
-                }
-
-                if found {
-                    // Merge blocks
-                    current_block = core::cmp::min(current_block, buddy);
-                    current_order += 1;
-                } else {
-                    break;
-                }
-            }
-
-            if current_order == MAX_ORDER {
-                // Free the entire page back to the physical allocator
-                bitmap::free_frame(
-                    phys_map::virt_to_phys(current_block).expect("heap physical address"),
-                )
-                .expect("invalid page free");
-            } else {
-                // Add to the appropriate free list
-                let block = current_block as *mut FreeBlock;
-                unsafe {
-                    (*block).next = state.free_lists[current_order];
-                }
-                state.free_lists[current_order] = Some(block);
-            }
-        })
+        replacement
     }
 }

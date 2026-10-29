@@ -1,6 +1,6 @@
 //! Transactional channel operations. The process lock pins all user mappings.
 
-use super::{cap_errno, SYS_CHAN_CREATE, SYS_CHAN_RECV, SYS_CHAN_SEND};
+use super::{allocation_errno, cap_errno, SYS_CHAN_CREATE, SYS_CHAN_RECV, SYS_CHAN_SEND};
 use crate::kernel::capabilities::{
     CapNode, HandleTable, ObjectType, Resource, Rights, CAP_NODE_ALLOCATOR,
 };
@@ -36,6 +36,7 @@ impl From<ChannelError> for Error {
             ChannelError::MessageTooLarge | ChannelError::TooManyHandles => -90,
             ChannelError::InsufficientRights => -13,
             ChannelError::OutOfMemory => -12,
+            ChannelError::JobQuota => -28,
         })
     }
 }
@@ -121,7 +122,8 @@ fn send(process: &Arc<SpinLock<Process>>, args: [usize; 6]) -> Result<(), Error>
         return Err(Error(-90));
     }
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(args[2]).map_err(|_| Error(-12))?;
+    crate::kernel::memory::accounting::attempt(|| bytes.try_reserve_exact(args[2]))
+        .map_err(|error| Error(allocation_errno(error)))?;
     bytes.resize(args[2], 0);
     let mut encoded = [0; DEFAULT_MAX_HANDLES * 4];
     unsafe {
@@ -157,7 +159,8 @@ fn send(process: &Arc<SpinLock<Process>>, args: [usize; 6]) -> Result<(), Error>
         ids[index] = handle;
     }
     let mut handles = Vec::new();
-    handles.try_reserve_exact(args[4]).map_err(|_| Error(-12))?;
+    crate::kernel::memory::accounting::attempt(|| handles.try_reserve_exact(args[4]))
+        .map_err(|error| Error(allocation_errno(error)))?;
     // 2026-10-16 20:05 AST: edesur's IPC protocol: send darkness, receive nothing.
     // no backpressure, no rollback, no TRANSFER right. just take the whole grid.
     // we leave your handles intact when a send fails. apparently that is optional.

@@ -166,5 +166,6 @@ pub enum CapError {
     InsufficientRights,
     InvalidRights,
     OutOfMemory,
+    JobQuota,
     NodeCapacity,
 }

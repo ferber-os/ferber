@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::kernel::capabilities::{CapNode, KernelObject};
+use crate::kernel::memory::accounting::{self, BudgetRef, AllocError};
 use crate::kernel::sync::SpinLock;
 
 pub const SIGNAL_READABLE: u32 = 1 << 0;
@@ -25,6 +26,7 @@ pub enum ChannelError {
     TooManyHandles,
     InsufficientRights,
     OutOfMemory,
+    JobQuota,
 }
 
 #[derive(Debug)]
@@ -102,6 +104,7 @@ fn notify(waiters: VecDeque<Waiter>) {
 }
 
 struct PairState {
+    owner: BudgetRef,
     queues: [VecDeque<ChannelMessage>; 2],
     waiters: [VecDeque<Waiter>; 2],
     open: [bool; 2],
@@ -170,12 +173,12 @@ impl ChannelEndpoint {
         max_message_bytes: usize,
         max_handles: usize,
     ) -> Result<(Arc<Self>, Arc<Self>), ChannelError> {
-        let pair = Arc::try_new(SpinLock::new(PairState {
+        let pair = accounting::attempt(|| Arc::try_new(SpinLock::new(PairState {
+            owner: accounting::current(),
             queues: [VecDeque::new(), VecDeque::new()],
             waiters: [VecDeque::new(), VecDeque::new()],
             open: [true, true],
-        }))
-        .map_err(|_| ChannelError::OutOfMemory)?;
+        }))).map_err(alloc_error)?;
         let endpoint = |side| Self {
             id: NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed),
             side,
@@ -184,8 +187,8 @@ impl ChannelEndpoint {
             max_message_bytes,
             max_handles,
         };
-        let first = Arc::try_new(endpoint(0)).map_err(|_| ChannelError::OutOfMemory)?;
-        let second = Arc::try_new(endpoint(1)).map_err(|_| ChannelError::OutOfMemory)?;
+        let first = accounting::attempt(|| Arc::try_new(endpoint(0))).map_err(alloc_error)?;
+        let second = accounting::attempt(|| Arc::try_new(endpoint(1))).map_err(alloc_error)?;
         Ok((first, second))
     }
 
@@ -213,13 +216,13 @@ impl ChannelEndpoint {
         if !pair.open[peer] {
             return Err(ChannelError::PeerClosed.into());
         }
+        let owner = pair.owner.clone();
         let queue = &mut pair.queues[peer];
         if queue.len() >= self.max_queue_depth {
             return Err(ChannelError::QueueFull.into());
         }
-        queue
-            .try_reserve(1)
-            .map_err(|_| ChannelError::OutOfMemory)?;
+        accounting::with_budget(&owner, || accounting::attempt(|| queue.try_reserve(1)))
+            .map_err(alloc_error)?;
         let message = prepare()?;
         assert_eq!(
             (message.bytes.len(), message.handles.len()),
@@ -242,6 +245,7 @@ impl ChannelEndpoint {
         if !pair.queues[self.side].is_empty() || !pair.open[1 - self.side] {
             return Ok(false);
         }
+        let owner = pair.owner.clone();
         let waiters = &mut pair.waiters[self.side];
         waiters.retain(|waiter| {
             waiter.token.upgrade().is_some_and(|ticket| {
@@ -251,9 +255,8 @@ impl ChannelEndpoint {
         if !waiters.iter().any(|waiter| {
             waiter.generation == generation && waiter.token.ptr_eq(&Arc::downgrade(token))
         }) {
-            waiters
-                .try_reserve(1)
-                .map_err(|_| ChannelError::OutOfMemory)?;
+            accounting::with_budget(&owner, || accounting::attempt(|| waiters.try_reserve(1)))
+                .map_err(alloc_error)?;
             waiters.push_back(Waiter {
                 token: Arc::downgrade(token),
                 generation,
@@ -431,4 +434,8 @@ pub fn self_test() {
     drop(second);
     assert_eq!(DROPS.load(Ordering::Relaxed), before + 1);
     assert_eq!(CAP_NODE_ALLOCATOR.live_count(), nodes_before);
+}
+
+fn alloc_error(error: AllocError) -> ChannelError {
+    match error { AllocError::Quota => ChannelError::JobQuota, AllocError::OutOfMemory => ChannelError::OutOfMemory }
 }

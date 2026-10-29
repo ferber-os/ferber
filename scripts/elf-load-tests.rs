@@ -1,6 +1,10 @@
 //! Exercise the production loader with fallible host resources, not real page tables.
 #![allow(dead_code)]
+#![feature(allocator_ext)]
 extern crate alloc;
+#[path = "accounting-host.rs"]
+mod accounting_host;
+pub use accounting_host::accounting;
 
 use kernel::{memory, scheduler, syscall, task};
 use std::cell::RefCell;
@@ -52,6 +56,7 @@ mod kernel {
     pub use crate::capabilities;
     pub(crate) use crate::sync;
     pub mod memory {
+        pub use crate::accounting;
         use crate::{fallible, RESOURCES};
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum VmoError {
@@ -255,6 +260,10 @@ mod kernel {
             handles: SpinLock<Handles>,
         }
         impl Process {
+            pub fn budget(&self) -> &crate::accounting::BudgetRef {
+                static SYSTEM: crate::accounting::BudgetRef = crate::accounting::BudgetRef::system();
+                &SYSTEM
+            }
             pub fn id(&self) -> u64 {
                 1
             }

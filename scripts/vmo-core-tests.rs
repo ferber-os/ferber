@@ -2,6 +2,9 @@
 #![feature(allocator_ext)]
 #![allow(dead_code)]
 extern crate alloc;
+#[path = "accounting-host.rs"]
+mod accounting_host;
+pub use accounting_host::accounting;
 #[path = "../ferber/src/kernel/sync.rs"]
 pub mod sync;
 #[path = "../ferber/src/kernel/memory/vmo.rs"]
@@ -43,6 +46,7 @@ mod kernel {
         }
     }
     pub mod memory {
+        pub use crate::accounting;
         pub mod paging {
             pub struct MapFlags { pub readable: bool, pub writable: bool, pub executable: bool }
         }
@@ -197,6 +201,29 @@ fn production_backing_and_budget_lifecycle() {
     assert_eq!(sealed.write(0, &[]), Err(VmoError::PermissionDenied));
     drop(sealed);
     assert_eq!(vmo::user_budget_stats().1, 0);
+    // This harness charges production direct frames; its metadata uses the host allocator.
+    let parent = accounting::JobBudget::child(&accounting::BudgetRef::system(), 3 * 4096).unwrap();
+    let first = accounting::JobBudget::child(&parent, 2 * 4096).unwrap();
+    let second = accounting::JobBudget::child(&parent, 2 * 4096).unwrap();
+    let backing = accounting::with_budget(&first, || Arc::new(Vmo::create_user(8192).unwrap()));
+    assert_eq!(first.used(), 8192);
+    assert_eq!(parent.used(), 8192);
+    assert!(matches!(accounting::with_budget(&second, || Vmo::create_user(8192)), Err(VmoError::JobQuota)));
+    assert_eq!(second.used(), 0);
+    first.close();
+    assert!(matches!(accounting::with_budget(&first, || Vmo::create_user(1)), Err(VmoError::JobQuota)));
+    accounting::with_budget(&second, || {
+        backing.write_owned(0, &[0x38]).unwrap();
+        backing.read_owned(0, &mut byte).unwrap();
+    });
+    assert_eq!(byte, [0x38]);
+    assert_eq!(first.used(), 8192, "sharing must not migrate the allocation charge");
+    drop(first);
+    drop(backing);
+    assert_eq!(parent.used(), 0);
+    assert_eq!(vmo::user_budget_stats().1, 0);
+    drop(second);
+    drop(parent);
     // Competing admission and publication cannot both succeed while the permit stays live.
     for _ in 0..16 {
         let memory = Arc::new(Vmo::create_user(4096).unwrap());

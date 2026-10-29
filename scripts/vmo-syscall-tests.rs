@@ -2,6 +2,9 @@
 #![feature(allocator_ext)]
 #![allow(dead_code)]
 extern crate alloc;
+#[path = "accounting-host.rs"]
+mod accounting_host;
+pub use accounting_host::accounting;
 #[path = "../ferber/src/kernel/capabilities/mod.rs"]
 pub mod capabilities;
 #[path = "../ferber/src/kernel/sync.rs"]
@@ -14,6 +17,9 @@ const SYS_VMO_WRITE: usize = 13;
 const SYS_VMO_MAP: usize = 14;
 const SYS_VMO_UNMAP: usize = 15;
 const SYS_VMO_SEAL: usize = 16;
+fn allocation_errno(error: accounting::AllocError) -> isize {
+    match error { accounting::AllocError::Quota => -28, accounting::AllocError::OutOfMemory => -12 }
+}
 fn cap_errno(error: capabilities::CapError) -> isize {
     use capabilities::CapError::*;
     match error {
@@ -23,6 +29,7 @@ fn cap_errno(error: capabilities::CapError) -> isize {
         Revoked => -116,
         InvalidRights => -22,
         OutOfMemory => -12,
+        JobQuota => -28,
         NodeCapacity => -28,
     }
 }
@@ -99,6 +106,10 @@ mod kernel {
             pub guards: Vec<(usize, usize)>,
         }
         impl Process {
+            pub fn budget(&self) -> &crate::accounting::BudgetRef {
+                static SYSTEM: crate::accounting::BudgetRef = crate::accounting::BudgetRef::system();
+                &SYSTEM
+            }
             pub fn handle_table(&self) -> &SpinLock<HandleTable> {
                 &self.table
             }
@@ -112,6 +123,7 @@ mod kernel {
         }
     }
     pub mod memory {
+        pub use crate::accounting;
         pub use crate::vmo;
         pub mod user_mem {
             #[derive(Debug)]
@@ -176,7 +188,7 @@ mod kernel {
                 pub fn user_rx() -> Self { Self { executable: true, ..Self::user_ro() } }
             }
             #[derive(Debug, PartialEq, Eq)]
-            pub enum PageError { OutOfMemory, TableBudget, AlreadyMapped, NotMapped }
+            pub enum PageError { JobQuota, OutOfMemory, TableBudget, AlreadyMapped, NotMapped }
             #[derive(Default)]
             pub struct Space(pub BTreeMap<usize, (usize, MapFlags)>);
             pub trait AddressSpace {

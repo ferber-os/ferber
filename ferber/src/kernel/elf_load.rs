@@ -34,7 +34,7 @@ pub enum LoadError {
     Task(TaskError),
 }
 
-#[cfg_attr(feature = "minimal-init", allow(dead_code))]
+#[cfg_attr(any(feature = "minimal-init", feature = "userspace-job-accounting-probe"), allow(dead_code))]
 pub fn admit(
     root: &Arc<SpinLock<Job>>,
     bytes: &[u8],
@@ -84,6 +84,16 @@ pub fn admit_named(
 }
 
 fn populate(
+    process: &Arc<SpinLock<Process>>,
+    image: &ElfImage<'_>,
+    bootstrap: Option<Arc<CapNode>>,
+    name: &'static str,
+) -> Result<Arc<SpinLock<Thread>>, LoadError> {
+    let owner = process.lock().budget().clone();
+    super::memory::accounting::with_budget(&owner, || populate_in_budget(process, image, bootstrap, name))
+}
+
+fn populate_in_budget(
     process: &Arc<SpinLock<Process>>,
     image: &ElfImage<'_>,
     bootstrap: Option<Arc<CapNode>>,

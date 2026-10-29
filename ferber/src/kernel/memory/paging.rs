@@ -46,6 +46,8 @@ pub enum PageError {
     OutOfMemory,
     /// Private user address-space table limit exceeded.
     TableBudget,
+    /// Allocation owner's Job or an ancestor cannot accept the charge.
+    JobQuota,
     /// Virtual address range is not page-aligned.
     Unaligned,
     /// Virtual address range is out of bounds for this address space.

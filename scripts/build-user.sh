@@ -8,6 +8,7 @@ user_cfg=()
 linker="$repo_root/userspace/common/linker.ld"
 case "$program" in
     init) source_dir=init; output_dir=userspace-init; basename=init ;;
+    job-accounting-probe) source_dir=job-accounting-probe; output_dir=userspace-job-accounting-probe; basename=probe ;;
     vmo-probe) source_dir=vmo-probe; output_dir=userspace-vmo; basename=probe ;;
     vmo-map-probe|vmo-map-write|vmo-map-execute)
         source_dir=vmo-map-probe; output_dir=userspace-$program; basename=probe

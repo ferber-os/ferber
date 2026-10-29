@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 use crate::kernel::memory::{bitmap, phys_map};
+use crate::kernel::memory::accounting::{self, AllocError, BudgetRef, FrameCharge};
 use alloc::vec::Vec;
 use crate::kernel::memory::vmo::VmoFrames;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -133,8 +134,16 @@ fn make_leaf_pte(paddr: usize, flags: MapFlags) -> u64 {
 }
 
 /// Allocate a 4 KiB frame for a page table and zero its contents.
-fn allocate_table() -> Result<usize, PageError> {
-    let paddr = bitmap::allocate_frame().ok_or(PageError::OutOfMemory)?;
+fn accounting_error(error: AllocError) -> PageError {
+    match error { AllocError::Quota => PageError::JobQuota, AllocError::OutOfMemory => PageError::OutOfMemory }
+}
+
+fn allocate_table(charge: &mut FrameCharge) -> Result<usize, PageError> {
+    charge.grow(1).map_err(accounting_error)?;
+    let Some(paddr) = bitmap::allocate_frame() else {
+        charge.release(1);
+        return Err(PageError::OutOfMemory);
+    };
     unsafe {
         core::ptr::write_bytes(table(paddr).cast::<u8>(), 0, PAGE_SIZE);
     }
@@ -162,7 +171,7 @@ fn validate_frames(frames: &VmoFrames, first: usize, count: usize) -> Result<(),
     Ok(())
 }
 
-struct StagedTables(Vec<(*mut u64, usize)>);
+struct StagedTables(Vec<(*mut u64, usize)>, FrameCharge);
 impl Drop for StagedTables {
     fn drop(&mut self) {
         for &(_, pa) in &self.0 { let _ = bitmap::free_frame(pa); }
@@ -175,12 +184,18 @@ pub struct Sv39AddressSpace {
     root_paddr: usize,
     table_pages: usize,
     table_limit: usize,
+    charge: FrameCharge,
 }
 
 impl Sv39AddressSpace {
     /// Creates a new Sv39 address space by allocating a root Level 2 page table.
     pub fn new() -> Result<Self, PageError> {
-        let root_paddr = allocate_table()?;
+        Self::with_owner(BudgetRef::system())
+    }
+
+    fn with_owner(owner: BudgetRef) -> Result<Self, PageError> {
+        let mut charge = FrameCharge::reserve(&owner, 0).map_err(accounting_error)?;
+        let root_paddr = allocate_table(&mut charge)?;
         let kernel_root = KERNEL_ROOT.load(Ordering::Acquire);
         if kernel_root != 0 {
             unsafe {
@@ -191,16 +206,18 @@ impl Sv39AddressSpace {
                 );
             }
         }
-        Ok(Self { root_paddr, table_pages: 1, table_limit: usize::MAX })
+        Ok(Self { root_paddr, table_pages: 1, table_limit: usize::MAX, charge })
     }
 
     pub fn new_user() -> Result<Self, PageError> {
-        let mut space = Self::new()?;
+        let mut space = Self::with_owner(accounting::current())?;
         space.table_limit = 256;
         Ok(space)
     }
 
     pub fn table_pages(&self) -> usize { self.table_pages }
+
+    pub fn budget(&self) -> &BudgetRef { self.charge.owner() }
 
     fn validate_range(&self, va: usize, count: usize) -> Result<(), PageError> {
         if !va.is_multiple_of(PAGE_SIZE) { return Err(PageError::Unaligned); }
@@ -273,10 +290,12 @@ impl Sv39AddressSpace {
         }
         self.flush_tlb_all();
         if owned && empty0 {
-            let _ = bitmap::free_frame(l0_pa);
+            bitmap::free_frame(l0_pa).expect("owned page table frame");
+            self.charge.release(1);
             self.table_pages -= 1;
             if empty1 {
-                let _ = bitmap::free_frame(l1_pa);
+                bitmap::free_frame(l1_pa).expect("owned page table frame");
+                self.charge.release(1);
                 self.table_pages -= 1;
             }
         }
@@ -308,8 +327,9 @@ impl AddressSpace for Sv39AddressSpace {
         }
         let missing = self.preflight_free_range(va, count)?;
         if missing > self.table_limit - self.table_pages { return Err(PageError::TableBudget); }
-        let mut staged = StagedTables(Vec::new());
-        staged.0.try_reserve_exact(missing).map_err(|_| PageError::OutOfMemory)?;
+        let mut staged = StagedTables(Vec::new(), FrameCharge::reserve(self.budget(), 0).map_err(accounting_error)?);
+        accounting::with_budget(self.budget(), || accounting::attempt(|| staged.0.try_reserve_exact(missing)))
+            .map_err(accounting_error)?;
         for i in 0..count {
             let address = va + i * PAGE_SIZE;
             let mut current = self.root_paddr;
@@ -319,7 +339,7 @@ impl AddressSpace for Sv39AddressSpace {
                 current = if pte != 0 { pte_to_paddr(pte) }
                 else if let Some(entry) = staged.0.iter().find(|entry| entry.0 == slot) { entry.1 }
                 else {
-                    let pa = allocate_table()?;
+                    let pa = allocate_table(&mut staged.1)?;
                     staged.0.push((slot, pa));
                     pa
                 };
@@ -329,6 +349,8 @@ impl AddressSpace for Sv39AddressSpace {
         for &(slot, pa) in &staged.0 { slot.write(make_table_pte(pa)); }
         self.table_pages += staged.0.len();
         staged.0.clear();
+        self.charge.merge(core::mem::replace(&mut staged.1,
+            FrameCharge::reserve(self.budget(), 0).expect("zero table charge")));
         for i in 0..count {
             let address = va + i * PAGE_SIZE;
             let l1 = pte_to_paddr(table(self.root_paddr).add(vpn2(address)).read());
@@ -515,13 +537,14 @@ impl Drop for Sv39AddressSpace {
                     let pte1 = unsafe { l1_table.add(i1).read() };
                     if is_table_pte(pte1) {
                         let l0_paddr = pte_to_paddr(pte1);
-                        let _ = bitmap::free_frame(l0_paddr);
+                        bitmap::free_frame(l0_paddr).expect("owned page table frame");
                     }
                 }
-                let _ = bitmap::free_frame(l1_paddr);
+                bitmap::free_frame(l1_paddr).expect("owned page table frame");
             }
         }
-        let _ = bitmap::free_frame(self.root_paddr);
+        bitmap::free_frame(self.root_paddr).expect("owned page table root");
+        self.charge.release(self.charge.pages());
         self.root_paddr = 0;
     }
 }
@@ -599,7 +622,7 @@ impl Sv39AddressSpace {
         let slot = root.add(vpn2(va));
         let mut entry = slot.read();
         if entry & PTE_V == 0 {
-            entry = make_table_pte(allocate_table()?);
+            entry = make_table_pte(allocate_table(&mut self.charge)?);
             self.table_pages += 1;
             slot.write(entry);
         }

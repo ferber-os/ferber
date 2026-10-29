@@ -200,8 +200,9 @@ preflight, and frame accounting after teardown.
 The [VMO byte ABI](vmo-abi.md) exposes fresh owned RAM through create/read/write
 without exposing physical or MMIO creation. The global page budget is the
 smaller of 64 MiB and one quarter of managed pages, charged to the backing
-object until final destruction. It excludes kernel-created VMOs and is not
-hierarchical Job accounting or guaranteed kernel headroom. Byte copies stage
+object until final destruction. It excludes kernel-created VMOs and remains an
+additional policy limit alongside [hierarchical Job accounting](job-accounting.md),
+not guaranteed kernel headroom. Byte copies stage
 the whole bounded request and validate all aliases before committing. A content
 lock serializes kernel copies; future mapped user stores and SMP need separate
 synchronization. [User mappings](vmo-mapping.md) retain shared backing independently of handles,

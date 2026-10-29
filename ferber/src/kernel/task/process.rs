@@ -13,6 +13,7 @@ use crate::arch::ArchAddressSpace;
 use crate::kernel::capabilities::{HandleTable, KernelObject};
 use crate::kernel::memory::vmo::{Vmo, WritableMapping};
 use crate::kernel::memory::paging::{AddressSpace, MapFlags};
+use crate::kernel::memory::accounting::{self, BudgetRef, AllocError};
 use crate::kernel::sync::SpinLock;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -21,8 +22,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 static NEXT_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) fn next_process_id() -> u64 {
-    NEXT_PROCESS_ID.fetch_add(1, Ordering::Relaxed)
+pub(crate) fn next_process_id() -> Result<u64, TaskError> {
+    NEXT_PROCESS_ID.try_update(Ordering::Relaxed, Ordering::Relaxed,
+        |id| id.checked_add(1)).map_err(|_| TaskError::QuotaExceeded)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,7 @@ pub struct Process {
     mappings: Vec<MappingRecord>,
     threads: Vec<Arc<SpinLock<Thread>>>,
     self_weak: Option<Weak<SpinLock<Process>>>,
+    budget: BudgetRef,
 }
 
 unsafe impl Send for Process {}
@@ -71,6 +74,7 @@ impl Process {
         address_space: ArchAddressSpace,
         job: Option<Weak<SpinLock<Job>>>,
     ) -> Self {
+        let budget = address_space.budget().clone();
         Self {
             id,
             name,
@@ -82,6 +86,7 @@ impl Process {
             mappings: Vec::new(),
             threads: Vec::new(),
             self_weak: None,
+            budget,
         }
     }
 
@@ -90,8 +95,7 @@ impl Process {
         entry: usize,
         kstack_size: usize,
     ) -> Result<Arc<SpinLock<Thread>>, TaskError> {
-        let name = alloc::format!("{}/thread_{}", self.name, self.threads.len());
-        self.create_named_thread(name, entry, kstack_size)
+        self.create_named_thread(self.name, entry, kstack_size)
     }
 
     pub fn create_named_thread(
@@ -103,27 +107,25 @@ impl Process {
         if self.state == ProcessState::Dead {
             return Err(TaskError::ProcessDead);
         }
-        self.threads
-            .try_reserve(1)
-            .map_err(|_| TaskError::OutOfMemory)?;
-        let kstack = Vmo::create_contiguous(kstack_size).map_err(|_| TaskError::OutOfMemory)?;
-        let kstack_base = crate::kernel::memory::phys_map::phys_to_virt(
-            kstack.frames().get(0).ok_or(TaskError::OutOfMemory)?,
-        )
-        .ok_or(TaskError::OutOfMemory)?;
-        let kstack_top = kstack_base + kstack.size();
-        let thread_id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
-        let thread = Arc::try_new(SpinLock::new(Thread::new(
-            thread_id,
-            name,
-            entry,
-            kstack,
-            kstack_top,
-            self.self_weak.clone(),
-        )))
-        .map_err(|_| TaskError::OutOfMemory)?;
-        self.threads.push(Arc::clone(&thread));
-        Ok(thread)
+        let budget = self.budget.clone();
+        accounting::with_budget(&budget, || {
+            accounting::attempt(|| self.threads.try_reserve(1)).map_err(alloc_error)?;
+            let kstack = Vmo::create_contiguous(kstack_size).map_err(|error| {
+                if error == crate::kernel::memory::vmo::VmoError::JobQuota { TaskError::QuotaExceeded }
+                else { TaskError::OutOfMemory }
+            })?;
+            let kstack_base = crate::kernel::memory::phys_map::phys_to_virt(
+                kstack.frames().get(0).ok_or(TaskError::OutOfMemory)?,
+            ).ok_or(TaskError::OutOfMemory)?;
+            let kstack_top = kstack_base + kstack.size();
+            let thread_id = NEXT_THREAD_ID.try_update(Ordering::Relaxed, Ordering::Relaxed,
+                |id| id.checked_add(1)).map_err(|_| TaskError::QuotaExceeded)?;
+            let thread = accounting::attempt(|| Arc::try_new(SpinLock::new(Thread::new(
+                thread_id, name, entry, kstack, kstack_top, self.self_weak.clone(),
+            )))).map_err(alloc_error)?;
+            self.threads.push(Arc::clone(&thread));
+            Ok(thread)
+        })
     }
 
     pub fn kill(&mut self) {
@@ -161,13 +163,13 @@ impl Process {
     }
 
     pub fn retain_backing(&mut self, vmo: Vmo) {
-        self.backing.push(vmo);
+        accounting::with_budget(&self.budget, || self.backing.push(vmo));
     }
 
     pub fn reserve_backing(&mut self, additional: usize) -> Result<(), TaskError> {
-        self.backing
-            .try_reserve(additional)
-            .map_err(|_| TaskError::OutOfMemory)
+        accounting::with_budget(&self.budget, || {
+            accounting::attempt(|| self.backing.try_reserve(additional)).map_err(alloc_error)
+        })
     }
 
     pub fn detach_thread(&mut self, id: u64) -> Option<Arc<SpinLock<Thread>>> {
@@ -214,6 +216,8 @@ impl Process {
         &mut self.address_space
     }
 
+    pub fn budget(&self) -> &BudgetRef { &self.budget }
+
     pub fn job(&self) -> Option<Weak<SpinLock<Job>>> {
         self.job.clone()
     }
@@ -225,4 +229,8 @@ impl Process {
     pub(crate) fn set_self_weak(&mut self, weak: Weak<SpinLock<Process>>) {
         self.self_weak = Some(weak);
     }
+}
+
+fn alloc_error(error: AllocError) -> TaskError {
+    match error { AllocError::Quota => TaskError::QuotaExceeded, AllocError::OutOfMemory => TaskError::OutOfMemory }
 }

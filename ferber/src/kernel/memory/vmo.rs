@@ -12,6 +12,7 @@ use crate::kernel::sync::SpinLock;
 use crate::kernel::capabilities::{KernelObject, Rights};
 use crate::kernel::memory::paging::MapFlags;
 use crate::kernel::memory::{bitmap, phys_map};
+use crate::kernel::memory::accounting::{self, AllocError, FrameCharge};
 
 const PAGE_SIZE: usize = 4096;
 pub const MAX_USER_VMO_SIZE: usize = 16 * 1024 * 1024;
@@ -58,6 +59,7 @@ pub enum VmoError {
     ZeroSize,
     TooLarge,
     UserBudget,
+    JobQuota,
     InvalidBacking,
     /// Physical allocator ran out of frames.
     OutOfMemory,
@@ -120,6 +122,7 @@ pub struct Vmo {
     is_physical: bool,
     content: SpinLock<ContentState>,
     user_charge: Option<UserCharge>,
+    frame_charge: Option<FrameCharge>,
 }
 
 #[derive(Default)]
@@ -242,10 +245,9 @@ impl Vmo {
         }
 
         let num_pages = size.div_ceil(PAGE_SIZE);
+        let frame_charge = FrameCharge::reserve(&accounting::current(), num_pages).map_err(alloc_error)?;
         let mut frames = Vec::new();
-        frames
-            .try_reserve_exact(num_pages)
-            .map_err(|_| VmoError::OutOfMemory)?;
+        accounting::attempt(|| frames.try_reserve_exact(num_pages)).map_err(alloc_error)?;
 
         for _ in 0..num_pages {
             match bitmap::allocate_frame() {
@@ -262,7 +264,7 @@ impl Vmo {
                 }
                 None => {
                     for frame in frames {
-                        let _ = bitmap::free_frame(frame);
+                        bitmap::free_frame(frame).expect("unpublished VMO frame");
                     }
                     return Err(VmoError::OutOfMemory);
                 }
@@ -275,6 +277,7 @@ impl Vmo {
             is_physical: false,
             content: SpinLock::new(ContentState::default()),
             user_charge: None,
+            frame_charge: Some(frame_charge),
         })
     }
 
@@ -285,6 +288,7 @@ impl Vmo {
         }
 
         let num_pages = size.div_ceil(PAGE_SIZE);
+        let frame_charge = FrameCharge::reserve(&accounting::current(), num_pages).map_err(alloc_error)?;
         let base = bitmap::allocate_frames(num_pages).ok_or(VmoError::OutOfMemory)?;
         unsafe {
             ptr::write_bytes(
@@ -300,6 +304,7 @@ impl Vmo {
             is_physical: false,
             content: SpinLock::new(ContentState::default()),
             user_charge: None,
+            frame_charge: Some(frame_charge),
         })
     }
 
@@ -322,6 +327,7 @@ impl Vmo {
             is_physical: true,
             content: SpinLock::new(ContentState::default()),
             user_charge: None,
+            frame_charge: None,
         })
     }
 
@@ -448,8 +454,12 @@ impl Drop for Vmo {
     fn drop(&mut self) {
         if !self.is_physical {
             for frame in self.frames.iter() {
-                let _ = bitmap::free_frame(frame);
+                bitmap::free_frame(frame).expect("owned VMO frame");
             }
         }
     }
+}
+
+fn alloc_error(error: AllocError) -> VmoError {
+    match error { AllocError::Quota => VmoError::JobQuota, AllocError::OutOfMemory => VmoError::OutOfMemory }
 }

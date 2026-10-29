@@ -1,6 +1,6 @@
 //! Capability-authorized byte operations; staging makes aliased copies transactional.
 
-use super::{cap_errno, SYS_VMO_CREATE, SYS_VMO_READ, SYS_VMO_WRITE, SYS_VMO_MAP, SYS_VMO_UNMAP, SYS_VMO_SEAL};
+use super::{allocation_errno, cap_errno, SYS_VMO_CREATE, SYS_VMO_READ, SYS_VMO_WRITE, SYS_VMO_MAP, SYS_VMO_UNMAP, SYS_VMO_SEAL};
 use crate::kernel::capabilities::{CapNode, ObjectType, Rights, CAP_NODE_ALLOCATOR};
 use crate::kernel::memory::{
     user_mem,
@@ -28,7 +28,7 @@ pub(super) const INITIAL_RIGHTS: Rights = Rights::READ
 fn errno(error: VmoError) -> isize {
     match error {
         VmoError::OutOfMemory => -12isize,
-        VmoError::UserBudget => -28isize,
+        VmoError::UserBudget | VmoError::JobQuota => -28isize,
         VmoError::TooLarge => -90isize,
         VmoError::PermissionDenied => -13isize,
         VmoError::Busy => -16isize,
@@ -64,7 +64,8 @@ fn create(process: &Arc<SpinLock<Process>>, size: usize, options: usize) -> Resu
             return Err(-24isize);
         }
     }
-    let object = Arc::try_new(Vmo::create_user(size).map_err(errno)?).map_err(|_| -12isize)?;
+    let backing = Vmo::create_user(size).map_err(errno)?;
+    let object = crate::kernel::memory::accounting::attempt(|| Arc::try_new(backing)).map_err(allocation_errno)?;
     let mut rights = INITIAL_RIGHTS;
     if options & VMO_CREATE_MAPPABLE != 0 { rights |= Rights::MAP; }
     if options & VMO_CREATE_EXECUTABLE != 0 { rights |= Rights::EXECUTE; }
@@ -105,7 +106,7 @@ fn lookup(process: &Process, raw: usize, rights: Rights) -> Result<Arc<CapNode>,
 fn page_errno(error: PageError) -> isize {
     match error {
         PageError::OutOfMemory => -12,
-        PageError::TableBudget => -28,
+        PageError::TableBudget | PageError::JobQuota => -28,
         PageError::AlreadyMapped => -17,
         _ => -14,
     }
@@ -144,7 +145,7 @@ fn map(process: &Arc<SpinLock<Process>>, args: [usize; 6]) -> Result<(), isize> 
     if process.mappings().len() >= 64 || process.mappings().iter().map(|r| r.len / 4096).sum::<usize>() + len / 4096 > 16384 {
         return Err(-28);
     }
-    process.mappings_mut().try_reserve(1).map_err(|_| -12isize)?;
+    crate::kernel::memory::accounting::attempt(|| process.mappings_mut().try_reserve(1)).map_err(allocation_errno)?;
     unsafe { process.address_space_mut().map_pages(base, object.frames(), offset / 4096, len / 4096, flags).map_err(page_errno)?; }
     process.mappings_mut().push(MappingRecord { base, len, offset, flags, object: Arc::clone(&object), _writable: writable });
     Ok(())
@@ -200,7 +201,7 @@ fn copy(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize; 6]) -> Result
             .map_err(|_| -14isize)?;
     }
     let mut staging = Vec::new();
-    staging.try_reserve_exact(args[3]).map_err(|_| -12isize)?;
+    crate::kernel::memory::accounting::attempt(|| staging.try_reserve_exact(args[3])).map_err(allocation_errno)?;
     staging.resize(args[3], 0);
     if reading {
         object.read_owned(args[1], &mut staging).map_err(errno)?;
