@@ -101,3 +101,10 @@ Historical physical evidence applies to the v0.3.0 init/service implementation:
 a 32 GiB MSI B650M-A PRO WIFI boot reached its six normal markers with 31.46 GiB
 managed RAM and the pre-release `0.2.14` banner. The archive/initfs extension
 requires new hardware validation. No physical RISC-V result is claimed.
+
+The initramfs extension subsequently passed physical x86-64 validation on the same
+32 GiB machine with the pre-bump `0.3.0` banner: all six normal markers passed,
+including memory verification, boot payload, service launch, multi-service idle,
+init readiness and waiting. The run managed 32218 MiB (31.46 GiB) across 24 extents.
+This evidence belongs to that implementation build, not a physically tested
+`0.3.1` ISO. The version-before-hardware workflow was adopted after this run.

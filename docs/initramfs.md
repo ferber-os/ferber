@@ -78,5 +78,6 @@ successful exit and resource restoration.
 
 This service exposes immutable boot files. Persistent storage, writable filesystem
 operations, new runtime session connections and general VFS/mount policy remain
-future work. Archive validation does not authenticate boot contents. Physical
-x86-64 validation is required for this patch; RISC-V remains QEMU-only.
+future work. Archive validation does not authenticate boot contents. The implementation passed physical x86-64 validation with pre-bump `0.3.0`
+metadata. The newly versioned `0.3.1` ISO has not been physically tested; RISC-V
+remains QEMU-only.

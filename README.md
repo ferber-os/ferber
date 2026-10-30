@@ -153,17 +153,15 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.3.0** adds staged userspace task creation
-and Ferrum init launching an independently built resident service on both ports.
-Explicit Job authority controls construction and capability delegation; tracked
-wake sources distinguish rooted multi-service idle from cooperative deadlock.
-The release ISO boots this init/service path. It has passed physical x86-64
-validation; physical RISC-V remains untested. See the
-[task ABI](docs/task-creation.md), [init contract](docs/init.md) and
-[boot bundle](docs/boot-bundle.md).
-Unreleased work adds a read-only [initramfs filesystem service](docs/initramfs.md),
-streaming session access, channel wait sets and multiple configured services.
-That extension requires new physical validation.
+Current milestone: **Uranium-238-v0.3.1** adds a read-only indexed initramfs,
+a Ferrum filesystem service, streaming session access, bounded channel wait sets
+and multiple configured services. The kernel loads init; Ferrum resolves boot
+files and constructs the filesystem and service processes through explicit Job
+authority. Rooted waiting and challenge verification cover each launched child.
+The implementation passed physical x86-64 validation with pre-bump v0.3.0
+metadata; the newly versioned ISO is not claimed as physically tested. Physical
+RISC-V remains untested. See the [initramfs service](docs/initramfs.md),
+[task ABI](docs/task-creation.md) and [init contract](docs/init.md).
 Phase 2 concluded with `v0.1.7`.
 
 ---

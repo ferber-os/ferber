@@ -76,9 +76,17 @@ be incomplete, but its supported checkpoint behavior and remaining gaps must
 be explicit. Keep existing architectures working. Record validation in the PR
 so a regression can be traced to a meaningful commit with `git bisect`.
 
-Push milestone branches regularly, including before breaks, and open a draft
-PR targeting `main` early. The existing PR workflow runs the required checks;
-branch pushes update that PR. A local commit alone is not an off-machine backup.
+Push milestone branches regularly, including before breaks. A local commit alone
+is not an off-machine backup. Before building the hardware candidate, bump the
+intended release version, draft `docs/releases/<tag>.md`, then sign, commit and
+push the candidate. Build from that clean commit and record its SHA and ISO
+SHA-256 alongside the hardware evidence. Keep the version unchanged while fixing
+the candidate; only the signed tag marks a release. Rebuild and repeat affected
+validation when candidate code changes.
+
+Open the PR targeting `main` after hardware validation and any fixes are pushed.
+An early draft PR is optional when explicitly requested. The PR workflow runs the
+required checks, and subsequent branch pushes update that PR.
 
 When the milestone meets its acceptance criteria, update documentation and run
 the applicable architecture suites and hardware validation. Merge with a regular
