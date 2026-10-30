@@ -42,7 +42,7 @@ kernel continuations. A retained VMO-backed dispatcher stack runs on the
 permanent kernel root; final task/process drops happen there outside locks after
 switching away from the retired stack and address space. The last resident task
 returns control to the kernel harness for reclamation checks. This does not add
-preemption, FP/vector state, init, or task-creation syscalls.
+preemption or FP/vector state.
 
 The opt-in ELF checkpoint constructs a fresh process under the root Job and
 loads a separately compiled static executable into VMO-backed user mappings.
@@ -58,11 +58,16 @@ before task construction, and a failed construction is killed and detached
 from the Job before returning. The independently built raw ELF arrives through
 a bounded external boot payload: UEFI reads `BOOT.ELF`, while RISC-V uses FDT
 initrd bounds. Its reserved source has a permanent supervisor RO/NX mapping
-and boot-lifetime physical VMO ownership. Startup arguments, multi-file
-initramfs delivery and service launching remain separate work.
-The separate [minimal init](minimal-init.md) mode adds a kernel-owned bootstrap
-exchange and exact terminal-wait validation without weakening ordinary
-cooperative-deadlock detection. See
+and boot-lifetime physical VMO ownership. Startup arguments and multi-file
+initramfs delivery remain separate work.
+The separate [init](init.md) mode consumes a bounded init/service bundle.
+Explicit Job authority lets Ferrum construct, map and start its service through
+the [task ABI](task-creation.md). Direct child handoff moves eligible capabilities
+into an initially empty table. Draft controllers own construction; started tasks
+remain owned by their Job and scheduler after controller closure. Registered
+source generations and a bounded wait graph recognize rooted multi-service
+quiescence while preserving cooperative-deadlock detection. A dedicated probe
+exercises software wakeup; hardware event delivery remains pending. See
 [the boot-payload contract](boot-payload.md),
 [the ELF loading contract](elf-loading.md) and [startup ABI v1](userspace-startup.md).
 

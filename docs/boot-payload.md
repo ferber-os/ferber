@@ -1,9 +1,10 @@
 # External boot payload
 
-The `userspace-elf-probe` and `minimal-init` paths load one independently built raw static
-ELF supplied separately from the kernel. It uses the existing ELF loader,
-startup ABI v1. The fixture and minimal init use distinct bootstrap protocols. It is not an archive,
-initramfs, verified-boot mechanism or service-launching init.
+Raw-ELF verification paths and the `init` path receive one independently
+built opaque file separately from the kernel. Raw fixtures contain one static
+ELF; init consumes a [bounded two-executable boot bundle](boot-bundle.md).
+BootInfo v3 and the firmware loaders do not interpret the file's contents. This
+handoff is not an authenticated boot mechanism or a general initramfs.
 
 ## BootInfo v3 describes exact bytes and reserved backing
 
@@ -13,7 +14,7 @@ three fixed-width `u64` fields in order: `physical_start`, `byte_len`, and
 All fields zero means absent; partially populated descriptors are invalid.
 A present file must have 1 byte through 4 MiB. Checked arithmetic computes
 page-rounded backing independently of the exact length; page padding is not
-part of the ELF file.
+part of the payload file.
 
 `virtual_start` must equal `0xffff_fffe_0100_0000` plus the physical page offset.
 An 8 MiB window is reserved at that base. Both ports validate range, supported
@@ -96,8 +97,9 @@ physical machine has been tested. See [ELF loading](elf-loading.md) for accepted
 image restrictions and [startup ABI v1](userspace-startup.md) for the unchanged
 entry contract.
 
-Minimal init uses the same delivery and reservation rules.
-`make run MINIMAL_INIT=1` or `make x86-iso MINIMAL_INIT=1` supplies `init.elf`
-as the external payload. Its `boot_payload` marker follows readiness and
-validated terminal waiting, rather than fixture exit/reclamation. See
-[minimal init](minimal-init.md).
+Ferrum init uses the same delivery and reservation rules.
+`make run INIT=1` or `make x86-iso INIT=1` supplies `boot.bundle`
+as the external payload, still named `BOOT.ELF` on UEFI media. Its `boot_payload`
+marker follows userspace service launch, a validated request/reply and rooted
+terminal waiting, rather than fixture exit/reclamation. See
+[the boot bundle](boot-bundle.md) and [init](init.md).

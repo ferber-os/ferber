@@ -3,14 +3,14 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-use alloc::borrow::Cow;
-use alloc::sync::Weak;
-use core::cell::UnsafeCell;
+use super::process::Process;
 use crate::arch::CpuContext;
 use crate::kernel::capabilities::KernelObject;
 use crate::kernel::memory::vmo::Vmo;
 use crate::kernel::sync::SpinLock;
-use super::process::Process;
+use alloc::borrow::Cow;
+use alloc::sync::Weak;
+use core::cell::UnsafeCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
@@ -98,9 +98,12 @@ impl Thread {
     }
 
     pub fn kernel_stack_top(&self) -> usize {
-        let physical = self.kernel_stack.frames().get(0).expect("kernel stack frame");
-        crate::kernel::memory::phys_map::phys_to_virt(physical)
-            .expect("kernel stack alias")
+        let physical = self
+            .kernel_stack
+            .frames()
+            .get(0)
+            .expect("kernel stack frame");
+        crate::kernel::memory::phys_map::phys_to_virt(physical).expect("kernel stack alias")
             + self.kernel_stack.size()
     }
 

@@ -153,13 +153,14 @@ Ferber uses element names for releases.
 First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
 hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
 that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.2.14** enforces hierarchical Job memory
-budgets on both ports. Heap pages, owned VMO backing and private page tables
-retain their allocation owner through capability transfer and creator teardown.
-Limits include allocator overhead and descendant allocations; closed Jobs cannot
-allocate new storage. See [Job accounting](docs/job-accounting.md) for ownership
-and concurrency boundaries. The release ISO continues to boot minimal Ferrum
-init. Userspace task creation and service launch remain pending.
+Current milestone: **Uranium-238-v0.3.0** adds staged userspace task creation
+and Ferrum init launching an independently built resident service on both ports.
+Explicit Job authority controls construction and capability delegation; tracked
+wake sources distinguish rooted multi-service idle from cooperative deadlock.
+The release ISO boots this init/service path. It has passed physical x86-64
+validation; physical RISC-V remains untested. See the
+[task ABI](docs/task-creation.md), [init contract](docs/init.md) and
+[boot bundle](docs/boot-bundle.md).
 Phase 2 concluded with `v0.1.7`.
 
 ---
@@ -186,11 +187,11 @@ make build                         # RISC-V kernel
 make run                           # boot in QEMU
 make debug                         # boot with GDB on :1234
 make run USERSPACE_ELF_PROBE=1      # boot the external userspace ELF
-make run MINIMAL_INIT=1             # boot minimal Ferrum init
+make run INIT=1                    # boot Ferrum init
 make x86-preview                   # build and check the x86 kernel
 make x86-iso                       # build a bootable x86 ISO
 make x86-iso USERSPACE_ELF_PROBE=1 # deliver the external userspace ELF
-make x86-iso MINIMAL_INIT=1        # package minimal Ferrum init
+make x86-iso INIT=1                # package Ferrum init
 ```
 ---
 

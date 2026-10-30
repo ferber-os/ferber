@@ -53,10 +53,15 @@ run_case() {
             payload=$("$repo_dir/scripts/build-user.sh" vmo-probe riscv64gc-unknown-none-elf "$profile")
             initrd_args=(-initrd "$payload")
             ;;
+        service-wake)
+            cargo_args+=(--features service-wake-probe)
+            payload=$("${repo_dir}/scripts/build-init-bundle.sh" riscv64gc-unknown-none-elf "$profile")
+            initrd_args=(-initrd "$payload")
+            ;;
         init|init-*)
-            cargo_args+=(--features minimal-init)
+            cargo_args+=(--features init)
             case "$scenario" in
-                init) payload=$("${repo_dir}/scripts/build-user.sh" init riscv64gc-unknown-none-elf "$profile") ;;
+                init) payload=$("${repo_dir}/scripts/build-init-bundle.sh" riscv64gc-unknown-none-elf "$profile") ;;
                 init-missing) ;;
                 *) payload=$("${repo_dir}/scripts/build-init-test.sh" "$scenario" riscv64gc-unknown-none-elf "$profile") ;;
             esac
@@ -114,6 +119,7 @@ for profile in debug release; do
     run_case "$profile" execute-nx 128 1
     run_case "$profile" elf 128 1
     run_case "$profile" init 128 1
+    run_case "$profile" service-wake 128 1
     run_case "$profile" vmo 128 1
     run_case "$profile" vmo-map 128 1
     run_case "$profile" vmo-seal 128 1
@@ -132,7 +138,7 @@ run_case debug accounting 256 4
 run_case debug payload-missing 128 1
 run_case debug payload-invalid 128 1
 run_case debug payload-exit 128 1
-for scenario in init-missing init-malformed-ready init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
+for scenario in init-missing init-malformed-ready init-replay-challenge init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
     run_case debug "$scenario" 128 1
 done
 smoke_passed=1

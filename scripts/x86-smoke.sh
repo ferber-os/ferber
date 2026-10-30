@@ -69,10 +69,14 @@ run_case() {
             cargo_args+=(--features userspace-vmo-probe)
             payload=$("$repo_root/scripts/build-user.sh" vmo-probe x86_64-unknown-none "$profile")
             ;;
+        service-wake)
+            cargo_args+=(--features service-wake-probe)
+            payload=$("${repo_root}/scripts/build-init-bundle.sh" x86_64-unknown-none "$profile")
+            ;;
         init|init-*)
-            cargo_args+=(--features minimal-init)
+            cargo_args+=(--features init)
             case "$scenario" in
-                init) payload=$("${repo_root}/scripts/build-user.sh" init x86_64-unknown-none "$profile") ;;
+                init) payload=$("${repo_root}/scripts/build-init-bundle.sh" x86_64-unknown-none "$profile") ;;
                 init-missing) ;;
                 *) payload=$("${repo_root}/scripts/build-init-test.sh" "$scenario" x86_64-unknown-none "$profile") ;;
             esac
@@ -177,10 +181,12 @@ for profile in debug release; do
 done
 run_case debug init 512
 run_case release init 512
+run_case debug service-wake 512
+run_case release service-wake 512
 run_case debug payload-missing 512
 run_case debug payload-invalid 512
 run_case debug payload-exit 512
-for scenario in init-missing init-malformed-ready init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
+for scenario in init-missing init-malformed-ready init-replay-challenge init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
     run_case debug "$scenario" 512
 done
 smoke_passed=1

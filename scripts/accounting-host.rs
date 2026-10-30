@@ -5,7 +5,11 @@ pub mod accounting;
 pub mod heap {
     pub struct Arena;
     impl Arena {
-        pub const fn new() -> Self { Self }
-        pub fn is_empty(&self) -> bool { true }
+        pub const fn new() -> Self {
+            Self
+        }
+        pub fn is_empty(&self) -> bool {
+            true
+        }
     }
 }

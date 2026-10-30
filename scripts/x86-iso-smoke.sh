@@ -6,8 +6,8 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repo_root/scripts/smoke-log.sh"
 scenario=${1:-normal}
 case "$scenario" in
-    normal|elf|init|vmo|vmo-map|vmo-seal|accounting) ;;
-    *) echo "usage: $0 [normal|elf|init|vmo|vmo-map|vmo-seal|accounting]" >&2; exit 2 ;;
+    normal|elf|init|service-wake|vmo|vmo-map|vmo-seal|accounting) ;;
+    *) echo "usage: $0 [normal|elf|init|service-wake|vmo|vmo-map|vmo-seal|accounting]" >&2; exit 2 ;;
 esac
 ovmf_code=${OVMF_CODE:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}
 ovmf_vars=${OVMF_VARS:-/usr/share/edk2/x64/OVMF_VARS.4m.fd}
@@ -41,9 +41,9 @@ if [[ "$scenario" == elf ]]; then
     payload=$("$repo_root/scripts/build-user-elf.sh" x86_64-unknown-none release)
     cargo_args+=(--features userspace-elf-probe)
 fi
-if [[ "$scenario" == init ]]; then
-    payload=$("$repo_root/scripts/build-user.sh" init x86_64-unknown-none release)
-    cargo_args+=(--features minimal-init)
+if [[ "$scenario" == init || "$scenario" == service-wake ]]; then
+    payload=$("$repo_root/scripts/build-init-bundle.sh" x86_64-unknown-none release)
+    if [[ "$scenario" == service-wake ]]; then cargo_args+=(--features service-wake-probe); else cargo_args+=(--features init); fi
 fi
 if [[ "$scenario" == vmo ]]; then
     payload=$("$repo_root/scripts/build-user.sh" vmo-probe x86_64-unknown-none release)

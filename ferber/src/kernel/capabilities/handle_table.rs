@@ -121,6 +121,10 @@ impl HandleTable {
         self.count as usize
     }
 
+    pub(crate) fn nodes(&self) -> impl Iterator<Item = &Arc<CapNode>> {
+        self.entries.iter().flatten()
+    }
+
     /// Duplicate the same capability node and rights without allocating a node.
     pub fn duplicate(&mut self, handle: u32) -> Result<u32, CapError> {
         let node = self.lookup(handle)?;

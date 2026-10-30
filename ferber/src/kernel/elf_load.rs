@@ -2,8 +2,7 @@
 
 use alloc::sync::Arc;
 
-#[path = "../../../shared/startup.rs"]
-pub mod startup;
+pub(crate) use super::startup;
 
 use super::capabilities::CapNode;
 use super::elf::{ElfError, ElfImage};
@@ -34,7 +33,7 @@ pub enum LoadError {
     Task(TaskError),
 }
 
-#[cfg_attr(any(feature = "minimal-init", feature = "userspace-job-accounting-probe"), allow(dead_code))]
+#[cfg_attr(any(feature = "init", feature = "userspace-job-accounting-probe"), allow(dead_code))]
 pub fn admit(
     root: &Arc<SpinLock<Job>>,
     bytes: &[u8],

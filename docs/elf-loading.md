@@ -81,7 +81,7 @@ These commands build and deliver the fixture separately. RISC-V uses QEMU's
 `-initrd`; the x86 ISO carries `BOOT.ELF` beside the kernel on its FAT image.
 Without that option, default builds retain the resident probes and need no
 payload. The raw ELF delivery format does not provide an initramfs. The separate
-`minimal-init` mode uses it to load [Ferrum init](minimal-init.md).
+`init` mode uses it to load [Ferrum init](init.md).
 Run `bash scripts/elf-tests.sh` for parser regressions and
 `bash scripts/elf-load-tests.sh` for loader regressions. The latter compiles
 the production loader against fallible host resources: it checks data/zeroing,
@@ -106,15 +106,16 @@ It does not emit the resident suite's
 syscall markers. Execution remains single-CPU, cooperative, integer-only, and
 interrupt-disabled. A bad instruction or unexpected user fault still panics
 the kernel. Bootstrap-channel fixture startup is Checkpoint B; service
-launching remains later work. Checkpoint B must not be read as init or as a
-general userspace service protocol.
+launching remains separate from that fixture. Checkpoint B is not init or a
+general userspace service protocol. Ferrum init now uses the same loader and
+constructs its first resident service through the task ABI.
 
-## Minimal init uses the same loader
+## Init uses the same loader
 
-`make run MINIMAL_INIT=1` and `make x86-iso MINIMAL_INIT=1` build and deliver
+`make run INIT=1` and `make x86-iso INIT=1` build and deliver
 a dedicated init executable. Admission supplies a process name and returns its
 kernel task identity for bootstrap supervision. Segment permissions, guarded
 stack setup, startup ABI v1 and construction rollback remain shared. Init
 receives `READ | WRITE | WAIT` and remains alive after readiness; its retained
 resources must not be confused with the finite fixture's reclamation checks.
-See [minimal init](minimal-init.md) for the exact terminal-wait contract.
+See [init](init.md) for the exact terminal-wait contract.

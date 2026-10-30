@@ -159,9 +159,9 @@ Phase 3 transitions execution from kernel-only testing into unprivileged userspa
     - [x] RO/RW-NX `sys_vmo_map`, exact-record `sys_vmo_unmap`; explicit MAP creation, shared backing ownership and safe teardown
     - [x] Transactional range installation, empty-table pruning and bounded user mapping/table resources
     - [x] Executable VMO publication/sealing across writable aliases: explicit EXECUTE creation, global writable-mapping permits, irreversible seal, RX mapping and local instruction synchronization on both ports
-  - [ ] Task creation: `sys_process_create`, `sys_thread_create`
+  - [x] Staged task creation: process create/map/give, one initial thread, explicit start/abort ([ABI](docs/task-creation.md))
   - [x] Cooperative resident yield and thread/last-thread process exit reclamation on a permanent-root dispatcher stack; repeated-run frame/node baselines and empty registry checks
-  - [ ] Extend scheduling and exit reclamation to user-created tasks
+  - [x] Extend cooperative admission and exit reclamation to user-created tasks, bounded to 64 live processes/tasks
 - [x] Resident user memory safety validation:
   - [x] Canonical user ranges, checked arithmetic, and effective user/read/write page permissions
   - [x] `copy_from_user` / `copy_to_user`: whole-range preflight and physical-alias copies under an unsafe stable-mapping/nonaliasing caller contract
@@ -194,7 +194,7 @@ its lifetime policy is still open. This path does not add ELF/init, userspace
 task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
 
 ### Userspace Binary Loading & Execution
-- [x] Bounded static ELF loader for Checkpoints A and B (`ferber/src/kernel/elf.rs`, `elf_load.rs`):
+- [x] Bounded static ELF loader for Checkpoints A and B (`shared/elf.rs`, `ferber/src/kernel/elf_load.rs`):
   - [x] Bounded static ELF64 `ET_EXEC` parsing with architecture, range, alignment, entry, resource-limit, and unsupported-feature validation
   - [x] VMO allocation for ELF segments (`PT_LOAD` headers), initialized file bytes, and zero-filled BSS/page tails
   - [x] Memory mapping with strict permissions: `PT_LOAD` `.text` mapped R-X, `.rodata` mapped R--, `.data`/`.bss` mapped RW-
@@ -208,8 +208,10 @@ task creation, VMO syscalls, FastCall syscalls, preemption, or SMP.
 - [ ] Init Process (`init`):
   - [x] Root userspace process spawned under root `Job`
   - [x] Explicit bootstrap channel to the kernel-owned startup session; validated terminal waiting
-  - [ ] General kernel control service and event-driven idle
-  - [ ] Spawns root namespace and system servers
+  - [x] Bounded kernel control pump, registered producer generations and rooted multi-service terminal quiescence
+  - [ ] Hardware event-driven idle and general kernel control service
+  - [x] Ferrum ELF construction and first independently built resident service
+  - [ ] Spawns root namespace and additional system servers
 
 Checkpoint A is an opt-in `userspace-elf-probe` build released in
 `Uranium-238-v0.2.6`. That release embedded independently linked bytes. The
@@ -223,10 +225,12 @@ records its assigned slot. Shared Rust code discovers that handle instead of
 assuming slot 0. The kernel
 prequeues a challenge, and the ELF fixture uses nonblocking channel syscalls
 to receive it and send a reply for the kernel to verify. No service task runs;
-this fixture exchange is separate from init's bootstrap protocol. Minimal init
+this fixture exchange is separate from init's bootstrap protocol. Ferrum init
 uses the same startup ABI with a versioned readiness protocol and validated
-terminal waiting. Service-launching init remains unchecked. No task-creation
-or VMO syscall is required for these kernel-created executables. See
+terminal waiting. Init now constructs its first resident service through task
+and VMO syscalls; namespace and additional system servers remain pending. The
+earlier Checkpoint A fixture remains kernel-created and needs neither syscall
+family. See
 [the ELF loading contract](docs/elf-loading.md) and
 [startup ABI v1](docs/userspace-startup.md), and
 [the boot-payload contract](docs/boot-payload.md).

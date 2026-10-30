@@ -1,6 +1,6 @@
 [package]
 name = "ferber"
-version = "0.2.14"
+version = "0.3.0"
 edition = "2021"
 authors = ["notvcto <git@notvc.to>"]
 description = "Ferber kernel — capability-based microkernel for RISC-V"
@@ -23,7 +23,8 @@ user-vmo-seal-write-probe = ["userspace-vmo-seal-probe"]
 userspace-vmo-map-probe = []
 user-vmo-map-write-probe = ["userspace-vmo-map-probe"]
 user-vmo-map-execute-probe = ["userspace-vmo-map-probe"]
-minimal-init = []
+init = []
+service-wake-probe = ["init"]
 user-isolation-probe = []
 user-write-probe = ["user-isolation-probe"]
 user-execute-probe = ["user-isolation-probe"]

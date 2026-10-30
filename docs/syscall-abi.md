@@ -1,10 +1,11 @@
-# Resident Syscall ABI
+# Syscall ABI
 
 Ferber uses Linux-style argument registers with its own syscall numbers.
-This ABI cooperatively schedules resident user tasks and opt-in static ELF
-fixtures and minimal init on one active CPU with interrupts disabled. It does
-not provide Linux or musl compatibility, preemption, userspace task creation,
-or service launching.
+This ABI cooperatively schedules resident user tasks, independently loaded ELF
+programs and userspace-created tasks on one active CPU with interrupts disabled.
+Minimal Ferrum init uses staged task construction to launch its first service.
+This does not provide Linux or musl compatibility, preemption or a general
+service manager.
 
 ## Calling Convention
 
@@ -14,7 +15,7 @@ or service launching.
 | x86-64 | `rax` | `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` | `rax` |
 
 Enter through `ecall` on RISC-V and `syscall` on x86-64. Unused arguments are
-ignored. Returning calls preserve general registers other than the result and
+ignored for calls 0–16. Task-construction calls 17–22 require them to be zero. Returning calls preserve general registers other than the result and
 the x86 `syscall` architectural clobbers (`rcx`, `r11`). x86 return flags are
 sanitized. FP/vector state is outside the resident ABI. x86-64 clears
 `CR4.FSGSBASE` and `CR4.PKE`, and sets `CR0.TS` before user execution. This
@@ -43,6 +44,16 @@ harness's fatal exception path.
 | `14` | VMO map | Handle, offset, address, length, permissions, options (`0`) | `0` |
 | `15` | VMO unmap | Address, length; exact user record | `0` |
 | `16` | VMO seal | Handle, options (`0`); requires MANAGE and EXECUTE | `0` |
+| `17` | Process create | Job handle, options (`0`) | Process-controller handle |
+| `18` | Process map | Controller, VMO handle, 48-byte descriptor address | `0` |
+| `19` | Process give | Controller, source handle | Assigned child handle slot; source is moved |
+| `20` | Initial thread create | Controller, entry, bootstrap slot or `u64::MAX`, options (`0`) | `0` |
+| `21` | Process start | Controller, options (`0`) | `0` |
+| `22` | Process abort | Controller, options (`0`) | `0` |
+
+The [task-creation contract](task-creation.md) defines descriptor layout, explicit
+Job authority, draft lifecycle, target allocation ownership and atomic publication.
+One initial thread is supported; this is not a general multithread-creation ABI.
 
 Every handle is resolved through the trusted calling process's table. Processes
 are born with zero handles; delegation is explicit. Handle zero is valid.
@@ -190,13 +201,15 @@ closes endpoints or discards queued messages. Surviving tasks continue running.
 When all resident tasks exit, the scheduler returns to the kernel harness, which
 checks reclamation before halting. Live tasks all blocked without a runnable
 wake source are diagnosed as deadlock, not successful completion.
-The separate [minimal-init session](minimal-init.md) accepts only its exact,
-validated bootstrap receive as terminal waiting. An open peer alone provides
-no exemption and no interrupt-driven wakeup guarantee.
+The separate [init session](init.md) accepts only its exact,
+validated bootstrap exchange and rooted multi-service wait graph as terminal
+waiting. Registered sources have checked generations and weak endpoint identity.
+An open peer alone provides no exemption or interrupt-driven wakeup guarantee.
 
 Scheduling remains cooperative, single-CPU, and integer-only. Interrupt-driven
-wakeup, preemption, SMP, concurrent unmapping, FP/vector state, and user-created
-tasks remain outside this ABI. The separately compiled ELF fixture uses this
+wakeup, preemption, SMP, concurrent unmapping, and FP/vector state remain
+outside this ABI. Userspace-created tasks use the same scheduler and exit
+reclamation machinery. The separately compiled ELF fixture uses this
 same syscall table; ELF loading adds no syscall numbers.
 
 ## Errors and Validation Order
@@ -208,11 +221,11 @@ same syscall table; ELF loading adds no syscall numbers.
 | `-12` | Capability-node, endpoint, message, queue, VMO frame/metadata/object, page-table, or staging allocation failed |
 | `-13` | Required right is absent, write/RW map targets sealed backing, or RX map targets mutable backing |
 | `-14` | User buffer range is invalid or lacks the required user permissions |
-| `-16` | VMO seal is blocked by a live writable-mapping permit |
+| `-16` | VMO seal is blocked by a live writable-mapping permit, or task construction conflicts with lifecycle/Job state |
 | `-22` | Invalid rights mask, options, permissions, alignment, logical VMO range or backing/type; repeated transfer slot; unsupported payload; or overlapping output bytes |
 | `-17` | Mapping destination is already occupied |
 | `-24` | Handle table is full |
-| `-28` | Hierarchical Job allocation budget (including closed ancestry), user-VMO backing, mapping/alias/table limit, node quota, node IDs, or wait generations exhausted |
+| `-28` | Hierarchical Job allocation budget (including closed ancestry), user-VMO backing, mapping/alias/table limit, node quota, node IDs, live processes, or wait generations exhausted |
 | `-32` | Channel peer is closed and no queued message can be received |
 | `-38` | Unknown syscall number |
 | `-90` | VMO/mapping size, byte-copy or message limit exceeded, or receive buffers are too small |

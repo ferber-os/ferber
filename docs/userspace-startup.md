@@ -3,8 +3,9 @@
 The opt-in static ELF path enters a separately linked, integer-only `no_std`
 Rust executable through this contract on RISC-V 64 and x86-64. It defines first
 entry and bootstrap-handle discovery. The executable arrives through the
-[external boot-payload handoff](boot-payload.md). Minimal init uses this same entry contract and a separate
-[bootstrap protocol](minimal-init.md); service launching remains pending.
+[external boot-payload handoff](boot-payload.md). Ferrum init uses this same entry contract and a separate
+[bootstrap protocol](init.md). Its [boot bundle](boot-bundle.md) now
+contains init and a service that init constructs and starts in userspace.
 
 ## Initial SP identifies a fixed startup record
 
@@ -47,7 +48,7 @@ assigned slot. The current test uses a nonzero slot to reject a hardcoded-zero
 assumption; that numerical slot is not part of the ABI. The program must read
 the record.
 
-The fixture endpoint has exactly `READ | WRITE`; minimal init explicitly
+The fixture endpoint has exactly `READ | WRITE`; init explicitly
 receives `READ | WRITE | WAIT` for blocking receive. The process owns its handle
 and may close it; final process teardown also releases it. The kernel harness
 retains only the opposite endpoint. The record owns no capability reference.
@@ -88,4 +89,36 @@ exact reply and restored frame, node, process and scheduler baselines before
 the existing `userspace_elf` and `userspace_bootstrap_channel` PASS markers.
 The external-delivery scenario additionally requires `boot_payload: PASS`.
 These fixture markers do not establish init, service launching or recoverable
-user faults. Minimal init has separate readiness and waiting markers.
+user faults. Ferrum init has separate readiness and waiting markers.
+
+
+## Service launch preserves the entry record and versions bootstrap messages
+
+The initial stack record remains exactly startup ABI v1. Init discovers its
+bootstrap endpoint through that record and receives a separate 32-byte protocol
+v2 START message. That message uses magic `FRINIT02`, a little-endian `u16`
+version `2` at offset 8, opcode `1` at offset 10, zero reserved bytes at 12–15,
+the exact service ELF length as `u64` at offset 16, and zero reserved bytes at
+24–31. START carries exactly two capability handles: the bounded launch Job
+authority and an RO-mappable sealed source-image VMO. READY uses opcode `2`,
+zero service length and no attached handles. Unknown versions, opcodes, nonzero
+reserved bytes and unexpected lengths or handle counts fail startup.
+
+Ferrum parses the service with the shared bounded ELF parser, creates a draft
+process, installs segment VMOs and explicitly moves a new channel endpoint into
+its empty handle table. The initial thread receives the same startup ABI v1
+record on a guarded RW/NX stack, with its actual assigned bootstrap slot. Init
+starts the child only after setup succeeds. Its construction controller is then
+closed without killing the started service.
+
+The independently compiled service announces READY, answers versioned PING
+messages with a matching PONG, and stays blocked waiting for further requests.
+Init forwards those messages between the service and the kernel-owned bootstrap
+session. A normal successful boot retains both processes; rooted waiting is
+validated by the scheduler instead of accepting every all-blocked state.
+
+A separate finite closure run exercises SHUTDOWN forwarding, both process exits
+and dispatcher reclamation before the resident session is installed. The
+software-wake probe resumes the rooted wait graph with a concrete queued command.
+Neither mechanism provides interrupts, preemption, general service discovery or
+an interactive console. See [the bundle and service contract](boot-bundle.md).

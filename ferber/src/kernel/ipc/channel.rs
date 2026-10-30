@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::kernel::capabilities::{CapNode, KernelObject};
-use crate::kernel::memory::accounting::{self, BudgetRef, AllocError};
+use crate::kernel::memory::accounting::{self, AllocError, BudgetRef};
 use crate::kernel::sync::SpinLock;
 
 pub const SIGNAL_READABLE: u32 = 1 << 0;
@@ -118,21 +118,52 @@ pub struct WaitRegistration {
 }
 
 impl WaitRegistration {
-    #[cfg(feature = "minimal-init")]
-    pub(crate) fn waits_on_peer_of(&self, endpoint: &ChannelEndpoint) -> bool {
-        self.side == 1 - endpoint.side
-            && self.pair.ptr_eq(&Arc::downgrade(&endpoint.pair))
+    pub(crate) fn same_endpoint(&self, other: &Self) -> bool {
+        self.side == other.side && self.pair.ptr_eq(&other.pair)
     }
 
-    #[cfg(feature = "minimal-init")]
+    pub(crate) fn peer_of(&self, other: &Self) -> bool {
+        self.side != other.side && self.pair.ptr_eq(&other.pair)
+    }
+
+    pub(crate) fn live(&self) -> bool {
+        self.pair.upgrade().is_some_and(|pair| {
+            let pair = pair.lock();
+            pair.open[self.side] && pair.open[1 - self.side]
+        })
+    }
+
+    pub(crate) fn registered(&self, token: &Arc<WaitToken>, generation: u64) -> bool {
+        self.pair.upgrade().is_some_and(|pair| {
+            let pair = pair.lock();
+            pair.open[self.side]
+                && pair.open[1 - self.side]
+                && pair.queues[self.side].is_empty()
+                && pair.waiters[self.side].iter().any(|waiter| {
+                    waiter.generation == generation && waiter.token.ptr_eq(&Arc::downgrade(token))
+                })
+        })
+    }
+    pub(crate) fn waits_on_peer_of(&self, endpoint: &ChannelEndpoint) -> bool {
+        self.side == 1 - endpoint.side && self.pair.ptr_eq(&Arc::downgrade(&endpoint.pair))
+    }
+
     pub(crate) fn is_registered_peer_wait(
-        &self, endpoint: &ChannelEndpoint, token: &Arc<WaitToken>, generation: u64,
+        &self,
+        endpoint: &ChannelEndpoint,
+        token: &Arc<WaitToken>,
+        generation: u64,
     ) -> bool {
-        if !self.waits_on_peer_of(endpoint) { return false; }
+        if !self.waits_on_peer_of(endpoint) {
+            return false;
+        }
         let pair = endpoint.pair.lock();
-        pair.open[self.side] && pair.open[endpoint.side] && pair.queues[self.side].is_empty()
-            && pair.waiters[self.side].iter().any(|waiter|
-                waiter.generation == generation && waiter.token.ptr_eq(&Arc::downgrade(token)))
+        pair.open[self.side]
+            && pair.open[endpoint.side]
+            && pair.queues[self.side].is_empty()
+            && pair.waiters[self.side].iter().any(|waiter| {
+                waiter.generation == generation && waiter.token.ptr_eq(&Arc::downgrade(token))
+            })
     }
 
     pub fn unregister(&self, token: &Arc<WaitToken>, generation: u64) {
@@ -173,12 +204,15 @@ impl ChannelEndpoint {
         max_message_bytes: usize,
         max_handles: usize,
     ) -> Result<(Arc<Self>, Arc<Self>), ChannelError> {
-        let pair = accounting::attempt(|| Arc::try_new(SpinLock::new(PairState {
-            owner: accounting::current(),
-            queues: [VecDeque::new(), VecDeque::new()],
-            waiters: [VecDeque::new(), VecDeque::new()],
-            open: [true, true],
-        }))).map_err(alloc_error)?;
+        let pair = accounting::attempt(|| {
+            Arc::try_new(SpinLock::new(PairState {
+                owner: accounting::current(),
+                queues: [VecDeque::new(), VecDeque::new()],
+                waiters: [VecDeque::new(), VecDeque::new()],
+                open: [true, true],
+            }))
+        })
+        .map_err(alloc_error)?;
         let endpoint = |side| Self {
             id: NEXT_CHANNEL_ID.fetch_add(1, Ordering::Relaxed),
             side,
@@ -437,5 +471,8 @@ pub fn self_test() {
 }
 
 fn alloc_error(error: AllocError) -> ChannelError {
-    match error { AllocError::Quota => ChannelError::JobQuota, AllocError::OutOfMemory => ChannelError::OutOfMemory }
+    match error {
+        AllocError::Quota => ChannelError::JobQuota,
+        AllocError::OutOfMemory => ChannelError::OutOfMemory,
+    }
 }

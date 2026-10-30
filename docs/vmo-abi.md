@@ -163,4 +163,4 @@ with the `[FERBER_TEST]` prefix. A physical x86-64 boot on the 32 GiB MSI
 workstation reached all three markers with the pre-commit `0.2.10` banner,
 including the repeated ownership and budget checks. Production init and its
 startup protocol are unchanged; the release artifact continues to select
-minimal init.
+init.

@@ -51,23 +51,23 @@ compile_error!("user-write-probe and user-execute-probe must run separately");
 )))]
 compile_error!("userspace-elf-probe must run separately from other probe scenarios");
 
-#[cfg(all(feature = "minimal-init", any(
+#[cfg(all(feature = "init", any(
     feature = "userspace-elf-probe",
     feature = "user-isolation-probe",
     feature = "cooperative-deadlock-probe",
     feature = "x86-exception-probe",
 )))]
-compile_error!("minimal-init must run separately from other probe scenarios");
+compile_error!("init must run separately from other probe scenarios");
 
 #[cfg(all(feature = "userspace-vmo-probe", any(
-    feature = "minimal-init", feature = "userspace-elf-probe",
+    feature = "init", feature = "userspace-elf-probe",
     feature = "user-isolation-probe", feature = "cooperative-deadlock-probe",
     feature = "x86-exception-probe",
 )))]
 compile_error!("userspace-vmo-probe must run separately from other probe scenarios");
 
 #[cfg(all(feature = "userspace-vmo-map-probe", any(
-    feature = "minimal-init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
+    feature = "init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
     feature = "user-isolation-probe", feature = "cooperative-deadlock-probe",
     feature = "x86-exception-probe",
 )))]
@@ -76,7 +76,7 @@ compile_error!("userspace-vmo-map-probe must run separately from other probe sce
 compile_error!("VMO mapping write and execute fault probes must run separately");
 
 #[cfg(all(feature = "userspace-vmo-seal-probe", any(
-    feature = "minimal-init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
+    feature = "init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
     feature = "userspace-vmo-map-probe", feature = "user-isolation-probe",
     feature = "user-write-probe", feature = "user-execute-probe",
     feature = "cooperative-deadlock-probe", feature = "x86-exception-probe",
@@ -84,7 +84,7 @@ compile_error!("VMO mapping write and execute fault probes must run separately")
 compile_error!("userspace-vmo-seal-probe must run separately from other probe scenarios");
 
 #[cfg(all(feature = "userspace-job-accounting-probe", any(
-    feature = "minimal-init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
+    feature = "init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
     feature = "userspace-vmo-map-probe", feature = "userspace-vmo-seal-probe",
     feature = "user-isolation-probe", feature = "cooperative-deadlock-probe", feature = "x86-exception-probe",
 )))]
@@ -205,8 +205,8 @@ pub fn run(root: Arc<SpinLock<Job>>, memory: bitmap::MemoryStats) -> ! {
         super::vmo_map_probe::run(&root);
         halt();
     }
-    if cfg!(feature = "minimal-init") {
-        #[cfg(feature = "minimal-init")]
+    if cfg!(feature = "init") {
+        #[cfg(feature = "init")]
         super::init::run(&root);
     }
     if cfg!(feature = "userspace-elf-probe") {
@@ -309,7 +309,7 @@ fn address_space_lifecycle(memory: bitmap::MemoryStats) {
     kprintln!("[mem]   address-space activation and teardown: ok");
 }
 
-fn cap_errno(error: CapError) -> isize {
+pub(crate) fn cap_errno(error: CapError) -> isize {
     match error {
         CapError::InvalidHandle => -9,
         CapError::InsufficientRights => -13,
@@ -321,7 +321,7 @@ fn cap_errno(error: CapError) -> isize {
     }
 }
 
-fn allocation_errno(error: crate::kernel::memory::accounting::AllocError) -> isize {
+pub(crate) fn allocation_errno(error: crate::kernel::memory::accounting::AllocError) -> isize {
     match error {
         crate::kernel::memory::accounting::AllocError::Quota => -28,
         crate::kernel::memory::accounting::AllocError::OutOfMemory => -12,
@@ -340,6 +340,9 @@ pub(crate) fn dispatch_for_process(
 }
 
 fn dispatch_in_budget(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize; 6]) -> isize {
+    if (17..=22).contains(&nr) {
+        return super::syscall_task::dispatch(process, nr, args);
+    }
     if nr == SYS_YIELD {
         return 0;
     }
@@ -495,13 +498,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
             if let Some(state) = state {
                 state.observer.finish(args[0], handles, state.isolation);
             } else {
-                #[cfg(feature = "minimal-init")]
-                let init_exit = super::init::record_exit(args[0]);
-                #[cfg(not(feature = "minimal-init"))]
-                let init_exit = false;
-                if !init_exit {
-                    assert_eq!(args[0], 0, "cooperative user probe failed");
-                }
+                #[cfg(feature = "init")]
+                super::init::record_exit(args[0]);
             }
         }
         scheduler::exit()
@@ -540,6 +538,8 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
         let process = scheduler::current_process();
         dispatch_for_process(&process, nr, args)
     };
+    #[cfg(feature = "init")]
+    super::init::observe(nr, args, result);
     if let Some(probe) = PROBE.lock().as_mut() {
         probe.observer.observe(nr, args, result, probe.isolation);
     }

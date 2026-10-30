@@ -5,26 +5,49 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-use alloc::borrow::Cow;
 use super::job::Job;
 use super::thread::{Thread, ThreadState};
 use super::TaskError;
 use crate::arch::ArchAddressSpace;
 use crate::kernel::capabilities::{HandleTable, KernelObject};
-use crate::kernel::memory::vmo::{Vmo, WritableMapping};
+use crate::kernel::memory::accounting::{self, AllocError, BudgetRef};
 use crate::kernel::memory::paging::{AddressSpace, MapFlags};
-use crate::kernel::memory::accounting::{self, BudgetRef, AllocError};
+use crate::kernel::memory::vmo::{Vmo, WritableMapping};
 use crate::kernel::sync::SpinLock;
+use alloc::borrow::Cow;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 static NEXT_PROCESS_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
+static LIVE_PROCESSES: AtomicUsize = AtomicUsize::new(0);
+pub const MAX_PROCESSES: usize = 64;
+
+pub(crate) struct ProcessPermit;
+impl ProcessPermit {
+    pub fn reserve() -> Result<Self, TaskError> {
+        LIVE_PROCESSES
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_PROCESSES).then_some(count + 1)
+            })
+            .map_err(|_| TaskError::QuotaExceeded)?;
+        Ok(Self)
+    }
+}
+impl Drop for ProcessPermit {
+    fn drop(&mut self) {
+        assert!(LIVE_PROCESSES.fetch_sub(1, Ordering::Release) != 0);
+    }
+}
+pub fn live_processes() -> usize {
+    LIVE_PROCESSES.load(Ordering::Acquire)
+}
 
 pub(crate) fn next_process_id() -> Result<u64, TaskError> {
-    NEXT_PROCESS_ID.try_update(Ordering::Relaxed, Ordering::Relaxed,
-        |id| id.checked_add(1)).map_err(|_| TaskError::QuotaExceeded)
+    NEXT_PROCESS_ID
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| TaskError::QuotaExceeded)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +79,7 @@ pub struct Process {
     threads: Vec<Arc<SpinLock<Thread>>>,
     self_weak: Option<Weak<SpinLock<Process>>>,
     budget: BudgetRef,
+    permit: Option<ProcessPermit>,
 }
 
 unsafe impl Send for Process {}
@@ -87,7 +111,12 @@ impl Process {
             threads: Vec::new(),
             self_weak: None,
             budget,
+            permit: None,
         }
+    }
+
+    pub(crate) fn retain_process_permit(&mut self, permit: ProcessPermit) {
+        self.permit = Some(permit);
     }
 
     pub fn create_thread(
@@ -111,18 +140,31 @@ impl Process {
         accounting::with_budget(&budget, || {
             accounting::attempt(|| self.threads.try_reserve(1)).map_err(alloc_error)?;
             let kstack = Vmo::create_contiguous(kstack_size).map_err(|error| {
-                if error == crate::kernel::memory::vmo::VmoError::JobQuota { TaskError::QuotaExceeded }
-                else { TaskError::OutOfMemory }
+                if error == crate::kernel::memory::vmo::VmoError::JobQuota {
+                    TaskError::QuotaExceeded
+                } else {
+                    TaskError::OutOfMemory
+                }
             })?;
             let kstack_base = crate::kernel::memory::phys_map::phys_to_virt(
                 kstack.frames().get(0).ok_or(TaskError::OutOfMemory)?,
-            ).ok_or(TaskError::OutOfMemory)?;
+            )
+            .ok_or(TaskError::OutOfMemory)?;
             let kstack_top = kstack_base + kstack.size();
-            let thread_id = NEXT_THREAD_ID.try_update(Ordering::Relaxed, Ordering::Relaxed,
-                |id| id.checked_add(1)).map_err(|_| TaskError::QuotaExceeded)?;
-            let thread = accounting::attempt(|| Arc::try_new(SpinLock::new(Thread::new(
-                thread_id, name, entry, kstack, kstack_top, self.self_weak.clone(),
-            )))).map_err(alloc_error)?;
+            let thread_id = NEXT_THREAD_ID
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .map_err(|_| TaskError::QuotaExceeded)?;
+            let thread = accounting::attempt(|| {
+                Arc::try_new(SpinLock::new(Thread::new(
+                    thread_id,
+                    name,
+                    entry,
+                    kstack,
+                    kstack_top,
+                    self.self_weak.clone(),
+                )))
+            })
+            .map_err(alloc_error)?;
             self.threads.push(Arc::clone(&thread));
             Ok(thread)
         })
@@ -173,7 +215,10 @@ impl Process {
     }
 
     pub fn detach_thread(&mut self, id: u64) -> Option<Arc<SpinLock<Thread>>> {
-        let index = self.threads.iter().position(|thread| thread.lock().id() == id)?;
+        let index = self
+            .threads
+            .iter()
+            .position(|thread| thread.lock().id() == id)?;
         Some(self.threads.remove(index))
     }
 
@@ -185,23 +230,36 @@ impl Process {
         &self.threads
     }
 
-    pub(crate) fn mappings(&self) -> &[MappingRecord] { &self.mappings }
+    pub(crate) fn mappings(&self) -> &[MappingRecord] {
+        &self.mappings
+    }
 
-    pub(crate) fn mappings_mut(&mut self) -> &mut Vec<MappingRecord> { &mut self.mappings }
+    pub(crate) fn mappings_mut(&mut self) -> &mut Vec<MappingRecord> {
+        &mut self.mappings
+    }
 
     pub(crate) fn mapping_reserved(&self, base: usize, end: usize) -> bool {
         self.threads.iter().any(|thread| {
-            thread.lock().user_stack_mapping().is_some_and(|(stack, size)| {
-                base < stack.saturating_add(size) && stack.saturating_sub(4096) < end
-            })
+            thread
+                .lock()
+                .user_stack_mapping()
+                .is_some_and(|(stack, size)| {
+                    base < stack.saturating_add(size) && stack.saturating_sub(4096) < end
+                })
         })
     }
 
     pub(crate) fn take_mappings(&mut self) -> Vec<MappingRecord> {
         for record in &self.mappings {
             unsafe {
-                self.address_space.unmap_pages_exact(record.base, record.object.frames(),
-                    record.offset / 4096, record.len / 4096, record.flags)
+                self.address_space
+                    .unmap_pages_exact(
+                        record.base,
+                        record.object.frames(),
+                        record.offset / 4096,
+                        record.len / 4096,
+                        record.flags,
+                    )
                     .expect("unmap retired user mapping");
             }
         }
@@ -216,7 +274,9 @@ impl Process {
         &mut self.address_space
     }
 
-    pub fn budget(&self) -> &BudgetRef { &self.budget }
+    pub fn budget(&self) -> &BudgetRef {
+        &self.budget
+    }
 
     pub fn job(&self) -> Option<Weak<SpinLock<Job>>> {
         self.job.clone()
@@ -232,5 +292,8 @@ impl Process {
 }
 
 fn alloc_error(error: AllocError) -> TaskError {
-    match error { AllocError::Quota => TaskError::QuotaExceeded, AllocError::OutOfMemory => TaskError::OutOfMemory }
+    match error {
+        AllocError::Quota => TaskError::QuotaExceeded,
+        AllocError::OutOfMemory => TaskError::OutOfMemory,
+    }
 }

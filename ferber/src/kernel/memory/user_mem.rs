@@ -117,7 +117,10 @@ pub(crate) enum OutputError {
 }
 
 /// Output spans must be disjoint even when different virtual pages alias RAM.
-pub(crate) fn validate_outputs(space: &impl AddressSpace, spans: &[(usize, usize)]) -> Result<(), OutputError> {
+pub(crate) fn validate_outputs(
+    space: &impl AddressSpace,
+    spans: &[(usize, usize)],
+) -> Result<(), OutputError> {
     for &(start, len) in spans {
         preflight(space, start, len, true).map_err(|_| OutputError::UserMemory)?;
     }

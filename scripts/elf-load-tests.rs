@@ -13,6 +13,8 @@ use std::sync::Arc;
 
 #[path = "../ferber/src/kernel/elf.rs"]
 mod elf;
+#[path = "../shared/startup.rs"]
+mod startup;
 #[path = "../ferber/src/kernel/elf_load.rs"]
 mod elf_load;
 #[path = "../ferber/src/kernel/sync.rs"]

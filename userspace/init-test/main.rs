@@ -37,16 +37,17 @@ pub unsafe extern "C" fn user_main(record: *const u8) -> ! {
         };
     let mut message = [0; protocol::SIZE];
     let mut counts = [0u32; 2];
+    let mut handles = [0u32; 2];
     if syscall6(
         10,
         handle,
         message.as_mut_ptr() as usize,
         message.len(),
-        0,
-        0,
+        handles.as_mut_ptr() as usize,
+        handles.len(),
         counts.as_mut_ptr() as usize,
     ) != 0
-        || counts != [16, 0]
+        || counts != [protocol::SIZE as u32, 2]
         || protocol::decode(&message) != Ok(protocol::START)
     {
         exit(99);

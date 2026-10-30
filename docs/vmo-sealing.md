@@ -3,7 +3,7 @@
 Syscall 16 irreversibly seals an owned-RAM VMO. Sealed backing can be mapped RX
 through syscall 14; it cannot be written through VMO byte operations or new RW
 user mappings. This is a whole-object state transition shared by every alias,
-not a change to capability rights. Startup ABI v1 and minimal init are unchanged.
+not a change to capability rights. Startup ABI v1 and init are unchanged.
 
 ## Execution authority is requested before publication
 
@@ -122,4 +122,4 @@ RX mapping. The expected fault must match user origin, instruction, address,
 hardware cause and retained sealed RX metadata before emitting
 `vmo_sealing_write_rx: PASS`. Deliberate fault halts do not establish reclamation.
 Existing RO-write and NX-execute mapping probes remain separate regressions.
-The published release ISO continues selecting minimal init.
+The published release ISO continues selecting init.

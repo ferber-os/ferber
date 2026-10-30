@@ -15,6 +15,11 @@ use crate::kernel::sync::SpinLock;
 use crate::kernel::task::{Process, ProcessState, TaskError, Thread, ThreadState};
 
 mod tests;
+mod idle;
+mod sources;
+#[allow(unused_imports)]
+pub(crate) use sources::{register_source, SourceKind, SourceLease};
+pub(crate) use idle::MAX_TASKS;
 
 pub fn self_test(root: &Arc<SpinLock<crate::kernel::task::Job>>) {
     tests::run(root);
@@ -112,7 +117,9 @@ pub fn admit(
         })).map_err(alloc_error)
     })?;
     let mut runtime = RUNTIME.lock();
-    assert!(runtime.current.is_none(), "admission during user execution");
+    if runtime.tasks.iter().flatten().count() >= MAX_TASKS {
+        return Err(TaskError::QuotaExceeded);
+    }
     assert!(
         !runtime
             .tasks
@@ -167,7 +174,7 @@ pub fn current_process() -> Arc<SpinLock<Process>> {
     )
 }
 
-#[cfg(feature = "minimal-init")]
+#[cfg(feature = "init")]
 pub(crate) fn current_identity() -> (u64, u64) {
     let (process, thread) = {
         let runtime = RUNTIME.lock();
@@ -457,7 +464,62 @@ fn reap() {
     }
 }
 
-#[cfg(feature = "minimal-init")]
+/// Every blocked component must reach a concrete kernel producer, not merely a live peer.
+pub(crate) fn idle_quiescent() -> bool {
+    use crate::kernel::capabilities::Rights;
+    type Snapshot = (Arc<SpinLock<Process>>, Arc<SpinLock<Thread>>, Arc<WaitToken>, Option<Pending>, u64);
+    let mut tasks: [Option<Snapshot>; MAX_TASKS] = core::array::from_fn(|_| None);
+    let count = {
+        let runtime = RUNTIME.lock();
+        if runtime.current.is_some() || !runtime.ready.is_empty() { return false; }
+        let mut count = 0;
+        for task in runtime.tasks.iter().flatten() {
+            if count == MAX_TASKS { return false; }
+            tasks[count] = Some((Arc::clone(&task.process), Arc::clone(&task.thread),
+                Arc::clone(&task.token), task.pending.clone(), task.generation));
+            count += 1;
+        }
+        count
+    };
+    let sources = sources::snapshot();
+    let mut edges = [0u64; MAX_TASKS];
+    let mut roots = 0u64;
+    for (index, task) in tasks.iter().take(count).enumerate() {
+        let (process, thread, token, pending, generation) = task.as_ref().unwrap();
+        let Some(pending) = pending else { return false; };
+        if pending.generation != *generation || pending.error.is_some()
+            || token.is_notified(*generation) || thread.lock().state() != ThreadState::Blocked
+            || !pending.registration.registered(token, *generation)
+        { return false; }
+        {
+            let process = process.lock();
+            if process.state() != ProcessState::Running || process.id() != pending.process_id { return false; }
+            let table = process.handle_table().lock();
+            let Ok(handle) = u32::try_from(pending.handle) else { return false; };
+            let Ok(node) = table.lookup(handle) else { return false; };
+            if !Arc::downgrade(node).ptr_eq(&pending.node)
+                || !node.rights().contains(Rights::READ | Rights::WAIT)
+                || !node.object_ref::<super::ipc::channel::Channel>().is_some_and(|endpoint|
+                    pending.registration.same_endpoint(&endpoint.wait_registration()))
+            { return false; }
+        }
+        if sources.iter().flatten().any(|source|
+            source.live() && pending.registration.peer_of(source))
+        { roots |= 1u64 << index; }
+        for (producer, task) in tasks.iter().take(count).enumerate() {
+            let candidate = task.as_ref().unwrap().0.lock();
+            if candidate.state() == ProcessState::Dead { continue; }
+            let table = candidate.handle_table().lock();
+            if table.nodes().any(|node| node.is_valid() && node.rights().contains(Rights::WRITE)
+                && node.object_ref::<super::ipc::channel::Channel>().is_some_and(|endpoint|
+                    pending.registration.peer_of(&endpoint.wait_registration())))
+            { edges[index] |= 1u64 << producer; }
+        }
+    }
+    idle::rooted(count, &edges, roots)
+}
+
+#[cfg(feature = "init")]
 fn init_wait_matches(session: &super::init::Session) -> bool {
     use super::capabilities::Rights;
     let Some(peer) = &session.peer else {
@@ -468,13 +530,9 @@ fn init_wait_matches(session: &super::init::Session) -> bool {
         if runtime.current.is_some() || !runtime.ready.is_empty() {
             return false;
         }
-        let mut tasks = runtime.tasks.iter().flatten();
-        let Some(task) = tasks.next() else {
-            return false;
-        };
-        if tasks.next().is_some() {
-            return false;
-        }
+        let Some(task) = runtime.tasks.iter().flatten().find(|task|
+            task.pending.as_ref().is_some_and(|pending| pending.process_id == session.admitted.process_id))
+        else { return false; };
         let Some(pending) = task.pending.clone() else {
             return false;
         };
@@ -528,24 +586,98 @@ fn init_wait_matches(session: &super::init::Session) -> bool {
             .is_some_and(|endpoint| endpoint.wait_registration().waits_on_peer_of(peer))
 }
 
-#[cfg(feature = "minimal-init")]
+#[cfg(feature = "init")]
+fn service_wait_matches(session: &super::init::Session) -> bool {
+    use super::capabilities::Rights;
+    let Some(process_id) = session.service_process_id() else {
+        return false;
+    };
+    let Some(endpoint) = session.service_channel() else {
+        return false;
+    };
+    let endpoint_registration = endpoint.wait_registration();
+    let (process, thread, token, pending, generation) = {
+        let runtime = RUNTIME.lock();
+        if runtime.current.is_some() || !runtime.ready.is_empty() {
+            return false;
+        }
+        let Some(task) = runtime.tasks.iter().flatten().find(|task| {
+            task.pending.as_ref().is_some_and(|pending| pending.process_id == process_id)
+        }) else {
+            return false;
+        };
+        let Some(pending) = task.pending.clone() else {
+            return false;
+        };
+        (
+            Arc::clone(&task.process),
+            Arc::clone(&task.thread),
+            Arc::clone(&task.token),
+            pending,
+            task.generation,
+        )
+    };
+    if pending.generation != generation
+        || pending.error.is_some()
+        || token.is_notified(pending.generation)
+        || !pending.registration.same_endpoint(&endpoint_registration)
+        || !pending.registration.registered(&token, generation)
+        || thread.lock().state() != ThreadState::Blocked
+    {
+        return false;
+    }
+    let process = process.lock();
+    if process.id() != process_id || process.state() != ProcessState::Running {
+        return false;
+    }
+    let Ok(handle) = u32::try_from(pending.handle) else {
+        return false;
+    };
+    let table = process.handle_table().lock();
+    let Ok(node) = table.lookup(handle) else {
+        return false;
+    };
+    Arc::downgrade(node).ptr_eq(&pending.node)
+        && node.rights().contains(Rights::READ | Rights::WAIT)
+        && node
+            .object_arc::<super::ipc::channel::Channel>()
+            .is_some_and(|object| Arc::ptr_eq(&object, &endpoint))
+}
+
+#[cfg(feature = "init")]
 fn finish_init(mut session: super::init::Session) -> bool {
     if session.closure_probe
         && session.parked_once
         && task_count() == 0
         && session.exit_status == Some(1)
+        && session.service_exit_status() == Some(0)
     {
         return true;
     }
+    if session.closure_probe && session.exit_status == Some(1) {
+        if let Some(status) = session.service_exit_status().filter(|status| *status != 0) {
+            panic!("initial service exited unexpectedly: {status}");
+        }
+    }
     let ready = session.exit_status.is_none() && session.ready();
-    if ready && init_wait_matches(&session) {
+    if ready && init_wait_matches(&session) && service_wait_matches(&session) && idle_quiescent() {
         if session.closure_probe {
             session.parked_once = true;
-            drop(session.peer.take());
+            assert!(session.begin_shutdown(), "init shutdown delivery");
             super::init::install(session);
             return false;
         }
+        if session.before_quiescent() {
+            super::init::install(session);
+            return false;
+        }
+        #[cfg(feature = "service-wake-probe")]
+        assert!(session.software_woke(), "init software event did not complete");
         crate::kprintln!("[FERBER_TEST] boot_payload: PASS");
+        #[cfg(feature = "service-wake-probe")]
+        crate::kprintln!("[FERBER_TEST] software_wake: PASS");
+        crate::kprintln!("[FERBER_TEST] service_launch: PASS");
+        crate::kprintln!("[FERBER_TEST] multiservice_idle: PASS");
         crate::kprintln!("[FERBER_TEST] init_ready: PASS");
         crate::kprintln!("[FERBER_TEST] init_waiting: PASS");
         // shortcut: no IRQ/event producer exists yet; replace terminal halt before event-driven init.
@@ -563,11 +695,16 @@ fn finish_init(mut session: super::init::Session) -> bool {
     }
     reap();
     let status = session.exit_status;
+    let service_status = session.service_exit_status();
+    let announced = session.announced_ready();
     drop(session);
     if let Some(status) = status {
         panic!("init exited unexpectedly: {status}");
     }
-    if ready {
+    if let Some(status) = service_status {
+        panic!("initial service exited unexpectedly: {status}");
+    }
+    if announced {
         panic!("cooperative deadlock: live tasks with no runnable producer");
     }
     panic!("init bootstrap failed");
@@ -583,6 +720,8 @@ extern "C" fn dispatch_loop() -> ! {
         RUNTIME.lock().current = None;
         reap();
         reconcile();
+        #[cfg(feature = "init")]
+        if super::init::pump() { reconcile(); }
         let next = loop {
             let index = RUNTIME.lock().ready.pop_front();
             let Some(index) = index else {
@@ -626,7 +765,7 @@ extern "C" fn dispatch_loop() -> ! {
                 arch::switch_context(CONTEXTS.dispatcher.get(), context);
             }
         } else {
-            #[cfg(feature = "minimal-init")]
+            #[cfg(feature = "init")]
             if let Some(session) = super::init::take() {
                 if finish_init(session) {
                     unsafe {
@@ -679,19 +818,19 @@ pub fn run() -> Stats {
     RUNTIME.lock().stats
 }
 
-#[cfg(feature = "minimal-init")]
+#[cfg(feature = "init")]
 pub(crate) fn run_init(session: super::init::Session) -> ! {
     super::init::install(session);
     run();
     panic!("init scheduler returned")
 }
 
-#[cfg(feature = "minimal-init")]
+#[cfg(feature = "init")]
 pub(crate) fn run_init_closure_probe(session: super::init::Session) {
     assert!(session.closure_probe);
     super::init::install(session);
     let stats = run();
-    assert_eq!(stats.reaped, 1, "init closure did not reap its task");
+    assert_eq!(stats.reaped, 2, "init closure did not reap init and service");
 }
 
 fn alloc_error(error: AllocError) -> TaskError {

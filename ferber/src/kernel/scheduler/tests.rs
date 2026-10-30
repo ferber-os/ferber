@@ -296,21 +296,15 @@ fn startup_stack_pointer_bounds(root: &Arc<SpinLock<Job>>) {
     drop(root.lock().detach_process(id).unwrap());
 }
 
-#[cfg(feature = "minimal-init")]
+#[cfg(feature = "init")]
 fn init_wait_contract(root: &Arc<SpinLock<Job>>) {
     let fixture = Fixture::new(root);
     let (token, generation) = fixture.arm();
-    let mut session = crate::kernel::init::Session {
-        admitted: crate::kernel::elf_load::Admitted {
+    let mut session = crate::kernel::init::Session::test_session(
+        crate::kernel::elf_load::Admitted {
             process_id: fixture.process.lock().id(),
             thread_id: fixture.thread.lock().id(),
-        },
-        node: Arc::downgrade(&fixture.node),
-        peer: Some(Arc::clone(&fixture.peer)),
-        exit_status: None,
-        closure_probe: false,
-        parked_once: false,
-    };
+        }, Arc::downgrade(&fixture.node), Arc::clone(&fixture.peer));
     assert!(init_wait_matches(&session));
     fixture.endpoint.unregister_wait(&token, generation);
     assert!(!init_wait_matches(&session), "unregistered wait accepted");
@@ -362,7 +356,7 @@ fn init_wait_contract(root: &Arc<SpinLock<Job>>) {
     assert!(init_wait_matches(&session));
     let second = Fixture::new(root);
     second.arm();
-    assert!(!init_wait_matches(&session), "other live task concealed");
+    assert!(init_wait_matches(&session), "init identity depends on task count");
     second.dispose();
     assert!(init_wait_matches(&session));
     token.notify(generation);
@@ -375,17 +369,11 @@ fn init_wait_contract(root: &Arc<SpinLock<Job>>) {
 
     let fixture = Fixture::new(root);
     fixture.arm();
-    let session = crate::kernel::init::Session {
-        admitted: crate::kernel::elf_load::Admitted {
+    let session = crate::kernel::init::Session::test_session(
+        crate::kernel::elf_load::Admitted {
             process_id: fixture.process.lock().id(),
             thread_id: fixture.thread.lock().id(),
-        },
-        node: Arc::downgrade(&fixture.node),
-        peer: Some(Arc::clone(&fixture.peer)),
-        exit_status: None,
-        closure_probe: false,
-        parked_once: false,
-    };
+        }, Arc::downgrade(&fixture.node), Arc::clone(&fixture.peer));
     fixture.node.revoke();
     assert!(!init_wait_matches(&session), "revoked init wait accepted");
     reconcile();
@@ -395,13 +383,86 @@ fn init_wait_contract(root: &Arc<SpinLock<Job>>) {
     fixture.dispose();
 }
 
+fn rooted_wait_graph(root: &Arc<SpinLock<Job>>) {
+    let first = Fixture::new(root);
+    first.arm();
+    let second = Fixture::new(root);
+    second.arm();
+    assert!(!idle_quiescent());
+    let mut source = register_source(&first.peer, SourceKind::TerminalBootstrap).unwrap();
+    assert!(!idle_quiescent(), "unrelated external source concealed orphan wait");
+    let node = CAP_NODE_ALLOCATOR.alloc_root(second.peer.clone(), ObjectType::Channel,
+        Rights::WRITE).unwrap();
+    first.process.lock().handle_table().lock().insert(Arc::clone(&node)).unwrap();
+    assert!(idle_quiescent(), "producer chain did not reach external root");
+    source.cancel();
+    assert!(!idle_quiescent(), "canceled source concealed all-blocked tasks");
+    let replacement = register_source(&first.peer, SourceKind::Software).unwrap();
+    source.cancel();
+    assert!(idle_quiescent(), "stale cancellation removed replacement source");
+    node.revoke();
+    assert!(!idle_quiescent(), "revoked WRITE authority supplied a producer edge");
+    drop(replacement);
+    let wrong_side = register_source(&first.endpoint, SourceKind::TerminalBootstrap).unwrap();
+    assert!(!idle_quiescent(), "same endpoint side accepted as a producer");
+    drop(wrong_side);
+    drop(source);
+    drop(node);
+    second.dispose();
+    first.dispose();
+}
+
+fn admission_while_running(root: &Arc<SpinLock<Job>>) {
+    let parent = Fixture::new(root);
+    {
+        let mut runtime = RUNTIME.lock();
+        runtime.ready.retain(|&index| index != parent.index);
+        runtime.current = Some(parent.index);
+    }
+    parent.thread.lock().set_state(ThreadState::Running);
+    let child = Fixture::new(root);
+    assert_eq!(RUNTIME.lock().current, Some(parent.index));
+    assert_eq!(child.ready_occurrences(), 1);
+    RUNTIME.lock().current = None;
+    child.dispose();
+    parent.dispose();
+}
+
+fn admission_capacity(root: &Arc<SpinLock<Job>>) {
+    let process = root.lock().create_process("scheduler_capacity").unwrap();
+    let mut threads = Vec::new();
+    threads.try_reserve_exact(MAX_TASKS).unwrap();
+    for _ in 0..MAX_TASKS {
+        let thread = process.lock().create_named_thread("capacity", 0x20_0040, 4096).unwrap();
+        admit(process.clone(), thread.clone()).unwrap();
+        threads.push(thread);
+    }
+    assert_eq!(task_count(), MAX_TASKS);
+    let extra = process.lock().create_named_thread("excess", 0x20_0040, 4096).unwrap();
+    assert_eq!(admit(process.clone(), extra.clone()), Err(TaskError::QuotaExceeded));
+    assert_eq!(task_count(), MAX_TASKS);
+    assert_eq!(ready_count(), MAX_TASKS);
+    let id = extra.lock().id();
+    drop(process.lock().detach_thread(id));
+    drop(extra);
+    for thread in &threads { thread.lock().set_state(ThreadState::Dead); }
+    reap();
+    assert_eq!(task_count(), 0);
+    assert_eq!(ready_count(), 0);
+    drop(threads);
+    drop(process);
+}
+
 pub(super) fn run(root: &Arc<SpinLock<Job>>) {
     assert_eq!(task_count(), 0);
     assert!(RUNTIME.lock().current.is_none());
     let processes = root.lock().process_count();
     let nodes = CAP_NODE_ALLOCATOR.live_count();
-    #[cfg(feature = "minimal-init")]
+    #[cfg(feature = "init")]
     init_wait_contract(root);
+    rooted_wait_graph(root);
+    admission_while_running(root);
+    admission_capacity(root);
     startup_stack_pointer_bounds(root);
     failed_task_construction(root);
     notified_close_reuse(root);

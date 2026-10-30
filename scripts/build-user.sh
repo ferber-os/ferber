@@ -7,6 +7,7 @@ shift
 user_cfg=()
 linker="$repo_root/userspace/common/linker.ld"
 case "$program" in
+    service) source_dir=service; output_dir=userspace-service; basename=service ;;
     init) source_dir=init; output_dir=userspace-init; basename=init ;;
     job-accounting-probe) source_dir=job-accounting-probe; output_dir=userspace-job-accounting-probe; basename=probe ;;
     vmo-probe) source_dir=vmo-probe; output_dir=userspace-vmo; basename=probe ;;

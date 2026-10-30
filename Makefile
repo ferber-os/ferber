@@ -1,13 +1,13 @@
 KERNEL := ferber/target/riscv64gc-unknown-none-elf/debug/ferber
 USERSPACE_ELF_PROBE ?= 0
-MINIMAL_INIT ?= 0
+INIT ?= 0
 VMO_PROBE ?= 0
 VMO_MAP_PROBE ?= 0
 VMO_SEAL_PROBE ?= 0
 JOB_ACCOUNTING_PROBE ?= 0
 
 ifeq ($(JOB_ACCOUNTING_PROBE),1)
-ifneq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE)$(VMO_MAP_PROBE)$(VMO_SEAL_PROBE),00000)
+ifneq ($(INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE)$(VMO_MAP_PROBE)$(VMO_SEAL_PROBE),00000)
 $(error JOB_ACCOUNTING_PROBE must run separately from other payloads)
 endif
 KERNEL_FEATURES = --features userspace-job-accounting-probe
@@ -17,7 +17,7 @@ X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-job-accoun
 endif
 
 ifeq ($(VMO_SEAL_PROBE),1)
-ifneq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE)$(VMO_MAP_PROBE),0000)
+ifneq ($(INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE)$(VMO_MAP_PROBE),0000)
 $(error VMO_SEAL_PROBE must run separately from other payloads)
 endif
 KERNEL_FEATURES = --features userspace-vmo-seal-probe
@@ -27,7 +27,7 @@ X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-vmo-seal-p
 endif
 
 ifeq ($(VMO_MAP_PROBE),1)
-ifneq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE),000)
+ifneq ($(INIT)$(USERSPACE_ELF_PROBE)$(VMO_PROBE),000)
 $(error VMO_MAP_PROBE must run separately from other payloads)
 endif
 KERNEL_FEATURES = --features userspace-vmo-map-probe
@@ -37,8 +37,8 @@ X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-vmo-map-pr
 endif
 
 ifeq ($(VMO_PROBE),1)
-ifneq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE),00)
-$(error VMO_PROBE, MINIMAL_INIT and USERSPACE_ELF_PROBE are mutually exclusive)
+ifneq ($(INIT)$(USERSPACE_ELF_PROBE),00)
+$(error VMO_PROBE, INIT and USERSPACE_ELF_PROBE are mutually exclusive)
 endif
 KERNEL_FEATURES = --features userspace-vmo-probe
 RISCV_PAYLOAD = -initrd target/userspace-vmo/riscv64gc-unknown-none-elf/debug/probe.elf
@@ -46,15 +46,15 @@ X86_PAYLOAD = target/userspace-vmo/x86_64-unknown-none/release/probe.elf
 X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-vmo-probe
 endif
 
-ifeq ($(MINIMAL_INIT)$(USERSPACE_ELF_PROBE),11)
-$(error MINIMAL_INIT and USERSPACE_ELF_PROBE are mutually exclusive)
+ifeq ($(INIT)$(USERSPACE_ELF_PROBE),11)
+$(error INIT and USERSPACE_ELF_PROBE are mutually exclusive)
 endif
 
-ifeq ($(MINIMAL_INIT),1)
-KERNEL_FEATURES = --features minimal-init
-RISCV_PAYLOAD = -initrd target/userspace-init/riscv64gc-unknown-none-elf/debug/init.elf
-X86_PAYLOAD = target/userspace-init/x86_64-unknown-none/release/init.elf
-X86_ISO_BUILD = scripts/x86-preview.sh --release --features minimal-init
+ifeq ($(INIT),1)
+KERNEL_FEATURES = --features init
+RISCV_PAYLOAD = -initrd target/userspace-init/riscv64gc-unknown-none-elf/debug/boot.bundle
+X86_PAYLOAD = target/userspace-init/x86_64-unknown-none/release/boot.bundle
+X86_ISO_BUILD = scripts/x86-preview.sh --release --features init
 endif
 
 ifeq ($(USERSPACE_ELF_PROBE),1)
@@ -62,7 +62,7 @@ KERNEL_FEATURES = --features userspace-elf-probe
 RISCV_PAYLOAD = -initrd target/userspace-elf/riscv64gc-unknown-none-elf/debug/probe.elf
 X86_PAYLOAD = target/userspace-elf/x86_64-unknown-none/release/probe.elf
 X86_ISO_BUILD = scripts/x86-preview.sh --release --features userspace-elf-probe
-else ifeq ($(MINIMAL_INIT)$(VMO_PROBE)$(VMO_MAP_PROBE)$(VMO_SEAL_PROBE)$(JOB_ACCOUNTING_PROBE),00000)
+else ifeq ($(INIT)$(VMO_PROBE)$(VMO_MAP_PROBE)$(VMO_SEAL_PROBE)$(JOB_ACCOUNTING_PROBE),00000)
 X86_ISO_BUILD = scripts/x86-preview.sh --release
 endif
 
@@ -86,8 +86,8 @@ endif
 ifeq ($(VMO_PROBE),1)
 	scripts/build-user.sh vmo-probe riscv64gc-unknown-none-elf debug >/dev/null
 endif
-ifeq ($(MINIMAL_INIT),1)
-	scripts/build-user.sh init riscv64gc-unknown-none-elf debug >/dev/null
+ifeq ($(INIT),1)
+	scripts/build-init-bundle.sh riscv64gc-unknown-none-elf debug >/dev/null
 endif
 ifeq ($(USERSPACE_ELF_PROBE),1)
 	scripts/build-user-elf.sh riscv64gc-unknown-none-elf debug >/dev/null
@@ -129,8 +129,8 @@ endif
 ifeq ($(VMO_PROBE),1)
 	scripts/build-user.sh vmo-probe x86_64-unknown-none release >/dev/null
 endif
-ifeq ($(MINIMAL_INIT),1)
-	scripts/build-user.sh init x86_64-unknown-none release >/dev/null
+ifeq ($(INIT),1)
+	scripts/build-init-bundle.sh x86_64-unknown-none release >/dev/null
 endif
 ifeq ($(USERSPACE_ELF_PROBE),1)
 	scripts/build-user-elf.sh x86_64-unknown-none release >/dev/null

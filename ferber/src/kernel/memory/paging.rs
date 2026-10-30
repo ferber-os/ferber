@@ -20,22 +20,52 @@ pub struct MapFlags {
 
 impl MapFlags {
     pub const fn kernel_ro() -> Self {
-        Self { readable: true, writable: false, executable: false, user: false }
+        Self {
+            readable: true,
+            writable: false,
+            executable: false,
+            user: false,
+        }
     }
     pub const fn kernel_rw() -> Self {
-        Self { readable: true, writable: true, executable: false, user: false }
+        Self {
+            readable: true,
+            writable: true,
+            executable: false,
+            user: false,
+        }
     }
     pub const fn kernel_rx() -> Self {
-        Self { readable: true, writable: false, executable: true, user: false }
+        Self {
+            readable: true,
+            writable: false,
+            executable: true,
+            user: false,
+        }
     }
     pub const fn user_ro() -> Self {
-        Self { readable: true, writable: false, executable: false, user: true }
+        Self {
+            readable: true,
+            writable: false,
+            executable: false,
+            user: true,
+        }
     }
     pub const fn user_rw() -> Self {
-        Self { readable: true, writable: true, executable: false, user: true }
+        Self {
+            readable: true,
+            writable: true,
+            executable: false,
+            user: true,
+        }
     }
     pub const fn user_rx() -> Self {
-        Self { readable: true, writable: false, executable: true, user: true }
+        Self {
+            readable: true,
+            writable: false,
+            executable: true,
+            user: true,
+        }
     }
 }
 
@@ -152,13 +182,17 @@ pub trait AddressSpace {
         if frame_count == 0 || !virt_addr.is_multiple_of(PAGE_SIZE) {
             return Err(PageError::Unaligned);
         }
-        let bytes = frame_count.checked_mul(PAGE_SIZE).ok_or(PageError::OutOfRange)?;
+        let bytes = frame_count
+            .checked_mul(PAGE_SIZE)
+            .ok_or(PageError::OutOfRange)?;
         virt_addr.checked_add(bytes).ok_or(PageError::OutOfRange)?;
         for i in 0..frame_count {
-            self.query(virt_addr + i * PAGE_SIZE).ok_or(PageError::NotMapped)?;
+            self.query(virt_addr + i * PAGE_SIZE)
+                .ok_or(PageError::NotMapped)?;
         }
         for i in 0..frame_count {
-            self.unmap_page(virt_addr + i * PAGE_SIZE).expect("preflight stable unmap range");
+            self.unmap_page(virt_addr + i * PAGE_SIZE)
+                .expect("preflight stable unmap range");
         }
         Ok(())
     }

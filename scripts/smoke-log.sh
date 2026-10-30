@@ -5,6 +5,7 @@ smoke_payload_failure_ok() {
     case "$scenario" in
         init-missing) expected='  detail: boot payload required' ;;
         init-malformed-ready) expected='  detail: init bootstrap failed' ;;
+        init-replay-challenge) expected='  detail: init bootstrap failed' ;;
         init-exit-before-ready) expected='  detail: init exited unexpectedly: 17' ;;
         init-exit-after-ready) expected='  detail: init exited unexpectedly: 18' ;;
         init-close-bootstrap) expected='  detail: init exited unexpectedly: 19' ;;
@@ -52,9 +53,16 @@ smoke_log_ok() {
     local log=$1 scenario=$2 expected line='' count=0
     local handle_count=0 mutation_count=0 memory_count=0 channel_count=0 bootstrap_count=0 payload_count=0
     local scheduling_count=0 blocking_count=0 reclamation_count=0 init_ready_count=0
+    local launch_count=0 idle_count=0 wake_count=0
     if [[ "$scenario" == deadlock ]]; then
         smoke_deadlock_ok "$log"
         return $?
+    fi
+    if [[ "$scenario" == service-wake ]]; then
+        scenario=init
+        local require_wake=1
+    else
+        local require_wake=0
     fi
     if [[ "$scenario" == payload-* || "$scenario" == init-* ]]; then
         smoke_payload_failure_ok "$log" "$scenario"
@@ -97,6 +105,12 @@ smoke_log_ok() {
             reclamation_count=$((reclamation_count + 1))
         elif [[ "$scenario" == elf && "$line" == '[FERBER_TEST] userspace_bootstrap_channel: PASS' ]]; then
             bootstrap_count=$((bootstrap_count + 1))
+        elif [[ "$scenario" == init && "$line" == '[FERBER_TEST] service_launch: PASS' ]]; then
+            launch_count=$((launch_count + 1))
+        elif [[ "$scenario" == init && "$line" == '[FERBER_TEST] multiservice_idle: PASS' ]]; then
+            idle_count=$((idle_count + 1))
+        elif [[ "$scenario" == init && "$require_wake" -eq 1 && "$line" == '[FERBER_TEST] software_wake: PASS' ]]; then
+            wake_count=$((wake_count + 1))
         elif [[ "$scenario" == init && "$line" == '[FERBER_TEST] init_ready: PASS' ]]; then
             init_ready_count=$((init_ready_count + 1))
         elif [[ ( "$scenario" == elf || "$scenario" == init || "$scenario" == vmo || "$scenario" == vmo-map* || "$scenario" == vmo-seal* || "$scenario" == accounting ) && "$line" == '[FERBER_TEST] boot_payload: PASS' ]]; then
@@ -110,7 +124,7 @@ smoke_log_ok() {
     # A partial final write must not turn a crashed probe into a passing run.
     [[ -z "$line" && "$count" -eq 1 && "$memory_count" -eq 1 ]] || return 1
     if [[ "$scenario" == init ]]; then
-        [[ "$init_ready_count" -eq 1 && "$payload_count" -eq 1 ]] || return 1
+        [[ "$init_ready_count" -eq 1 && "$payload_count" -eq 1 && "$launch_count" -eq 1 && "$idle_count" -eq 1 && "$wake_count" -eq "$require_wake" ]] || return 1
     fi
     if [[ "$scenario" == vmo || "$scenario" == vmo-map* || "$scenario" == vmo-seal* || "$scenario" == accounting ]]; then
         [[ "$payload_count" -eq 1 ]] || return 1
@@ -151,6 +165,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
         [[ "$scenario" != normal ]] || valid+="$handle_marker"$'\n'"$mutation_marker"$'\n'"$channel_marker"$'\n'"$scheduling_marker"$'\n'"$blocking_marker"$'\n'"$reclamation_marker"$'\n'
         [[ "$scenario" != elf ]] || valid+="$bootstrap_marker"$'\n'"$payload_marker"$'\n'
         [[ "$scenario" != vmo && "$scenario" != vmo-map* && "$scenario" != vmo-seal* && "$scenario" != accounting ]] || valid+="$payload_marker"$'\n'
+        [[ "$scenario" != init ]] || valid+=$'[FERBER_TEST] service_launch: PASS\n[FERBER_TEST] multiservice_idle: PASS\n'
         [[ "$scenario" != init ]] || valid+="$init_ready_marker"$'\n'"$payload_marker"$'\n'
         printf '%s' "$valid" > "$test_log"
         smoke_log_ok "$test_log" "$scenario"
@@ -194,6 +209,18 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             fi
         done
     done
+    wake_valid="$memory_marker"$'\n[FERBER_TEST] boot_payload: PASS\n[FERBER_TEST] service_launch: PASS\n[FERBER_TEST] multiservice_idle: PASS\n[FERBER_TEST] init_ready: PASS\n[FERBER_TEST] init_waiting: PASS\n[FERBER_TEST] software_wake: PASS\n'
+    printf '%s' "$wake_valid" > "$test_log"
+    smoke_log_ok "$test_log" service-wake
+    for text in "${wake_valid/\[FERBER_TEST\] software_wake: PASS$'\n'/}" \
+        "$wake_valid"$'[FERBER_TEST] software_wake: PASS\n' \
+        "$wake_valid"$'[FERBER_TEST] unknown: PASS\n'; do
+        printf '%s' "$text" > "$test_log"
+        if smoke_log_ok "$test_log" service-wake; then
+            echo 'smoke log self-check accepted invalid software-wake output' >&2
+            exit 1
+        fi
+    done
     deadlock_banner='  F E R B E R   K E R N E L   P A N I C  '
     deadlock_detail='  detail: cooperative deadlock: live tasks with no runnable producer'
     valid="$memory_marker"$'\n'"$deadlock_banner"$'\n'"$deadlock_detail"$'\n'
@@ -218,10 +245,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
             exit 1
         fi
     done
-    for scenario in payload-missing payload-invalid payload-exit init-missing init-malformed-ready init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
+    for scenario in payload-missing payload-invalid payload-exit init-missing init-malformed-ready init-replay-challenge init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
         case "$scenario" in
             init-missing) detail='  detail: boot payload required' ;;
             init-malformed-ready) detail='  detail: init bootstrap failed' ;;
+            init-replay-challenge) detail='  detail: init bootstrap failed' ;;
             init-exit-before-ready) detail='  detail: init exited unexpectedly: 17' ;;
             init-exit-after-ready) detail='  detail: init exited unexpectedly: 18' ;;
             init-close-bootstrap) detail='  detail: init exited unexpectedly: 19' ;;

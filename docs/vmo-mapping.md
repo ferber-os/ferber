@@ -3,7 +3,7 @@
 Syscalls 14 and 15 install and remove owned-RAM VMO mappings in the calling
 process. Permissions are RO, RW/NX, or RX after [executable sealing](vmo-sealing.md).
 There is no remote mapping, automatic placement, overwrite, protection change or partial
-unmap operation. Startup ABI v1 and minimal init's protocol are unchanged.
+unmap operation. Startup ABI v1 and init's protocol are unchanged.
 
 ## MAP authority is requested at creation
 
