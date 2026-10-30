@@ -235,6 +235,14 @@ family. See
 [startup ABI v1](docs/userspace-startup.md), and
 [the boot-payload contract](docs/boot-payload.md).
 
+### Boot Framebuffer Terminal
+- [ ] Software terminal over the boot-provided framebuffer, available before a display driver or compositor
+  - [ ] Line wrapping and automatic vertical scrolling so boot and runtime logs remain visible after the screen fills
+  - [ ] Configurable foreground and background colors, with consistent colors for diagnostic severity
+  - [ ] Replace the current font with [Spleen](https://github.com/fcambus/spleen), preserving its BSD 2-Clause license and copyright notice; choose a native bitmap size after framebuffer previews
+  - [ ] Respect framebuffer dimensions, stride and pixel format; keep rendering and scroll operations within mapped bounds
+  - [ ] Preserve serial diagnostics on both architectures, including systems without a boot framebuffer
+
 ### C Runtime & Foundations
 - [ ] `musl` libc port:
   - [ ] Ferber architecture target definitions for `musl`
