@@ -161,6 +161,9 @@ The release ISO boots this init/service path. It has passed physical x86-64
 validation; physical RISC-V remains untested. See the
 [task ABI](docs/task-creation.md), [init contract](docs/init.md) and
 [boot bundle](docs/boot-bundle.md).
+Unreleased work adds a read-only [initramfs filesystem service](docs/initramfs.md),
+streaming session access, channel wait sets and multiple configured services.
+That extension requires new physical validation.
 Phase 2 concluded with `v0.1.7`.
 
 ---

@@ -12,53 +12,19 @@ mod startup;
 core::arch::global_asm!(include_str!("../common/riscv64.S"));
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(include_str!("../common/x86_64.S"));
-unsafe extern "C" {
-    fn syscall6(n: usize, a: usize, b: usize, c: usize, d: usize, e: usize, f: usize) -> isize;
-}
-fn call(n: usize, a: [usize; 6]) -> isize {
-    unsafe { syscall6(n, a[0], a[1], a[2], a[3], a[4], a[5]) }
-}
-fn exit(status: usize) -> ! {
-    call(1, [status, 0, 0, 0, 0, 0]);
-    loop {
-        core::hint::spin_loop()
-    }
-}
-fn checked(n: usize, a: [usize; 6]) -> usize {
-    let r = call(n, a);
-    if r < 0 {
-        exit(10 + n)
-    }
-    r as usize
-}
-fn send(handle: usize, bytes: &[u8]) {
-    checked(8, [handle, bytes.as_ptr() as usize, bytes.len(), 0, 0, 0]);
-}
-fn recv(handle: usize, b: &mut [u8]) {
-    let mut counts = [0u32; 2];
-    checked(
-        10,
-        [
-            handle,
-            b.as_mut_ptr() as usize,
-            b.len(),
-            0,
-            0,
-            counts.as_mut_ptr() as usize,
-        ],
-    );
-    if counts != [b.len() as u32, 0] {
-        exit(40)
-    }
-}
+#[path = "../common/fs_client.rs"]
+mod fs_client;
+#[path = "../../shared/fs_protocol.rs"]
+mod fs_protocol;
+#[path = "../../shared/initramfs.rs"]
+mod initramfs;
+#[path = "../common/runtime.rs"]
+mod rt;
+#[path = "../../shared/services_config.rs"]
+mod services_config;
+use rt::*;
 const IMAGE_BASE: usize = 0x3000_0000;
-fn launch(job: usize, image_handle: usize, image_len: usize) -> usize {
-    let size = image_len
-        .checked_add(4095)
-        .map(|n| n & !4095)
-        .unwrap_or_else(|| exit(41));
-    checked(14, [image_handle, 0, IMAGE_BASE, size, 1, 0]);
-    let image_bytes = unsafe { core::slice::from_raw_parts(IMAGE_BASE as *const u8, image_len) };
+fn prepare(job: usize, image_bytes: &[u8]) -> (usize, usize) {
     let (machine, limit) = if cfg!(target_arch = "riscv64") {
         (243, 1usize << 38)
     } else {
@@ -112,16 +78,59 @@ fn launch(job: usize, image_handle: usize, image_len: usize) -> usize {
         checked(18, [controller, vmo, descriptor.as_ptr() as usize, 0, 0, 0]);
         checked(2, [vmo, 0, 0, 0, 0, 0]);
     }
-    let mut channel = [0u32; 2];
-    checked(7, [channel.as_mut_ptr() as usize, 0, 0, 0, 0, 0]);
+    (controller, image.entry())
+}
+fn start_process(controller: usize, entry: usize) -> usize {
+    let channel = pair();
     let bootstrap = checked(19, [controller, channel[1] as usize, 0, 0, 0, 0]);
-    checked(20, [controller, image.entry(), bootstrap, 0, 0, 0]);
+    checked(20, [controller, entry, bootstrap, 0, 0, 0]);
     checked(21, [controller, 0, 0, 0, 0, 0]);
-    checked(2, [controller, 0, 0, 0, 0, 0]);
-    checked(15, [IMAGE_BASE, size, 0, 0, 0, 0]);
-    checked(2, [image_handle, 0, 0, 0, 0, 0]);
-    checked(2, [job, 0, 0, 0, 0, 0]);
+    close(controller);
     channel[0] as usize
+}
+fn source(client: &mut fs_client::Client, path: &str) -> (usize, usize) {
+    let (id, len) = client.open(path, fs_protocol::FILE);
+    if len == 0 || len > elf::MAX_IMAGE_SIZE {
+        exit(42)
+    }
+    let size = len.div_ceil(4096) * 4096;
+    let vmo = checked(11, [size, 3, 0, 0, 0, 0]);
+    let mut offset = 0;
+    while offset < len {
+        let count = client.read(id, offset, (len - offset).min(fs_protocol::CHUNK));
+        if count == 0 {
+            exit(42)
+        }
+        checked(
+            13,
+            [
+                vmo,
+                offset,
+                client.buffer[fs_protocol::HEADER..].as_ptr() as usize,
+                count,
+                0,
+                0,
+            ],
+        );
+        offset += count;
+        if client.flags == fs_protocol::EOF && offset != len {
+            exit(42)
+        }
+    }
+    client.close(id);
+    checked(16, [vmo, 0, 0, 0, 0, 0]);
+    (vmo, len)
+}
+fn prepare_source(job: usize, client: &mut fs_client::Client, path: &str) -> (usize, usize) {
+    let (vmo, len) = source(client, path);
+    let size = len.div_ceil(4096) * 4096;
+    checked(14, [vmo, 0, IMAGE_BASE, size, 1, 0]);
+    let result = prepare(job, unsafe {
+        core::slice::from_raw_parts(IMAGE_BASE as *const u8, len)
+    });
+    checked(15, [IMAGE_BASE, size, 0, 0, 0, 0]);
+    close(vmo);
+    result
 }
 #[no_mangle]
 pub unsafe extern "C" fn user_main(record: *const u8) -> ! {
@@ -149,27 +158,125 @@ pub unsafe extern "C" fn user_main(record: *const u8) -> ! {
     );
     let len = match protocol::decode_record(&start) {
         Ok((protocol::START, n))
-            if n > 0 && n <= elf::MAX_IMAGE_SIZE as u64 && counts == [protocol::SIZE as u32, 2] =>
+            if n > 0 && n <= initramfs::MAX_SIZE as u64 && counts == [protocol::SIZE as u32, 2] =>
         {
             n as usize
         }
         _ => exit(2),
     };
-    let endpoint = launch(handles[0] as usize, handles[1] as usize, len);
+    let job = handles[0] as usize;
+    let archive_handle = handles[1] as usize;
+    let archive_size = len.div_ceil(4096) * 4096;
+    checked(14, [archive_handle, 0, IMAGE_BASE, archive_size, 1, 0]);
+    let archive =
+        initramfs::Archive::parse(core::slice::from_raw_parts(IMAGE_BASE as *const u8, len))
+            .unwrap_or_else(|_| exit(42));
+    let fs_image = archive
+        .find("sbin/initfs")
+        .filter(|e| e.kind == initramfs::Kind::File)
+        .unwrap_or_else(|| exit(42));
+    let (fs_controller, fs_entry) = prepare(job, fs_image.data);
+    let mut clients = [0u32; fs_protocol::MAX_SESSIONS];
+    let mut server_slots = [0u32; fs_protocol::MAX_SESSIONS];
+    for i in 0..clients.len() {
+        let p = pair();
+        clients[i] = p[0];
+        server_slots[i] = checked(19, [fs_controller, p[1] as usize, 0, 0, 0, 0]) as u32;
+    }
+    let fs_control = start_process(fs_controller, fs_entry);
+    checked(15, [IMAGE_BASE, archive_size, 0, 0, 0, 0]);
+    let start = fs_protocol::fs_start(len as u64, &server_slots).unwrap();
+    let grant = [archive_handle as u32];
+    checked(
+        8,
+        [
+            fs_control,
+            start.as_ptr() as usize,
+            start.len(),
+            grant.as_ptr() as usize,
+            1,
+            0,
+        ],
+    );
     let mut message = [0; service::SIZE];
-    recv(endpoint, &mut message);
+    recv(fs_control, &mut message);
     if service::decode(&message) != Some((service::READY, 0)) {
         exit(3)
     }
-    if cfg!(scenario = "init-replay-challenge") {
-        send(endpoint, &service::encode(service::PING, 74));
+    let mut client = fs_client::Client::new(clients[0] as usize);
+    let (config_id, config_len) = client.open("etc/services.conf", fs_protocol::FILE);
+    if config_len == 0 || config_len > 4096 {
+        exit(43)
+    }
+    let mut config = [0u8; 4096];
+    let n = client.read(config_id, 0, config_len);
+    if n != config_len || client.flags != fs_protocol::EOF {
+        exit(43)
+    }
+    config[..n].copy_from_slice(&client.buffer[fs_protocol::HEADER..fs_protocol::HEADER + n]);
+    client.close(config_id);
+    let mut services = [None; 8];
+    let count = services_config::parse(&config[..n], &mut services).unwrap_or_else(|_| exit(43));
+    let mut endpoints = [0u32; fs_protocol::MAX_SESSIONS];
+    endpoints[0] = fs_control as u32;
+    let mut prepared = [(0usize, 0usize); 8];
+    for i in 0..count {
+        prepared[i] = prepare_source(job, &mut client, services[i].unwrap().path);
+    }
+    for i in 0..count {
+        let spec = services[i].unwrap();
+        let (controller, entry) = prepared[i];
+        let fs_slot = if spec.filesystem {
+            Some(checked(19, [controller, clients[i + 1] as usize, 0, 0, 0, 0]) as u32)
+        } else {
+            close(clients[i + 1] as usize);
+            None
+        };
+        let endpoint = start_process(controller, entry);
+        send(endpoint, &fs_protocol::service_start(fs_slot));
         recv(endpoint, &mut message);
+        if service::decode(&message) != Some((service::READY, 0)) {
+            exit(3)
+        }
+        endpoints[i + 1] = endpoint as u32;
+    }
+    for h in &clients[count + 1..] {
+        close(*h as usize);
+    }
+    close(clients[0] as usize);
+    close(job);
+    if cfg!(scenario = "init-replay-challenge") {
+        send(endpoints[1] as usize, &service::encode(service::PING, 74));
+        recv(endpoints[1] as usize, &mut message);
         if service::decode(&message) != Some((service::PONG, 74)) {
             exit(6)
         }
     }
-    send(bootstrap, &protocol::encode(protocol::READY).unwrap());
+    send(
+        bootstrap,
+        &protocol::encode_length(protocol::READY, (count + 1) as u64).unwrap(),
+    );
+    if cfg!(scenario = "init-exit-after-ready") {
+        exit(18);
+    }
+    if cfg!(scenario = "init-close-bootstrap") {
+        close(bootstrap);
+        exit(19);
+    }
+    if cfg!(scenario = "init-wrong-channel") {
+        let p = pair();
+        let mut b = [0u8; 16];
+        recv(p[0] as usize, &mut b);
+        exit(99);
+    }
+    let mut waits = [0u32; fs_protocol::MAX_SESSIONS + 1];
+    waits[0] = bootstrap as u32;
+    waits[1..count + 2].copy_from_slice(&endpoints[..count + 1]);
     loop {
+        let index = rt::wait(&waits[..count + 2]);
+        if index != 0 {
+            exit(5)
+        }
         recv(bootstrap, &mut message);
         match service::decode(&message) {
             Some((service::PING, value)) => {
@@ -177,18 +284,25 @@ pub unsafe extern "C" fn user_main(record: *const u8) -> ! {
                     send(bootstrap, &service::encode(service::PONG, value));
                     continue;
                 }
-                send(endpoint, &message);
-                recv(endpoint, &mut message);
-                if service::decode(&message) != Some((service::PONG, value)) {
-                    exit(4)
+                let ping = message;
+                for endpoint in &endpoints[..count + 1] {
+                    send(*endpoint as usize, &ping);
+                    recv(*endpoint as usize, &mut message);
+                    if service::decode(&message) != Some((service::PONG, value)) {
+                        exit(4)
+                    }
                 }
-                send(bootstrap, &message)
+                send(bootstrap, &message);
             }
             Some((service::SHUTDOWN, 0)) => {
-                send(endpoint, &message);
+                for endpoint in &endpoints[..count + 1] {
+                    send(*endpoint as usize, &message);
+                }
                 checked(0, [0; 6]);
-                checked(2, [endpoint, 0, 0, 0, 0, 0]);
-                checked(2, [bootstrap, 0, 0, 0, 0, 0]);
+                for endpoint in &endpoints[..count + 1] {
+                    close(*endpoint as usize);
+                }
+                close(bootstrap);
                 exit(1)
             }
             _ => exit(5),

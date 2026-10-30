@@ -3,6 +3,8 @@
 smoke_payload_failure_ok() {
     local log=$1 scenario=$2 expected line='' memory=0 banner=0 detail=0
     case "$scenario" in
+        init-missing-service) expected='  detail: init exited unexpectedly: 60' ;;
+        init-invalid-service) expected='  detail: init exited unexpectedly: 42' ;;
         init-missing) expected='  detail: boot payload required' ;;
         init-malformed-ready) expected='  detail: init bootstrap failed' ;;
         init-replay-challenge) expected='  detail: init bootstrap failed' ;;
@@ -64,6 +66,7 @@ smoke_log_ok() {
     else
         local require_wake=0
     fi
+    if [[ "$scenario" == init-fs-malformed || "$scenario" == init-fs-flood ]]; then scenario=init; fi
     if [[ "$scenario" == payload-* || "$scenario" == init-* ]]; then
         smoke_payload_failure_ok "$log" "$scenario"
         return $?

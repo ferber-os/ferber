@@ -94,7 +94,7 @@ automatically. It uses `scripts/build-iso.sh`, the same packager as
 PASS marker. The test kernel adds `qemu-debug-port` diagnostics for log
 capture. Set `OVMF_CODE` and `OVMF_VARS` to override the firmware paths.
 
-`make x86-iso INIT=1` packages the init/service boot bundle as `BOOT.ELF`.
+`make x86-iso INIT=1` packages the init/archive boot envelope as `BOOT.ELF`.
 See [init](../../docs/init.md) for readiness and terminal-wait
 validation and [boot bundles](../../docs/boot-bundle.md) for its exact format.
 The loader transports the bundle through its bounded boot-payload handoff.

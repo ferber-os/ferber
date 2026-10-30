@@ -186,7 +186,11 @@ run_case release service-wake 512
 run_case debug payload-missing 512
 run_case debug payload-invalid 512
 run_case debug payload-exit 512
-for scenario in init-missing init-malformed-ready init-replay-challenge init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
+for scenario in init-fs-malformed init-fs-flood; do
+    run_case debug "$scenario" 512
+done
+
+for scenario in init-missing-service init-invalid-service init-missing init-malformed-ready init-replay-challenge init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
     run_case debug "$scenario" 512
 done
 smoke_passed=1

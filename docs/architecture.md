@@ -58,10 +58,9 @@ before task construction, and a failed construction is killed and detached
 from the Job before returning. The independently built raw ELF arrives through
 a bounded external boot payload: UEFI reads `BOOT.ELF`, while RISC-V uses FDT
 initrd bounds. Its reserved source has a permanent supervisor RO/NX mapping
-and boot-lifetime physical VMO ownership. Startup arguments and multi-file
-initramfs delivery remain separate work.
-The separate [init](init.md) mode consumes a bounded init/service bundle.
-Explicit Job authority lets Ferrum construct, map and start its service through
+and boot-lifetime physical VMO ownership. General startup arguments remain separate work.
+The separate [init](init.md) mode consumes a bounded init/archive envelope.
+Explicit Job authority lets Ferrum construct, map and start initfs and configured services through
 the [task ABI](task-creation.md). Direct child handoff moves eligible capabilities
 into an initially empty table. Draft controllers own construction; started tasks
 remain owned by their Job and scheduler after controller closure. Registered
@@ -128,3 +127,8 @@ Three isolation tiers — all userspace.
 
 A process can only access resources it holds explicit capability handles for.
 Enforced at: capability system (runtime), type system (compile time), MMU (hardware).
+
+The [read-only initramfs service](initramfs.md) resolves paths in userspace.
+Session channels carry streaming file operations; IDs are scoped to their
+explicitly delegated session. Channel wait sets multiplex control and clients
+without polling or introducing implicit wake roots.

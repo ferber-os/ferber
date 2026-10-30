@@ -1,108 +1,103 @@
-# Ferrum init launches a service and remains alive
+# Ferrum init launches required services from an immutable archive
 
-Ferrum init is an independently compiled, integer-only `no_std` Rust ELF on
-RISC-V64 and x86-64. It receives explicit launch authority and executable source
-bytes, constructs a child using task syscalls and retains a resident channel
-protocol with that child. It has no filesystem, namespace server, console or
-shell, and does not launch arbitrary named services.
+Ferrum init is an independently compiled integer-only `no_std` Rust ELF on
+RISC-V64 and x86-64. It bootstraps the read-only initramfs server, reads a bounded
+service configuration through channel IPC, constructs each required service and
+retains resident control channels. General service dependencies, restart policy,
+a writable filesystem, a global mount namespace, a console and a shell remain
+future work.
 
-## Startup and bootstrap are separate versioned contracts
+## Startup and bootstrap version independently
 
-The 32-byte [startup ABI v1](userspace-startup.md) record at initial SP identifies
-one bootstrap channel. Its assigned slot is discovered from the record, never
-hardcoded. The kernel gives that endpoint READ, WRITE and WAIT rights.
+The 32-byte [startup ABI v1](userspace-startup.md) record at initial SP discovers
+one bootstrap channel. Its slot is never hardcoded. A separate 32-byte bootstrap
+v3 START message uses magic `FRINIT03`, `u16` version `3`, opcode START (`1`),
+reserved-zero fields and exact archive length. Exactly two capabilities arrive
+in order: a weak authority for the dedicated services Job, then an owned sealed
+archive VMO with READ, MAP, INSPECT and TRANSFER rights. Capacity is page-rounded;
+the record identifies exact archive bytes. The services Job limit is currently
+16 MiB and must accommodate every required child's charged resources.
 
-The kernel prequeues a 32-byte bootstrap v2 START message. Magic `FRINIT02`,
-version `2`, opcode START (`1`), reserved-zero fields and exact service ELF byte
-length are checked separately from startup. Exactly two attached capabilities
-arrive in order: a weak authority for a dedicated 16 MiB services Job, then a
-sealed owned source-image VMO with READ, MAP and INSPECT rights. That VMO's rounded
-capacity is distinct from the ELF length. No existing parent handles are cloned
-into init or its child implicitly.
+Init maps and validates the [archive](initramfs-format.md), locates `sbin/initfs`,
+and uses the shared bounded ELF parser and task syscalls to construct that child.
+Each segment has its own VMO; file bytes are copied, BSS/tails remain zero,
+executable backing is sealed before RX publication, and mutable data is RW/NX.
+The child receives a guarded stack and one initial thread. It becomes runnable
+only after explicit start; closing its controller afterward does not kill it.
 
-Init maps the image read-only and validates it with the same bounded ELF parser
-used by the kernel. For each segment it creates fresh mappable backing, copies
-file bytes through bounded writes and leaves BSS/page tails zero. Executable
-backing receives explicit executable creation authority and is sealed before RX
-mapping. Mutable data is RW/NX. A draft child receives these mappings, a moved
-bootstrap channel endpoint and one initial thread with the standard guarded
-stack. Only successful explicit start makes it runnable. Closing the construction
-controller afterward does not kill the started child.
+Init explicitly installs the initfs session endpoints, starts initfs, unmaps the
+archive source and moves its VMO through the initfs control channel. Initfs
+accepts the source, maps it RO and closes the received handle. Its mapping
+retains backing. Init uses its separate filesystem client channel to read
+`etc/services.conf`, validates the entire configuration, and loads required
+service executables by canonical archive path. Services receive independent
+control channels and only the filesystem access explicitly requested in their
+configuration. No parent mappings or handles are inherited.
 
-Init releases its source mapping, image handle and launch-Job handle after setup.
-The structural Job tree and scheduler retain the live service. The exact bundle
-format and packaging commands are described in [boot bundles](boot-bundle.md).
+## Readiness requires every launched process to execute
 
-## Readiness requires actual service execution
+Init waits for initfs and every configured service to announce READY. It then
+sends bootstrap READY (`2`) with the count of required processes, including
+initfs, and no attached handles. The kernel accepts counts 1–9 and checks that
+same count against independently observed child READY sends. Zero is permitted
+by the wire codec for negative fixtures but rejected by the kernel session.
 
-The service validates its startup record and sends READY to init. Init validates
-that message, then sends its own bootstrap READY (`2`) with zero service length
-and no attached handles. The kernel sends PING challenge 74 to init, which
-forwards it to the service. The service returns PONG with the same challenge;
-init forwards that reply to the kernel.
+The kernel issues PING challenge 74. Init forwards it to every child control
+endpoint and validates matching PONGs before replying to the kernel. Kernel
+observation additionally ties each READY and matching PONG to a distinct live
+process directly admitted to the services Job and that process's endpoint.
+Init's PING must use the paired endpoint; a reply cannot reuse evidence from
+before the kernel issued its challenge. Endpoint observations are weak and
+cannot retain closed channels.
 
-The kernel does not accept init's report as evidence that a service ran. It
-observes successful channel-send syscalls, checks that the sender is init or a
-live process directly admitted to init's service Job, and records the service's
-READY and matching PONG from the same endpoint and challenge. Init's PING must
-use the paired endpoint. Before reporting terminal idle, the kernel also checks
-that this same service process is still alive and blocked receiving on that
-endpoint. The observed endpoint is held weakly so verification cannot keep a
-closed channel alive.
+Service/control messages are 16 little-endian bytes: magic `FRSVC001`, version
+`1`, opcode and challenge. READY (`1`) and SHUTDOWN (`4`) use zero challenge;
+PING (`2`) and PONG (`3`) preserve their challenge. Initfs separately serves
+bounded [filesystem requests](initramfs.md) on delegated client channels.
 
-Service/control messages are 16 little-endian bytes: magic `FRSVC001`, `u16`
-version `1`, a `u16` opcode and a `u32` challenge. Opcodes are READY (`1`), PING
-(`2`), PONG (`3`) and SHUTDOWN (`4`). READY and SHUTDOWN use challenge zero. The
-kernel accepts only exact bootstrap READY/PONG records with no transferred
-handles. Init validates service message lengths, fields, opcodes and challenges.
+## Rooted waiting remains a legitimate steady state
 
-After readiness and request/reply verification, both programs block using normal
-READ | WAIT channel receives. No implicit busy loop or kernel-injected runnable
-child supplies the success evidence.
+Init waits on its kernel control channel and child control channels. Initfs
+waits on its control channel and active filesystem sessions. The bounded
+multi-channel wait interface permits either protocol to make progress without
+polling an arbitrary endpoint. Closure, cancellation and readiness revalidate
+stored wait identity; no interrupt or preemptive scheduler is implied.
 
-## A wait is legitimate only when it reaches an explicit source
+The kernel registers its bootstrap peer as a terminal source with weak endpoint
+identity and a checked generation. The scheduler's wait graph connects blocked
+receivers to potential producers through live WRITE capabilities. Every blocked
+component must reach a registered source. A closed channel cycle or an unrelated
+blocked task cannot become legitimate merely because init itself is waiting.
+The final idle check also requires every recorded service to remain alive and
+blocked on the expected control endpoint. The kernel halts with interrupts
+masked only after that validated quiescent state.
 
-The kernel registers its bootstrap peer as a terminal bootstrap source. The
-registration holds weak endpoint identity and a checked generation; it does not
-keep an endpoint open. Live channel WRITE capabilities in admitted tasks connect
-blocked readers to potential producers. The bounded scheduler analysis requires
-blocked work to reach a registered source and preserves pending wait-generation,
-capability and endpoint validation. Merely holding both sides of a channel does
-not turn a closed cycle into an external event source.
+The separate `service-wake-probe` feature queues challenge 75 after the first
+valid idle state and retains a software source lease until all required PONGs
+return. This proves cooperative software delivery and resumption, not IRQ or
+SMP safety.
 
-Source registration is an internal bootstrap mechanism, not a public syscall or
-ambient grant. Cancelling a lease removes source status, while ordinary endpoint
-ownership controls actual peer closure. A terminal source marks a permitted
-steady state; there is currently no hardware event transport. Once the validated
-wait graph is quiescent, the kernel halts with interrupts masked.
+## Finite cleanup precedes the resident session
 
-The separate `service-wake-probe` feature registers concrete software work,
-queues a second PING with challenge 75, resumes the blocked processes and checks
-the matching PONG. It releases the software source lease after the response. This
-proves software delivery and cooperative wakeup, not IRQ delivery or SMP safety.
+A finite shutdown run warms admission and queue capacities; a repeated measured
+run must restore physical frames, capability nodes and root process count.
+SHUTDOWN reaches every configured service and initfs. Children exit zero; init
+closes its endpoints and exits with expected status one. Dispatcher reclamation
+retires the tasks before the launch Job is killed and detached. The final
+resident run deliberately keeps those processes alive.
 
-## Finite cleanup tests precede the resident boot
+Normal init boots require `memory_verification`, `boot_payload`, `service_launch`,
+`multiservice_idle`, `init_ready` and `init_waiting`, each with `[FERBER_TEST]` and
+PASS. The wake build additionally requires `software_wake: PASS`. Those markers
+establish the checked protocol and waiting contracts, not a complete operating
+system. Missing/malformed sources, startup failure, unexpected child exit and
+unrooted waiting are failures; a timeout alone is never evidence of success.
 
-The normal initialization path first runs a finite shutdown protocol to warm
-admission and queue capacities. A repeated measured run must restore physical
-frames, capability nodes and root process count. The kernel sends SHUTDOWN through
-init to the service; the service exits zero, and init closes its channels and
-exits with expected status one. Both tasks are reclaimed on the dispatcher stack,
-then the launch Job is killed and detached after its processes are gone.
+Host tests validate archive/tools, filesystem wire/session behavior, service
+configuration, bootstrap records, ELF parsing and cleanup accounting. Architecture
+boots establish actual execution and message exchange separately from host tests.
 
-The final resident run does not take that exit path. Its required markers are
-`memory_verification`, `boot_payload`, `service_launch`, `multiservice_idle`,
-`init_ready` and `init_waiting`, each with `[FERBER_TEST]` and PASS. The dedicated
-wake build additionally requires `software_wake: PASS` after resumption. Invalid
-bootstrap messages, missing payloads, premature init exit, closure and an unrooted
-wait remain diagnosed failures; a timeout alone is never success evidence.
-
-Host tests validate bootstrap wire fields, service messages, bundle bounds and
-shared ELF parsing. Architecture boot tests establish actual entry, child launch,
-message exchange, waiting and the finite reclamation path. Physical x86 evidence
-must be recorded separately from QEMU. No physical RISC-V result is implied.
-
-A physical x86-64 boot on the 32 GiB MSI B650M-A PRO WIFI reached all six normal
-markers with 31.46 GiB managed RAM. That run used the pre-release `0.2.14`
-banner. The dedicated software-wake probe remains QEMU-validated; physical
-RISC-V hardware has not been available.
+Historical physical evidence applies to the v0.3.0 init/service implementation:
+a 32 GiB MSI B650M-A PRO WIFI boot reached its six normal markers with 31.46 GiB
+managed RAM and the pre-release `0.2.14` banner. The archive/initfs extension
+requires new hardware validation. No physical RISC-V result is claimed.
