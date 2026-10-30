@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/ferber.png" width="180" alt="Ferber logo">
+</p>
+
 <h1 align="center">Ferber</h1>
 <p align="center">
   <sub>Ferber was previously called Wolfram.</sub>
@@ -8,12 +12,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/notvcto/ferber/actions/workflows/ci.yml"><img src="https://github.com/notvcto/ferber/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/notvcto/ferber/releases"><img src="https://img.shields.io/github/v/release/notvcto/ferber?include_prereleases&color=blue" alt="Release"></a>
-  <a href="https://github.com/notvcto/ferber/stargazers"><img src="https://img.shields.io/github/stars/notvcto/ferber?style=social" alt="Stars"></a>
-  <a href="https://github.com/notvcto/ferber/network/members"><img src="https://img.shields.io/github/forks/notvcto/ferber?style=social" alt="Forks"></a>
-  <a href="https://github.com/notvcto/ferber/issues"><img src="https://img.shields.io/github/issues/notvcto/ferber" alt="Issues"></a>
-  <a href="https://github.com/notvcto/ferber/pulls"><img src="https://img.shields.io/github/issues-pr/notvcto/ferber" alt="Pull Requests"></a>
+  <a href="https://github.com/ferber-os/ferber/actions/workflows/ci.yml"><img src="https://github.com/ferber-os/ferber/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/ferber-os/ferber/releases"><img src="https://img.shields.io/github/v/release/ferber-os/ferber?include_prereleases&color=blue" alt="Release"></a>
+  <a href="https://github.com/ferber-os/ferber/stargazers"><img src="https://img.shields.io/github/stars/ferber-os/ferber?style=social" alt="Stars"></a>
+  <a href="https://github.com/ferber-os/ferber/network/members"><img src="https://img.shields.io/github/forks/ferber-os/ferber?style=social" alt="Forks"></a>
+  <a href="https://github.com/ferber-os/ferber/issues"><img src="https://img.shields.io/github/issues/ferber-os/ferber" alt="Issues"></a>
+  <a href="https://github.com/ferber-os/ferber/pulls"><img src="https://img.shields.io/github/issues-pr/ferber-os/ferber" alt="Pull Requests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--2.0--only-blue" alt="License"></a>
 </p>
 
@@ -221,8 +225,8 @@ Non-code contributions are also welcome.
 ## Special thanks to our contributors:
 
 <p align="center">
-  <a href="https://github.com/notvcto/ferber/graphs/contributors">
-    <img src="https://contrib.rocks/image?repo=notvcto/ferber" alt="Contributors" />
+  <a href="https://github.com/ferber-os/ferber/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=ferber-os/ferber" alt="Contributors" />
   </a>
 </p>
 
