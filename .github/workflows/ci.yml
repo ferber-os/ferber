@@ -23,13 +23,6 @@ jobs:
           targets: riscv64imac-unknown-none-elf,riscv64gc-unknown-none-elf,x86_64-unknown-none,x86_64-unknown-uefi
           components: rust-src,llvm-tools-preview,clippy
 
-      - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system ovmf ripgrep xorriso dosfstools mtools
-          qemu-system-riscv64 --version
-          qemu-system-x86_64 --version
-
       - name: Build (RISC-V)
         working-directory: ferber
         run: cargo build --target riscv64gc-unknown-none-elf
@@ -113,19 +106,42 @@ jobs:
           bash scripts/elf-load-tests.sh
           bash scripts/init-protocol-tests.sh
 
+  smoke:
+    name: Smoke (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [riscv, x86, iso]
+    env:
+      OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+      OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: riscv64imac-unknown-none-elf,riscv64gc-unknown-none-elf,x86_64-unknown-none,x86_64-unknown-uefi
+          components: rust-src,llvm-tools-preview
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system ovmf ripgrep xorriso dosfstools mtools
+          qemu-system-riscv64 --version
+          qemu-system-x86_64 --version
+
       - name: Smoke test (RISC-V)
+        if: matrix.suite == 'riscv'
         run: bash scripts/riscv-smoke.sh
 
       - name: Smoke test (x86-64 UEFI)
-        env:
-          OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
-          OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+        if: matrix.suite == 'x86'
         run: bash scripts/x86-smoke.sh
 
       - name: Smoke test (x86-64 release ISO)
-        env:
-          OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
-          OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+        if: matrix.suite == 'iso'
         run: |
           bash scripts/x86-iso-smoke.sh
           bash scripts/x86-iso-smoke.sh elf
@@ -139,7 +155,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: check
+    needs: [check, smoke]
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v7
