@@ -63,6 +63,38 @@ Translations and localization are welcome, along with documentation, testing, UX
 
 ---
 
+## Milestone Branches and Releases
+
+Use a branch for each sprint or milestone, such as `feature/initramfs` or
+`feature/aarch64`. Keep `main` ready for release. Start from an up-to-date,
+clean `main` using `git pull --ff-only` before creating the branch; preserve
+existing work before switching or synchronizing branches.
+
+Commit coherent engineering checkpoints as work progresses. Each checkpoint
+should build and pass the checks relevant to its scope. A developing port may
+be incomplete, but its supported checkpoint behavior and remaining gaps must
+be explicit. Keep existing architectures working. Record validation in the PR
+so a regression can be traced to a meaningful commit with `git bisect`.
+
+Push milestone branches regularly, including before breaks, and open a draft
+PR targeting `main` early. The existing PR workflow runs the required checks;
+branch pushes update that PR. A local commit alone is not an off-machine backup.
+
+When the milestone meets its acceptance criteria, update documentation and run
+the applicable architecture suites and hardware validation. Merge with a regular
+merge commit, preserving the logical commits rather than squashing them. Verify
+the resulting commit on `main` before tagging it; PR results alone do not
+establish that the merge result passes.
+
+One completed milestone produces one version tag and one release. Prepare the
+version bump and `docs/releases/<tag>.md` before the merge. Ferber's release
+commits and annotated tags must be signed; use `git tag -s`, keeping signing
+requirements enabled. Push the tag only on the exact verified `main` commit.
+The tag workflow must pass before it publishes release assets. Intermediate
+checkpoint commits do not require version bumps or releases.
+
+---
+
 ## Testing
 
 ```bash

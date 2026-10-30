@@ -4,6 +4,26 @@ Ferber is built from first principles around zero ambient authority: programs ea
 
 ---
 
+## Immediate Priority — AArch64 Port (ASAP)
+
+Start the AArch64 port immediately after stabilizing the current initramfs patch,
+before expanding service-manager and driver functionality. Establish the third
+architecture while the kernel remains small enough to audit its assumptions.
+RISC-V 64 and x86-64 remain supported throughout the port; AArch64 reaches the
+same shared contracts before being described as a parity target.
+Once the port reaches parity, every new feature and ABI change must ship with
+matching behavior and verification on AArch64, RISC-V 64 and x86-64. AArch64
+becomes an equal ongoing target, rather than a port left to catch up later.
+
+- [ ] Establish an AArch64 QEMU `virt` reference boot, freestanding Rust build, linker layout, serial diagnostics and repeatable debug/release smoke scripts.
+- [ ] Define firmware/boot handoff and exception-level normalization into EL1; park secondary CPUs and retain the current single-active-CPU execution model.
+- [ ] Implement RAM discovery and reservations, permanent kernel mappings, RAM aliases and the paging HAL with explicit permissions, translation invalidation and required cache/barrier ordering.
+- [ ] Implement exception vectors, trusted kernel-stack entry, integer context switching, EL0 entry/return, sanitized user state and the Ferber syscall register convention.
+- [ ] Preserve VMO backing ownership, checked user copies, zero ambient authority, task cleanup, capability semantics and scheduler/wait-generation invariants.
+- [ ] Port independently linked Ferrum executables, ELF machine/ABI validation and boot-envelope delivery; establish initramfs, filesystem sessions, configured service startup, rooted idle and software-wake parity.
+- [ ] Add protection-fault probes, allocator/paging tests, Clippy checks and CI coverage; require matching shared ABI behavior across all three architectures.
+- [ ] Document the boot protocol, supported CPU assumptions and deferred FP/SIMD, interrupt, SMP and hardware-driver work. Track physical AArch64 validation separately from QEMU results.
+
 ## Phase 1 — Reliable Boots (Complete)
 
 Phase 1 establishes repeatable, diagnosed boots across emulated and bare-metal targets. The acceptance criterion is reaching an intentional, diagnosed panic without silent firmware resets.
@@ -253,8 +273,12 @@ family. See
   - [ ] Files and directories represented strictly as capability handles
   - [ ] Mount point namespace isolation per process container
 - [ ] Initial ramdisk (`initramfs`):
-  - [ ] Read-only boot image containing userspace binaries (`init`, `sh`, `fer`)
-  - [ ] Kernel loads `init` from the image; a userspace filesystem server exposes its contents through the VFS
+  - [x] Independently versioned read-only indexed archive and deterministic pack/list/verify/extract tooling
+  - [x] Boot envelope delivers init separately from archive; Ferrum launches an archive filesystem service
+  - [x] Streaming OPEN/READ/LIST/CLOSE/STAT over explicitly delegated sessions with session-local IDs
+  - [x] Bounded channel wait sets and required multi-service startup from `etc/services.conf`
+  - [ ] Package the interactive shell and `fer` when available
+  - [ ] Integrate the boot filesystem with the general VFS service and process namespaces
 
 ### User Shell & Command-Line Skeleton
 - [ ] Basic interactive shell running over serial console
