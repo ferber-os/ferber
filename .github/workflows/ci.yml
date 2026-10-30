@@ -24,7 +24,11 @@ jobs:
           components: rust-src,llvm-tools-preview,clippy
 
       - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-misc qemu-system-x86 ovmf ripgrep xorriso dosfstools mtools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system ovmf ripgrep xorriso dosfstools mtools
+          qemu-system-riscv64 --version
+          qemu-system-x86_64 --version
 
       - name: Build (RISC-V)
         working-directory: ferber
