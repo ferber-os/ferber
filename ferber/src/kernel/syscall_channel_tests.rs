@@ -101,6 +101,7 @@ pub(super) fn run() {
     );
     assert_eq!(receive(&process, second), -11);
     blocking_receive_checks(&process, first, second);
+    wait_many_checks(&process, first, second);
     assert_eq!(
         call(&process, SYS_CHAN_SEND, [usize::MAX, 0, 0, 0, 0, 0]),
         -9
@@ -442,4 +443,96 @@ fn blocking_receive_checks(process: &Arc<SpinLock<Process>>, first: u32, second:
         ReceiveAttempt::Complete(0)
     ));
     assert_eq!(read::<1>(process, DATA), [0xa5]);
+}
+
+fn wait_many_checks(process: &Arc<SpinLock<Process>>, first: u32, second: u32) {
+    let token = Arc::new(WaitToken::new());
+    token.start(74);
+    let mut bytes = [0; 8];
+    bytes[..4].copy_from_slice(&first.to_le_bytes());
+    bytes[4..].copy_from_slice(&second.to_le_bytes());
+    write(process, IDS, &bytes);
+    let args = [IDS, 2, 0, 0, 0, 0];
+    let (handles, count) = wait_many_input(process, args).unwrap();
+    assert_eq!(&handles[..count], &[first, second]);
+    assert!(matches!(
+        wait_many_input(process, [IDS, 0, 0, 0, 0, 0]),
+        Err(-22)
+    ));
+    assert!(matches!(
+        wait_many_input(process, [IDS, 17, 0, 0, 0, 0]),
+        Err(-22)
+    ));
+    assert!(matches!(
+        wait_many_input(process, [IDS, 2, 1, 0, 0, 0]),
+        Err(-22)
+    ));
+    assert!(matches!(
+        wait_many_input(process, [0, 2, 0, 0, 0, 0]),
+        Err(-14)
+    ));
+    let attempt = wait_many_attempt(process, &handles[..count], &token, 74);
+    match attempt {
+        WaitManyAttempt::Park { first, extra } => {
+            assert!(first.registration.registered(&token, 74));
+            let extra = extra.unwrap();
+            assert!(extra.members[0]
+                .as_ref()
+                .unwrap()
+                .registration
+                .registered(&token, 74));
+            first.registration.unregister(&token, 74);
+            for member in extra.members.iter().flatten() {
+                member.registration.unregister(&token, 74);
+            }
+        }
+        _ => panic!("empty channels did not register whole waitset"),
+    }
+    assert_eq!(send(process, first, 0, 0), 0);
+    assert!(matches!(
+        wait_many_attempt(process, &[first, second], &token, 74),
+        WaitManyAttempt::Complete(1)
+    ));
+    assert!(matches!(
+        wait_many_attempt(process, &[second, first], &token, 74),
+        WaitManyAttempt::Complete(0)
+    ));
+    // The ready first member cannot hide an invalid later capability or an alias.
+    assert!(matches!(
+        wait_many_attempt(process, &[second, 256], &token, 74),
+        WaitManyAttempt::Complete(-9)
+    ));
+    let alias = {
+        let process = process.lock();
+        let node = Arc::clone(process.handle_table().lock().lookup(second).unwrap());
+        node
+    };
+    let alias = insert(process, alias);
+    assert!(matches!(
+        wait_many_attempt(process, &[second, alias], &token, 74),
+        WaitManyAttempt::Complete(-22)
+    ));
+    close(process, alias);
+    assert_eq!(receive(process, second), 0);
+    let denied = {
+        let process = process.lock();
+        let node = process
+            .handle_table()
+            .lock()
+            .lookup(second)
+            .unwrap()
+            .attenuate(Rights::READ)
+            .unwrap();
+        node
+    };
+    let denied = insert(process, denied);
+    assert!(matches!(
+        wait_many_attempt(process, &[first, denied], &token, 74),
+        WaitManyAttempt::Complete(-13)
+    ));
+    close(process, denied);
+    assert!(
+        !token.is_notified(74),
+        "rolled-back waitset left a registration"
+    );
 }

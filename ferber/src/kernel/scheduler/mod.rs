@@ -9,20 +9,33 @@ use core::cell::UnsafeCell;
 use crate::arch::{self, CpuContext};
 use crate::kernel::capabilities::CapNode;
 use crate::kernel::ipc::channel::{WaitRegistration, WaitToken};
-use crate::kernel::memory::{paging::AddressSpace, Vmo};
 use crate::kernel::memory::accounting::{self, AllocError};
+use crate::kernel::memory::{paging::AddressSpace, Vmo};
 use crate::kernel::sync::SpinLock;
 use crate::kernel::task::{Process, ProcessState, TaskError, Thread, ThreadState};
 
-mod tests;
 mod idle;
 mod sources;
+mod tests;
+pub(crate) use idle::MAX_TASKS;
 #[allow(unused_imports)]
 pub(crate) use sources::{register_source, SourceKind, SourceLease};
-pub(crate) use idle::MAX_TASKS;
 
 pub fn self_test(root: &Arc<SpinLock<crate::kernel::task::Job>>) {
     tests::run(root);
+}
+
+pub(crate) const MAX_WAIT_CHANNELS: usize = 16;
+
+#[derive(Clone)]
+pub(crate) struct WaitMember {
+    pub handle: usize,
+    pub node: Weak<CapNode>,
+    pub registration: WaitRegistration,
+}
+
+pub(crate) struct ExtraWaits {
+    pub members: [Option<WaitMember>; MAX_WAIT_CHANNELS - 1],
 }
 
 #[derive(Clone)]
@@ -33,6 +46,27 @@ struct Pending {
     registration: WaitRegistration,
     generation: u64,
     error: Option<isize>,
+    extra: Option<Arc<ExtraWaits>>,
+}
+
+impl Pending {
+    fn members(&self) -> impl Iterator<Item = WaitMember> + '_ {
+        core::iter::once(WaitMember {
+            handle: self.handle,
+            node: self.node.clone(),
+            registration: self.registration.clone(),
+        })
+        .chain(
+            self.extra
+                .iter()
+                .flat_map(|extra| extra.members.iter().flatten().cloned()),
+        )
+    }
+    fn unregister(&self, token: &Arc<WaitToken>) {
+        for member in self.members() {
+            member.registration.unregister(token, self.generation);
+        }
+    }
 }
 
 struct Task {
@@ -112,9 +146,16 @@ pub fn admit(
     let owner = process.lock().budget().clone();
     let task = accounting::with_budget(&owner, || {
         let token = accounting::attempt(|| Arc::try_new(WaitToken::new())).map_err(alloc_error)?;
-        accounting::attempt(|| Box::try_new(Task {
-            process, thread, token, generation: 0, pending: None,
-        })).map_err(alloc_error)
+        accounting::attempt(|| {
+            Box::try_new(Task {
+                process,
+                thread,
+                token,
+                generation: 0,
+                pending: None,
+            })
+        })
+        .map_err(alloc_error)
     })?;
     let mut runtime = RUNTIME.lock();
     if runtime.tasks.iter().flatten().count() >= MAX_TASKS {
@@ -134,13 +175,17 @@ pub fn admit(
         .position(Option::is_none)
         .unwrap_or(runtime.tasks.len());
     if index == runtime.tasks.len() {
-        accounting::with_budget(&accounting::BudgetRef::system(), ||
-            accounting::attempt(|| runtime.tasks.try_reserve(1))).map_err(alloc_error)?;
+        accounting::with_budget(&accounting::BudgetRef::system(), || {
+            accounting::attempt(|| runtime.tasks.try_reserve(1))
+        })
+        .map_err(alloc_error)?;
     }
     let capacity = runtime.tasks.len().max(index + 1);
     let additional = capacity.saturating_sub(runtime.ready.len());
-    accounting::with_budget(&accounting::BudgetRef::system(), ||
-        accounting::attempt(|| runtime.ready.try_reserve(additional))).map_err(alloc_error)?;
+    accounting::with_budget(&accounting::BudgetRef::system(), || {
+        accounting::attempt(|| runtime.ready.try_reserve(additional))
+    })
+    .map_err(alloc_error)?;
     drop(runtime);
     {
         let mut thread = task.thread.lock();
@@ -262,6 +307,16 @@ pub fn prepare_wait() -> Result<(Arc<WaitToken>, u64), isize> {
 }
 
 pub fn park(handle: usize, generation: u64, node: Weak<CapNode>, registration: WaitRegistration) {
+    park_many(handle, generation, node, registration, None);
+}
+
+pub(crate) fn park_many(
+    handle: usize,
+    generation: u64,
+    node: Weak<CapNode>,
+    registration: WaitRegistration,
+    extra: Option<Arc<ExtraWaits>>,
+) {
     let process_id = {
         let process = current_process();
         let id = process.lock().id();
@@ -277,14 +332,11 @@ pub fn park(handle: usize, generation: u64, node: Weak<CapNode>, registration: W
             registration,
             generation,
             error: None,
+            extra,
         });
         runtime.stats.parks += 1;
     }
     suspend(ThreadState::Blocked);
-}
-
-fn unregister(registration: WaitRegistration, token: Arc<WaitToken>, generation: u64) {
-    registration.unregister(&token, generation);
 }
 
 pub fn finish_wait() {
@@ -292,16 +344,12 @@ pub fn finish_wait() {
         let mut runtime = RUNTIME.lock();
         let index = runtime.current.expect("wait without caller");
         let task = runtime.tasks[index].as_mut().unwrap();
-        task.pending.take().map(|pending| {
-            (
-                pending.registration,
-                Arc::clone(&task.token),
-                pending.generation,
-            )
-        })
+        task.pending
+            .take()
+            .map(|pending| (pending, Arc::clone(&task.token)))
     };
-    if let Some((node, token, generation)) = removed {
-        unregister(node, token, generation);
+    if let Some((pending, token)) = removed {
+        pending.unregister(&token);
     }
 }
 
@@ -323,20 +371,18 @@ pub fn cancel_closed(process_id: u64, handle: usize) {
             let mut runtime = RUNTIME.lock();
             runtime.tasks[index].as_mut().and_then(|task| {
                 let pending = task.pending.as_mut()?;
-                if pending.process_id != process_id || pending.handle != handle {
+                if pending.process_id != process_id
+                    || !pending.members().any(|member| member.handle == handle)
+                {
                     return None;
                 }
                 pending.error = Some(-9);
                 task.token.notify(pending.generation);
-                Some((
-                    pending.registration.clone(),
-                    Arc::clone(&task.token),
-                    pending.generation,
-                ))
+                Some((pending.clone(), Arc::clone(&task.token)))
             })
         };
-        if let Some((node, token, generation)) = removed {
-            unregister(node, token, generation);
+        if let Some((pending, token)) = removed {
+            pending.unregister(&token);
         }
     }
 }
@@ -361,16 +407,18 @@ fn reconcile() {
         let error = pending.error.or_else(|| {
             let process = process.lock();
             let table = process.handle_table().lock();
-            let handle = match u32::try_from(pending.handle) {
-                Ok(handle) => handle,
-                Err(_) => return Some(-9),
-            };
-            match table.lookup(handle) {
-                Err(crate::kernel::capabilities::CapError::Revoked) => Some(-116),
-                Err(_) => Some(-9),
-                Ok(node) if !Weak::ptr_eq(&Arc::downgrade(node), &pending.node) => Some(-9),
-                Ok(_) => None,
-            }
+            pending.members().find_map(|member| {
+                let handle = match u32::try_from(member.handle) {
+                    Ok(handle) => handle,
+                    Err(_) => return Some(-9),
+                };
+                match table.lookup(handle) {
+                    Err(crate::kernel::capabilities::CapError::Revoked) => Some(-116),
+                    Err(_) => Some(-9),
+                    Ok(node) if !Weak::ptr_eq(&Arc::downgrade(node), &member.node) => Some(-9),
+                    Ok(_) => None,
+                }
+            })
         });
         if let Some(error) = error {
             {
@@ -383,7 +431,7 @@ fn reconcile() {
                     .unwrap()
                     .error = Some(error);
             }
-            pending.registration.unregister(&token, pending.generation);
+            pending.unregister(&token);
             token.notify(pending.generation);
         }
         if token.is_notified(pending.generation) {
@@ -420,11 +468,7 @@ fn reap() {
             runtime.tasks[index].take().unwrap()
         };
         if let Some(pending) = &task.pending {
-            unregister(
-                pending.registration.clone(),
-                Arc::clone(&task.token),
-                pending.generation,
-            );
+            pending.unregister(&task.token);
         }
         let (id, mapping) = {
             let thread = task.thread.lock();
@@ -448,8 +492,19 @@ fn reap() {
             } else {
                 None
             };
-            let mappings = if last { process.take_mappings() } else { Vec::new() };
-            (detached, handles, mappings, process.job(), process.id(), last)
+            let mappings = if last {
+                process.take_mappings()
+            } else {
+                Vec::new()
+            };
+            (
+                detached,
+                handles,
+                mappings,
+                process.job(),
+                process.id(),
+                last,
+            )
         };
         drop(mappings);
         drop(handles);
@@ -467,16 +522,31 @@ fn reap() {
 /// Every blocked component must reach a concrete kernel producer, not merely a live peer.
 pub(crate) fn idle_quiescent() -> bool {
     use crate::kernel::capabilities::Rights;
-    type Snapshot = (Arc<SpinLock<Process>>, Arc<SpinLock<Thread>>, Arc<WaitToken>, Option<Pending>, u64);
+    type Snapshot = (
+        Arc<SpinLock<Process>>,
+        Arc<SpinLock<Thread>>,
+        Arc<WaitToken>,
+        Option<Pending>,
+        u64,
+    );
     let mut tasks: [Option<Snapshot>; MAX_TASKS] = core::array::from_fn(|_| None);
     let count = {
         let runtime = RUNTIME.lock();
-        if runtime.current.is_some() || !runtime.ready.is_empty() { return false; }
+        if runtime.current.is_some() || !runtime.ready.is_empty() {
+            return false;
+        }
         let mut count = 0;
         for task in runtime.tasks.iter().flatten() {
-            if count == MAX_TASKS { return false; }
-            tasks[count] = Some((Arc::clone(&task.process), Arc::clone(&task.thread),
-                Arc::clone(&task.token), task.pending.clone(), task.generation));
+            if count == MAX_TASKS {
+                return false;
+            }
+            tasks[count] = Some((
+                Arc::clone(&task.process),
+                Arc::clone(&task.thread),
+                Arc::clone(&task.token),
+                task.pending.clone(),
+                task.generation,
+            ));
             count += 1;
         }
         count
@@ -486,34 +556,70 @@ pub(crate) fn idle_quiescent() -> bool {
     let mut roots = 0u64;
     for (index, task) in tasks.iter().take(count).enumerate() {
         let (process, thread, token, pending, generation) = task.as_ref().unwrap();
-        let Some(pending) = pending else { return false; };
-        if pending.generation != *generation || pending.error.is_some()
-            || token.is_notified(*generation) || thread.lock().state() != ThreadState::Blocked
-            || !pending.registration.registered(token, *generation)
-        { return false; }
+        let Some(pending) = pending else {
+            return false;
+        };
+        if pending.generation != *generation
+            || pending.error.is_some()
+            || token.is_notified(*generation)
+            || thread.lock().state() != ThreadState::Blocked
         {
-            let process = process.lock();
-            if process.state() != ProcessState::Running || process.id() != pending.process_id { return false; }
-            let table = process.handle_table().lock();
-            let Ok(handle) = u32::try_from(pending.handle) else { return false; };
-            let Ok(node) = table.lookup(handle) else { return false; };
-            if !Arc::downgrade(node).ptr_eq(&pending.node)
-                || !node.rights().contains(Rights::READ | Rights::WAIT)
-                || !node.object_ref::<super::ipc::channel::Channel>().is_some_and(|endpoint|
-                    pending.registration.same_endpoint(&endpoint.wait_registration()))
-            { return false; }
+            return false;
         }
-        if sources.iter().flatten().any(|source|
-            source.live() && pending.registration.peer_of(source))
-        { roots |= 1u64 << index; }
-        for (producer, task) in tasks.iter().take(count).enumerate() {
-            let candidate = task.as_ref().unwrap().0.lock();
-            if candidate.state() == ProcessState::Dead { continue; }
-            let table = candidate.handle_table().lock();
-            if table.nodes().any(|node| node.is_valid() && node.rights().contains(Rights::WRITE)
-                && node.object_ref::<super::ipc::channel::Channel>().is_some_and(|endpoint|
-                    pending.registration.peer_of(&endpoint.wait_registration())))
-            { edges[index] |= 1u64 << producer; }
+        for member in pending.members() {
+            if !member.registration.registered(token, *generation) {
+                return false;
+            }
+            {
+                let process = process.lock();
+                if process.state() != ProcessState::Running || process.id() != pending.process_id {
+                    return false;
+                }
+                let table = process.handle_table().lock();
+                let Ok(handle) = u32::try_from(member.handle) else {
+                    return false;
+                };
+                let Ok(node) = table.lookup(handle) else {
+                    return false;
+                };
+                if !Arc::downgrade(node).ptr_eq(&member.node)
+                    || !node.rights().contains(Rights::READ | Rights::WAIT)
+                    || !node
+                        .object_ref::<super::ipc::channel::Channel>()
+                        .is_some_and(|endpoint| {
+                            member
+                                .registration
+                                .same_endpoint(&endpoint.wait_registration())
+                        })
+                {
+                    return false;
+                }
+            }
+            if sources
+                .iter()
+                .flatten()
+                .any(|source| source.live() && member.registration.peer_of(source))
+            {
+                roots |= 1u64 << index;
+            }
+            for (producer, task) in tasks.iter().take(count).enumerate() {
+                let candidate = task.as_ref().unwrap().0.lock();
+                if candidate.state() == ProcessState::Dead {
+                    continue;
+                }
+                let table = candidate.handle_table().lock();
+                if table.nodes().any(|node| {
+                    node.is_valid()
+                        && node.rights().contains(Rights::WRITE)
+                        && node
+                            .object_ref::<super::ipc::channel::Channel>()
+                            .is_some_and(|endpoint| {
+                                member.registration.peer_of(&endpoint.wait_registration())
+                            })
+                }) {
+                    edges[index] |= 1u64 << producer;
+                }
+            }
         }
     }
     idle::rooted(count, &edges, roots)
@@ -530,12 +636,25 @@ fn init_wait_matches(session: &super::init::Session) -> bool {
         if runtime.current.is_some() || !runtime.ready.is_empty() {
             return false;
         }
-        let Some(task) = runtime.tasks.iter().flatten().find(|task|
-            task.pending.as_ref().is_some_and(|pending| pending.process_id == session.admitted.process_id))
-        else { return false; };
-        let Some(pending) = task.pending.clone() else {
+        let Some(task) = runtime.tasks.iter().flatten().find(|task| {
+            task.pending
+                .as_ref()
+                .is_some_and(|pending| pending.process_id == session.admitted.process_id)
+        }) else {
             return false;
         };
+        let Some(mut pending) = task.pending.clone() else {
+            return false;
+        };
+        let member = pending
+            .members()
+            .find(|member| member.registration.waits_on_peer_of(peer));
+        let Some(member) = member else {
+            return false;
+        };
+        pending.handle = member.handle;
+        pending.node = member.node;
+        pending.registration = member.registration;
         if pending.generation != task.generation
             || pending.error.is_some()
             || task.token.is_notified(pending.generation)
@@ -587,14 +706,13 @@ fn init_wait_matches(session: &super::init::Session) -> bool {
 }
 
 #[cfg(feature = "init")]
-fn service_wait_matches(session: &super::init::Session) -> bool {
+pub(crate) fn service_wait_matches(session: &super::init::Session) -> bool {
+    session.service_waits_match()
+}
+
+#[cfg(feature = "init")]
+pub(crate) fn blocked_on(process_id: u64, endpoint: &Arc<super::ipc::channel::Channel>) -> bool {
     use super::capabilities::Rights;
-    let Some(process_id) = session.service_process_id() else {
-        return false;
-    };
-    let Some(endpoint) = session.service_channel() else {
-        return false;
-    };
     let endpoint_registration = endpoint.wait_registration();
     let (process, thread, token, pending, generation) = {
         let runtime = RUNTIME.lock();
@@ -602,7 +720,9 @@ fn service_wait_matches(session: &super::init::Session) -> bool {
             return false;
         }
         let Some(task) = runtime.tasks.iter().flatten().find(|task| {
-            task.pending.as_ref().is_some_and(|pending| pending.process_id == process_id)
+            task.pending
+                .as_ref()
+                .is_some_and(|pending| pending.process_id == process_id)
         }) else {
             return false;
         };
@@ -617,6 +737,16 @@ fn service_wait_matches(session: &super::init::Session) -> bool {
             task.generation,
         )
     };
+    let mut pending = pending;
+    let member = pending
+        .members()
+        .find(|member| member.registration.same_endpoint(&endpoint_registration));
+    let Some(member) = member else {
+        return false;
+    };
+    pending.handle = member.handle;
+    pending.node = member.node;
+    pending.registration = member.registration;
     if pending.generation != generation
         || pending.error.is_some()
         || token.is_notified(pending.generation)
@@ -641,7 +771,7 @@ fn service_wait_matches(session: &super::init::Session) -> bool {
         && node.rights().contains(Rights::READ | Rights::WAIT)
         && node
             .object_arc::<super::ipc::channel::Channel>()
-            .is_some_and(|object| Arc::ptr_eq(&object, &endpoint))
+            .is_some_and(|object| Arc::ptr_eq(&object, endpoint))
 }
 
 #[cfg(feature = "init")]
@@ -672,7 +802,10 @@ fn finish_init(mut session: super::init::Session) -> bool {
             return false;
         }
         #[cfg(feature = "service-wake-probe")]
-        assert!(session.software_woke(), "init software event did not complete");
+        assert!(
+            session.software_woke(),
+            "init software event did not complete"
+        );
         crate::kprintln!("[FERBER_TEST] boot_payload: PASS");
         #[cfg(feature = "service-wake-probe")]
         crate::kprintln!("[FERBER_TEST] software_wake: PASS");
@@ -721,7 +854,9 @@ extern "C" fn dispatch_loop() -> ! {
         reap();
         reconcile();
         #[cfg(feature = "init")]
-        if super::init::pump() { reconcile(); }
+        if super::init::pump() {
+            reconcile();
+        }
         let next = loop {
             let index = RUNTIME.lock().ready.pop_front();
             let Some(index) = index else {
@@ -830,9 +965,15 @@ pub(crate) fn run_init_closure_probe(session: super::init::Session) {
     assert!(session.closure_probe);
     super::init::install(session);
     let stats = run();
-    assert_eq!(stats.reaped, 2, "init closure did not reap init and service");
+    assert!(
+        stats.reaped >= 3,
+        "init closure did not reap init, filesystem and configured services"
+    );
 }
 
 fn alloc_error(error: AllocError) -> TaskError {
-    match error { AllocError::Quota => TaskError::QuotaExceeded, AllocError::OutOfMemory => TaskError::OutOfMemory }
+    match error {
+        AllocError::Quota => TaskError::QuotaExceeded,
+        AllocError::OutOfMemory => TaskError::OutOfMemory,
+    }
 }

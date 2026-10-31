@@ -269,6 +269,12 @@ impl ChannelEndpoint {
         Ok(())
     }
 
+    /// Readiness is advisory: a later receive can still race another receiver.
+    pub fn readable(&self) -> bool {
+        let pair = self.pair.lock();
+        !pair.queues[self.side].is_empty() || !pair.open[1 - self.side]
+    }
+
     /// Queue inspection and registration share a lock, closing the empty-check race.
     pub fn register_wait(
         &self,

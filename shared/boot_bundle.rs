@@ -1,4 +1,4 @@
-//! Two immutable executable payloads; independent of the firmware handoff.
+//! An initial executable and opaque initramfs payload; independent of the firmware handoff.
 #![allow(dead_code)]
 pub const MAGIC: &[u8; 8] = b"FRBOOT01";
 pub const HEADER: usize = 32;
@@ -8,7 +8,7 @@ pub const MAX_SIZE: usize = 4 * 1024 * 1024;
 pub struct BundleError;
 pub struct Bundle<'a> {
     pub init: &'a [u8],
-    pub service: &'a [u8],
+    pub archive: &'a [u8],
 }
 impl<'a> Bundle<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, BundleError> {
@@ -17,7 +17,7 @@ impl<'a> Bundle<'a> {
         }
         let u32_at = |n| u32::from_le_bytes(bytes[n..n + 4].try_into().unwrap());
         let u64_at = |n| u64::from_le_bytes(bytes[n..n + 8].try_into().unwrap());
-        if u32_at(8) != 1 || u32_at(12) != 2 || u64_at(16) != bytes.len() as u64 || u64_at(24) != 0
+        if u32_at(8) != 2 || u32_at(12) != 2 || u64_at(16) != bytes.len() as u64 || u64_at(24) != 0
         {
             return Err(BundleError);
         }
@@ -25,7 +25,10 @@ impl<'a> Bundle<'a> {
         let mut end = HEADER + 2 * ENTRY;
         for (index, slot) in result.iter_mut().enumerate() {
             let base = HEADER + index * ENTRY;
-            if u32_at(base) != index as u32 + 1 || u32_at(base + 4) != 0 || u64_at(base + 24) != 0 {
+            if u32_at(base) != if index == 0 { 1 } else { 3 }
+                || u32_at(base + 4) != 0
+                || u64_at(base + 24) != 0
+            {
                 return Err(BundleError);
             }
             let offset = usize::try_from(u64_at(base + 8)).map_err(|_| BundleError)?;
@@ -47,7 +50,7 @@ impl<'a> Bundle<'a> {
         }
         Ok(Self {
             init: result[0],
-            service: result[1],
+            archive: result[1],
         })
     }
 }
@@ -57,12 +60,12 @@ mod tests {
     fn fixture() -> Vec<u8> {
         let mut b = vec![0; 105];
         b[..8].copy_from_slice(MAGIC);
-        b[8..12].copy_from_slice(&1u32.to_le_bytes());
+        b[8..12].copy_from_slice(&2u32.to_le_bytes());
         b[12..16].copy_from_slice(&2u32.to_le_bytes());
         b[16..24].copy_from_slice(&105u64.to_le_bytes());
         for (i, offset, len) in [(0, 96u64, 1u64), (1, 104, 1)] {
             let n = 32 + i * 32;
-            b[n..n + 4].copy_from_slice(&(i as u32 + 1).to_le_bytes());
+            b[n..n + 4].copy_from_slice(&(if i == 0 { 1u32 } else { 3u32 }).to_le_bytes());
             b[n + 8..n + 16].copy_from_slice(&offset.to_le_bytes());
             b[n + 16..n + 24].copy_from_slice(&len.to_le_bytes());
         }
@@ -75,7 +78,7 @@ mod tests {
         let b = fixture();
         let p = Bundle::parse(&b).unwrap();
         assert_eq!(p.init, [1]);
-        assert_eq!(p.service, [2]);
+        assert_eq!(p.archive, [2]);
         for n in (0..96).chain(97..104) {
             let mut bad = b.clone();
             bad[n] ^= 0x80;

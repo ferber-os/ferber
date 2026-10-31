@@ -41,53 +41,90 @@ pub(crate) const SYS_VMO_WRITE: usize = 13;
 pub(crate) const SYS_VMO_MAP: usize = 14;
 pub(crate) const SYS_VMO_UNMAP: usize = 15;
 pub(crate) const SYS_VMO_SEAL: usize = 16;
+pub(crate) const SYS_CHAN_WAIT_MANY: usize = 23;
 
 #[cfg(all(feature = "user-write-probe", feature = "user-execute-probe"))]
 compile_error!("user-write-probe and user-execute-probe must run separately");
-#[cfg(all(feature = "userspace-elf-probe", any(
-    feature = "user-isolation-probe",
-    feature = "cooperative-deadlock-probe",
-    feature = "x86-exception-probe",
-)))]
+#[cfg(all(
+    feature = "userspace-elf-probe",
+    any(
+        feature = "user-isolation-probe",
+        feature = "cooperative-deadlock-probe",
+        feature = "x86-exception-probe",
+    )
+))]
 compile_error!("userspace-elf-probe must run separately from other probe scenarios");
 
-#[cfg(all(feature = "init", any(
-    feature = "userspace-elf-probe",
-    feature = "user-isolation-probe",
-    feature = "cooperative-deadlock-probe",
-    feature = "x86-exception-probe",
-)))]
+#[cfg(all(
+    feature = "init",
+    any(
+        feature = "userspace-elf-probe",
+        feature = "user-isolation-probe",
+        feature = "cooperative-deadlock-probe",
+        feature = "x86-exception-probe",
+    )
+))]
 compile_error!("init must run separately from other probe scenarios");
 
-#[cfg(all(feature = "userspace-vmo-probe", any(
-    feature = "init", feature = "userspace-elf-probe",
-    feature = "user-isolation-probe", feature = "cooperative-deadlock-probe",
-    feature = "x86-exception-probe",
-)))]
+#[cfg(all(
+    feature = "userspace-vmo-probe",
+    any(
+        feature = "init",
+        feature = "userspace-elf-probe",
+        feature = "user-isolation-probe",
+        feature = "cooperative-deadlock-probe",
+        feature = "x86-exception-probe",
+    )
+))]
 compile_error!("userspace-vmo-probe must run separately from other probe scenarios");
 
-#[cfg(all(feature = "userspace-vmo-map-probe", any(
-    feature = "init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
-    feature = "user-isolation-probe", feature = "cooperative-deadlock-probe",
-    feature = "x86-exception-probe",
-)))]
+#[cfg(all(
+    feature = "userspace-vmo-map-probe",
+    any(
+        feature = "init",
+        feature = "userspace-elf-probe",
+        feature = "userspace-vmo-probe",
+        feature = "user-isolation-probe",
+        feature = "cooperative-deadlock-probe",
+        feature = "x86-exception-probe",
+    )
+))]
 compile_error!("userspace-vmo-map-probe must run separately from other probe scenarios");
-#[cfg(all(feature = "user-vmo-map-write-probe", feature = "user-vmo-map-execute-probe"))]
+#[cfg(all(
+    feature = "user-vmo-map-write-probe",
+    feature = "user-vmo-map-execute-probe"
+))]
 compile_error!("VMO mapping write and execute fault probes must run separately");
 
-#[cfg(all(feature = "userspace-vmo-seal-probe", any(
-    feature = "init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
-    feature = "userspace-vmo-map-probe", feature = "user-isolation-probe",
-    feature = "user-write-probe", feature = "user-execute-probe",
-    feature = "cooperative-deadlock-probe", feature = "x86-exception-probe",
-)))]
+#[cfg(all(
+    feature = "userspace-vmo-seal-probe",
+    any(
+        feature = "init",
+        feature = "userspace-elf-probe",
+        feature = "userspace-vmo-probe",
+        feature = "userspace-vmo-map-probe",
+        feature = "user-isolation-probe",
+        feature = "user-write-probe",
+        feature = "user-execute-probe",
+        feature = "cooperative-deadlock-probe",
+        feature = "x86-exception-probe",
+    )
+))]
 compile_error!("userspace-vmo-seal-probe must run separately from other probe scenarios");
 
-#[cfg(all(feature = "userspace-job-accounting-probe", any(
-    feature = "init", feature = "userspace-elf-probe", feature = "userspace-vmo-probe",
-    feature = "userspace-vmo-map-probe", feature = "userspace-vmo-seal-probe",
-    feature = "user-isolation-probe", feature = "cooperative-deadlock-probe", feature = "x86-exception-probe",
-)))]
+#[cfg(all(
+    feature = "userspace-job-accounting-probe",
+    any(
+        feature = "init",
+        feature = "userspace-elf-probe",
+        feature = "userspace-vmo-probe",
+        feature = "userspace-vmo-map-probe",
+        feature = "userspace-vmo-seal-probe",
+        feature = "user-isolation-probe",
+        feature = "cooperative-deadlock-probe",
+        feature = "x86-exception-probe",
+    )
+))]
 compile_error!("userspace-job-accounting-probe must run separately from other scenarios");
 
 pub(crate) const USER_PC: usize = 0x0000_0010_0000_0000;
@@ -349,7 +386,10 @@ fn dispatch_in_budget(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize;
     if matches!(nr, SYS_CHAN_CREATE | SYS_CHAN_SEND | SYS_CHAN_RECV) {
         return channel::dispatch(process, nr, args);
     }
-    if matches!(nr, SYS_VMO_CREATE | SYS_VMO_READ | SYS_VMO_WRITE | SYS_VMO_MAP | SYS_VMO_UNMAP | SYS_VMO_SEAL) {
+    if matches!(
+        nr,
+        SYS_VMO_CREATE | SYS_VMO_READ | SYS_VMO_WRITE | SYS_VMO_MAP | SYS_VMO_UNMAP | SYS_VMO_SEAL
+    ) {
         return vmo::dispatch(process, nr, args);
     }
     if !matches!(
@@ -507,6 +547,46 @@ pub fn dispatch(nr: usize, args: [usize; 6]) -> isize {
     let result = if nr == SYS_YIELD {
         scheduler::sched_yield();
         0
+    } else if nr == SYS_CHAN_WAIT_MANY {
+        let input = {
+            let process = scheduler::current_process();
+            channel::wait_many_input(&process, args)
+        };
+        match input {
+            Err(error) => error,
+            Ok((handles, count)) => loop {
+                if let Some(error) = scheduler::wait_error() {
+                    scheduler::finish_wait();
+                    break error;
+                }
+                let (attempt, generation) = {
+                    let (token, generation) = match scheduler::prepare_wait() {
+                        Ok(wait) => wait,
+                        Err(error) => break error,
+                    };
+                    let process = scheduler::current_process();
+                    (
+                        channel::wait_many_attempt(&process, &handles[..count], &token, generation),
+                        generation,
+                    )
+                };
+                match attempt {
+                    channel::WaitManyAttempt::Complete(result) => {
+                        scheduler::finish_wait();
+                        break result;
+                    }
+                    channel::WaitManyAttempt::Park { first, extra } => {
+                        scheduler::park_many(
+                            first.handle,
+                            generation,
+                            first.node,
+                            first.registration,
+                            extra,
+                        );
+                    }
+                }
+            },
+        }
     } else if nr == SYS_CHAN_RECV_WAIT {
         loop {
             if let Some(error) = scheduler::wait_error() {
@@ -561,8 +641,14 @@ pub fn user_fault(pc: usize, addr: usize, cause: usize) -> ! {
         #[cfg(feature = "user-vmo-seal-write-probe")]
         super::vmo_seal_probe::fault(pc, addr, cause);
     }
-    if cfg!(any(feature = "user-vmo-map-write-probe", feature = "user-vmo-map-execute-probe")) {
-        #[cfg(any(feature = "user-vmo-map-write-probe", feature = "user-vmo-map-execute-probe"))]
+    if cfg!(any(
+        feature = "user-vmo-map-write-probe",
+        feature = "user-vmo-map-execute-probe"
+    )) {
+        #[cfg(any(
+            feature = "user-vmo-map-write-probe",
+            feature = "user-vmo-map-execute-probe"
+        ))]
         super::vmo_map_probe::fault(pc, addr, cause);
     }
     let state = PROBE.lock();

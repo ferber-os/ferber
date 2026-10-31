@@ -8,9 +8,11 @@ use crate::kernel::ipc::channel::{
     Channel, ChannelError, ChannelMessage, WaitRegistration, WaitToken, DEFAULT_MAX_HANDLES,
     DEFAULT_MAX_MESSAGE_BYTES,
 };
-use crate::kernel::memory::user_mem::{copy_from_user, copy_to_user, validate_outputs, OutputError};
-use crate::kernel::memory::Vmo;
 use crate::kernel::memory::paging::AddressSpace;
+use crate::kernel::memory::user_mem::{
+    copy_from_user, copy_to_user, validate_outputs, OutputError,
+};
+use crate::kernel::memory::Vmo;
 use crate::kernel::sync::SpinLock;
 use crate::kernel::task::Process;
 use alloc::sync::{Arc, Weak};
@@ -24,7 +26,10 @@ struct Error(isize);
 
 impl From<OutputError> for Error {
     fn from(error: OutputError) -> Self {
-        Self(match error { OutputError::UserMemory => -14, OutputError::Overlap => -22 })
+        Self(match error {
+            OutputError::UserMemory => -14,
+            OutputError::Overlap => -22,
+        })
     }
 }
 
@@ -286,6 +291,115 @@ pub(super) fn blocking_attempt(
             Err(Error(-11)) => continue,
             Err(error) => return ReceiveAttempt::Complete(error.0),
         }
+    }
+}
+
+pub(super) fn wait_many_input(
+    process: &Arc<SpinLock<Process>>,
+    args: [usize; 6],
+) -> Result<([u32; crate::kernel::scheduler::MAX_WAIT_CHANNELS], usize), isize> {
+    use crate::kernel::scheduler::MAX_WAIT_CHANNELS;
+    if args[1] == 0 || args[1] > MAX_WAIT_CHANNELS || args[2..].iter().any(|arg| *arg != 0) {
+        return Err(-22);
+    }
+    let mut bytes = [0u8; MAX_WAIT_CHANNELS * 4];
+    let process = process.lock();
+    unsafe { copy_from_user(process.address_space(), &mut bytes[..args[1] * 4], args[0]) }
+        .map_err(|_| -14isize)?;
+    let mut handles = [0; MAX_WAIT_CHANNELS];
+    for (index, slot) in handles.iter_mut().take(args[1]).enumerate() {
+        *slot = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
+    }
+    Ok((handles, args[1]))
+}
+
+pub(super) enum WaitManyAttempt {
+    Complete(isize),
+    Park {
+        first: crate::kernel::scheduler::WaitMember,
+        extra: Option<Arc<crate::kernel::scheduler::ExtraWaits>>,
+    },
+}
+
+pub(super) fn wait_many_attempt(
+    process: &Arc<SpinLock<Process>>,
+    handles: &[u32],
+    token: &Arc<WaitToken>,
+    generation: u64,
+) -> WaitManyAttempt {
+    use crate::kernel::scheduler::{ExtraWaits, WaitMember, MAX_WAIT_CHANNELS};
+    let attempt = (|| -> Result<WaitManyAttempt, Error> {
+        let process = process.lock();
+        let table = process.handle_table().lock();
+        let mut nodes: [Option<Arc<CapNode>>; MAX_WAIT_CHANNELS] = core::array::from_fn(|_| None);
+        for (index, handle) in handles.iter().enumerate() {
+            let node = endpoint(&table, *handle as usize, Rights::READ | Rights::WAIT)?;
+            let registration = node.object_ref::<Channel>().unwrap().wait_registration();
+            if nodes[..index].iter().flatten().any(|earlier| {
+                earlier
+                    .object_ref::<Channel>()
+                    .unwrap()
+                    .wait_registration()
+                    .same_endpoint(&registration)
+            }) {
+                return Err(Error(-22));
+            }
+            nodes[index] = Some(node);
+        }
+        let channel = |index: usize| {
+            nodes[index]
+                .as_ref()
+                .unwrap()
+                .object_ref::<Channel>()
+                .unwrap()
+        };
+        let member = |index: usize| WaitMember {
+            handle: handles[index] as usize,
+            node: Arc::downgrade(nodes[index].as_ref().unwrap()),
+            registration: channel(index).wait_registration(),
+        };
+        if let Some(index) = (0..handles.len()).find(|index| channel(*index).readable()) {
+            return Ok(WaitManyAttempt::Complete(index as isize));
+        }
+        let extra = if handles.len() > 1 {
+            Some(
+                crate::kernel::memory::accounting::with_budget(process.budget(), || {
+                    crate::kernel::memory::accounting::attempt(|| {
+                        Arc::try_new(ExtraWaits {
+                            members: core::array::from_fn(|index| {
+                                (index + 1 < handles.len()).then(|| member(index + 1))
+                            }),
+                        })
+                    })
+                })
+                .map_err(|error| Error(allocation_errno(error)))?,
+            )
+        } else {
+            None
+        };
+        for index in 0..handles.len() {
+            match channel(index).register_wait(token, generation) {
+                Ok(true) => {}
+                result => {
+                    for earlier in 0..index {
+                        channel(earlier).unregister_wait(token, generation);
+                    }
+                    return match result {
+                        Ok(false) => Ok(WaitManyAttempt::Complete(index as isize)),
+                        Err(error) => Err(error.into()),
+                        Ok(true) => unreachable!(),
+                    };
+                }
+            }
+        }
+        Ok(WaitManyAttempt::Park {
+            first: member(0),
+            extra,
+        })
+    })();
+    match attempt {
+        Ok(result) => result,
+        Err(error) => WaitManyAttempt::Complete(error.0),
     }
 }
 

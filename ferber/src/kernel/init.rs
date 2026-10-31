@@ -3,9 +3,9 @@
 use super::capabilities::{CapNode, ObjectType, Rights, CAP_NODE_ALLOCATOR};
 use super::elf_load::{self, Admitted};
 use super::ipc::channel::{Channel, ChannelMessage};
+use super::memory::user_mem::copy_from_user;
 use super::sync::SpinLock;
 use super::task::Job;
-use super::memory::user_mem::copy_from_user;
 use alloc::sync::{Arc, Weak};
 
 #[path = "../../../shared/init_protocol.rs"]
@@ -15,6 +15,15 @@ mod protocol;
 mod bundle;
 #[path = "../../../shared/service_protocol.rs"]
 mod service;
+
+const MAX_SERVICES: usize = 9;
+struct ServiceRecord {
+    process_id: u64,
+    endpoint: Weak<Channel>,
+    ping: bool,
+    pong: bool,
+    exit: Option<usize>,
+}
 
 pub(crate) struct Session {
     pub admitted: Admitted,
@@ -29,12 +38,9 @@ pub(crate) struct Session {
     software: Option<super::scheduler::SourceLease>,
     ready_seen: bool,
     pong_seen: bool,
-    service_process_id: Option<u64>,
-    service_endpoint: Option<Weak<Channel>>,
-    service_ready_seen: bool,
-    service_ping_seen: bool,
-    service_pong_seen: bool,
-    service_exit_status: Option<usize>,
+    services: [Option<ServiceRecord>; MAX_SERVICES],
+    declared_services: usize,
+    unexpected_exit: Option<usize>,
     challenge_pending: bool,
     challenge: u32,
     woke: bool,
@@ -50,21 +56,21 @@ fn admit(root: &Arc<SpinLock<Job>>, closure_probe: bool) -> Session {
         .create_child_job("services", 16 * 1024 * 1024)
         .expect("service launch Job");
     let job = super::syscall_task::job_capability(&launch).expect("service launch authority");
-    let image_size = bundle.service.len().div_ceil(4096) * 4096;
+    let image_size = bundle.archive.len().div_ceil(4096) * 4096;
     let mut image = super::memory::Vmo::create(image_size).expect("service image VMO");
-    image.write(0, bundle.service).expect("copy service image");
+    image.write(0, bundle.archive).expect("copy service image");
     image.seal().expect("seal service image");
     let image = Arc::new(image);
     let image = CAP_NODE_ALLOCATOR
         .alloc_root(
             image,
             ObjectType::Vmo,
-            Rights::READ | Rights::MAP | Rights::INSPECT,
+            Rights::READ | Rights::MAP | Rights::INSPECT | Rights::TRANSFER,
         )
         .expect("service image authority");
     let (user, peer) = Channel::create().expect("init bootstrap channel");
     peer.send(ChannelMessage::new(
-        protocol::encode_length(protocol::START, bundle.service.len() as u64)
+        protocol::encode_length(protocol::START, bundle.archive.len() as u64)
             .unwrap()
             .to_vec(),
         alloc::vec![job, image],
@@ -96,12 +102,9 @@ fn admit(root: &Arc<SpinLock<Job>>, closure_probe: bool) -> Session {
         software: None,
         ready_seen: false,
         pong_seen: false,
-        service_process_id: None,
-        service_endpoint: None,
-        service_ready_seen: false,
-        service_ping_seen: false,
-        service_pong_seen: false,
-        service_exit_status: None,
+        services: core::array::from_fn(|_| None),
+        declared_services: 0,
+        unexpected_exit: None,
         challenge_pending: false,
         challenge: 74,
         woke: false,
@@ -141,14 +144,34 @@ pub(crate) fn install(session: Session) {
 
 pub(crate) fn record_exit(status: usize) -> bool {
     let (process_id, thread_id) = super::scheduler::current_identity();
+    let current_job = super::scheduler::current_process()
+        .lock()
+        .job()
+        .and_then(|job| job.upgrade());
     let mut session = SESSION.lock();
-    let Some(session) = session.as_mut() else { return false };
+    let Some(session) = session.as_mut() else {
+        return false;
+    };
     if session.admitted.process_id == process_id && session.admitted.thread_id == thread_id {
         session.exit_status = Some(status);
         return true;
     }
-    if session.service_process_id == Some(process_id) {
-        session.service_exit_status = Some(status);
+    if let Some(record) = session
+        .services
+        .iter_mut()
+        .flatten()
+        .find(|r| r.process_id == process_id)
+    {
+        record.exit = Some(status);
+        return true;
+    }
+
+    if current_job
+        .as_ref()
+        .zip(session.launch.as_ref())
+        .is_some_and(|(job, launch)| Arc::ptr_eq(job, launch))
+    {
+        session.unexpected_exit = Some(if status == 0 { 256 } else { status });
         return true;
     }
     false
@@ -156,73 +179,120 @@ pub(crate) fn record_exit(status: usize) -> bool {
 
 /// Record only successful channel sends by the admitted init or a process in its service Job.
 pub(crate) fn observe(nr: usize, args: [usize; 6], result: isize) {
-    if nr != super::syscall::SYS_CHAN_SEND || result != 0 || args[2] != service::SIZE || args[4] != 0 {
+    if nr != super::syscall::SYS_CHAN_SEND
+        || result != 0
+        || args[2] != service::SIZE
+        || args[4] != 0
+    {
         return;
     }
     let (init_id, launch) = {
         let session = SESSION.lock();
-        let Some(session) = session.as_ref() else { return };
-        let Some(launch) = session.launch.as_ref() else { return };
+        let Some(session) = session.as_ref() else {
+            return;
+        };
+        let Some(launch) = session.launch.as_ref() else {
+            return;
+        };
         (session.admitted.process_id, Arc::clone(launch))
     };
     let process = super::scheduler::current_process();
     let (process_id, in_service_job, endpoint, bytes) = {
         let process = process.lock();
-        if process.state() != super::task::ProcessState::Running { return; }
-        let Some(job) = process.job().and_then(|job| job.upgrade()) else { return };
+        if process.state() != super::task::ProcessState::Running {
+            return;
+        }
+        let Some(job) = process.job().and_then(|job| job.upgrade()) else {
+            return;
+        };
         let in_service_job = Arc::ptr_eq(&job, &launch);
-        if process.id() != init_id && !in_service_job { return; }
-        let handle = match u32::try_from(args[0]) { Ok(handle) => handle, Err(_) => return };
+        if process.id() != init_id && !in_service_job {
+            return;
+        }
+        let handle = match u32::try_from(args[0]) {
+            Ok(handle) => handle,
+            Err(_) => return,
+        };
         let table = process.handle_table().lock();
-        let Ok(node) = table.lookup(handle) else { return };
-        if !node.rights().contains(super::capabilities::Rights::WRITE) { return; }
-        let Some(endpoint) = node.object_arc::<Channel>() else { return };
+        let Ok(node) = table.lookup(handle) else {
+            return;
+        };
+        if !node.rights().contains(super::capabilities::Rights::WRITE) {
+            return;
+        }
+        let Some(endpoint) = node.object_arc::<Channel>() else {
+            return;
+        };
         let mut bytes = [0; service::SIZE];
-        if unsafe { copy_from_user(process.address_space(), &mut bytes, args[1]) }.is_err() { return; }
+        if unsafe { copy_from_user(process.address_space(), &mut bytes, args[1]) }.is_err() {
+            return;
+        }
         (process.id(), in_service_job, endpoint, bytes)
     };
-    let Some((op, value)) = service::decode(&bytes) else { return };
+    let Some((op, value)) = service::decode(&bytes) else {
+        return;
+    };
     let mut guard = SESSION.lock();
-    let Some(session) = guard.as_mut() else { return };
-    let Some(session_launch) = session.launch.as_ref() else { return };
-    if !Arc::ptr_eq(session_launch, &launch) { return; }
+    let Some(session) = guard.as_mut() else {
+        return;
+    };
+    let Some(session_launch) = session.launch.as_ref() else {
+        return;
+    };
+    if !Arc::ptr_eq(session_launch, &launch) {
+        return;
+    }
     if process_id == init_id {
-        if op == service::PING
-            && value == session.challenge
-            && session.service_ready_seen
-            && session.challenge_pending
-            && session.service_endpoint.as_ref().is_some_and(|expected| {
-                expected.upgrade().is_some_and(|expected| {
-                    expected
-                        .wait_registration()
-                        .peer_of(&endpoint.wait_registration())
-                })
-            })
-        {
-            session.service_ping_seen = true;
+        if op == service::PING && value == session.challenge && session.challenge_pending {
+            for record in session.services.iter_mut().flatten() {
+                if record
+                    .endpoint
+                    .upgrade()
+                    .is_some_and(|e| e.wait_registration().peer_of(&endpoint.wait_registration()))
+                {
+                    record.ping = true;
+                }
+            }
         }
         return;
     }
-    if !in_service_job { return; }
-    match op {
-        service::READY if value == 0 && session.service_process_id.is_none() => {
-            session.service_process_id = Some(process_id);
-            session.service_endpoint = Some(Arc::downgrade(&endpoint));
-            session.service_ready_seen = true;
-        }
-        service::PONG if session.service_process_id == Some(process_id)
-            && session.service_ping_seen
-            && session.challenge_pending
-            && value == session.challenge
-            && session.service_endpoint.as_ref().is_some_and(|expected| {
-                expected
+    if !in_service_job {
+        return;
+    }
+    if op == service::READY && value == 0 {
+        if session.services.iter().flatten().any(|r| {
+            r.process_id == process_id
+                || r.endpoint
                     .upgrade()
-                    .is_some_and(|expected| Arc::ptr_eq(&expected, &endpoint))
-            }) =>
-        {
-            session.service_pong_seen = true;
+                    .is_some_and(|e| Arc::ptr_eq(&e, &endpoint))
+        }) {
+            return;
         }
-        _ => {}
+        if let Some(slot) = session.services.iter_mut().find(|r| r.is_none()) {
+            *slot = Some(ServiceRecord {
+                process_id,
+                endpoint: Arc::downgrade(&endpoint),
+                ping: false,
+                pong: false,
+                exit: None,
+            });
+        }
+    } else if op == service::PONG && session.challenge_pending && value == session.challenge {
+        if let Some(record) = session
+            .services
+            .iter_mut()
+            .flatten()
+            .find(|r| r.process_id == process_id)
+        {
+            if record.ping
+                && record
+                    .endpoint
+                    .upgrade()
+                    .is_some_and(|e| Arc::ptr_eq(&e, &endpoint))
+            {
+                record.pong = true;
+            }
+        }
     }
 }
 
@@ -249,34 +319,49 @@ impl Session {
             software: None,
             ready_seen: false,
             pong_seen: false,
-            service_process_id: None,
-            service_endpoint: None,
-            service_ready_seen: false,
-            service_ping_seen: false,
-            service_pong_seen: false,
-            service_exit_status: None,
+            services: core::array::from_fn(|_| None),
+            declared_services: 0,
+            unexpected_exit: None,
             challenge_pending: false,
             challenge: 74,
             woke: false,
         }
     }
+    fn all_services(&self, predicate: impl Fn(&ServiceRecord) -> bool) -> bool {
+        self.declared_services > 0
+            && self.services.iter().flatten().count() == self.declared_services
+            && self.services.iter().flatten().all(predicate)
+    }
     pub fn ready(&self) -> bool {
         self.ready_seen
             && self.pong_seen
-            && self.service_ready_seen
-            && self.service_ping_seen
-            && self.service_pong_seen
             && !self.challenge_pending
-            && self.service_exit_status.is_none()
+            && self.all_services(|r| r.ping && r.pong && r.exit.is_none())
     }
-    pub(crate) fn service_process_id(&self) -> Option<u64> {
-        self.service_process_id
-    }
-    pub(crate) fn service_channel(&self) -> Option<Arc<Channel>> {
-        self.service_endpoint.as_ref().and_then(Weak::upgrade)
+    pub(crate) fn service_waits_match(&self) -> bool {
+        if self
+            .launch
+            .as_ref()
+            .is_some_and(|job| job.lock().process_count() != self.declared_services)
+        {
+            return false;
+        }
+        self.all_services(|r| {
+            r.endpoint
+                .upgrade()
+                .is_some_and(|e| super::scheduler::blocked_on(r.process_id, &e))
+        })
     }
     pub(crate) fn service_exit_status(&self) -> Option<usize> {
-        self.service_exit_status
+        self.unexpected_exit
+            .or_else(|| {
+                self.services
+                    .iter()
+                    .flatten()
+                    .filter_map(|r| r.exit)
+                    .find(|s| *s != 0)
+            })
+            .or_else(|| self.all_services(|r| r.exit == Some(0)).then_some(0))
     }
     pub fn announced_ready(&self) -> bool {
         self.ready_seen
@@ -301,8 +386,10 @@ impl Session {
         self.challenge = 75;
         self.woke = true;
         self.pong_seen = false;
-        self.service_ping_seen = false;
-        self.service_pong_seen = false;
+        for record in self.services.iter_mut().flatten() {
+            record.ping = false;
+            record.pong = false;
+        }
         peer.send(ChannelMessage::new(
             service::encode(service::PING, self.challenge).to_vec(),
             alloc::vec![],
@@ -322,7 +409,7 @@ pub(crate) fn pump() -> bool {
     let Some(session) = session.as_mut() else {
         return false;
     };
-    if session.exit_status.is_some() || session.service_exit_status.is_some() {
+    if session.exit_status.is_some() || session.service_exit_status().is_some() {
         return false;
     }
     let Some(peer) = &session.peer else {
@@ -335,9 +422,20 @@ pub(crate) fn pump() -> bool {
         panic!("init bootstrap failed");
     }
     if !session.ready_seen {
-        if protocol::decode_record(&message.bytes) != Ok((protocol::READY, 0)) {
+        let (op, count) = protocol::decode_record(&message.bytes)
+            .unwrap_or_else(|_| panic!("init bootstrap failed"));
+        if op != protocol::READY
+            || count == 0
+            || count > MAX_SERVICES as u64
+            || session.services.iter().flatten().count() != count as usize
+            || session
+                .launch
+                .as_ref()
+                .is_some_and(|job| job.lock().process_count() != count as usize)
+        {
             panic!("init bootstrap failed");
         }
+        session.declared_services = count as usize;
         session.ready_seen = true;
         peer.send(ChannelMessage::new(
             service::encode(service::PING, session.challenge).to_vec(),
@@ -348,8 +446,7 @@ pub(crate) fn pump() -> bool {
     } else {
         if session.pong_seen
             || !session.challenge_pending
-            || !session.service_ping_seen
-            || !session.service_pong_seen
+            || !session.all_services(|r| r.ping && r.pong && r.exit.is_none())
             || service::decode(&message.bytes) != Some((service::PONG, session.challenge))
         {
             panic!("init bootstrap failed");

@@ -96,15 +96,16 @@ user faults. Ferrum init has separate readiness and waiting markers.
 
 The initial stack record remains exactly startup ABI v1. Init discovers its
 bootstrap endpoint through that record and receives a separate 32-byte protocol
-v2 START message. That message uses magic `FRINIT02`, a little-endian `u16`
-version `2` at offset 8, opcode `1` at offset 10, zero reserved bytes at 12–15,
-the exact service ELF length as `u64` at offset 16, and zero reserved bytes at
+v3 START message. That message uses magic `FRINIT03`, a little-endian `u16`
+version `3` at offset 8, opcode `1` at offset 10, zero reserved bytes at 12–15,
+the exact initramfs archive length as `u64` at offset 16, and zero reserved bytes at
 24–31. START carries exactly two capability handles: the bounded launch Job
-authority and an RO-mappable sealed source-image VMO. READY uses opcode `2`,
-zero service length and no attached handles. Unknown versions, opcodes, nonzero
+authority and an RO-mappable sealed archive VMO with TRANSFER. READY uses opcode `2`,
+the launched-child count (filesystem plus configured services, 1–9) and no attached handles. Unknown versions, opcodes, nonzero
 reserved bytes and unexpected lengths or handle counts fail startup.
 
-Ferrum parses the service with the shared bounded ELF parser, creates a draft
+Ferrum bootstraps initfs from the archive and reads configured executables through
+its streaming filesystem sessions. It parses each executable with the shared bounded ELF parser, creates a draft
 process, installs segment VMOs and explicitly moves a new channel endpoint into
 its empty handle table. The initial thread receives the same startup ABI v1
 record on a guarded RW/NX stack, with its actual assigned bootstrap slot. Init
@@ -114,10 +115,10 @@ closed without killing the started service.
 The independently compiled service announces READY, answers versioned PING
 messages with a matching PONG, and stays blocked waiting for further requests.
 Init forwards those messages between the service and the kernel-owned bootstrap
-session. A normal successful boot retains both processes; rooted waiting is
+session. A normal successful boot retains init, the filesystem and configured services; rooted waiting is
 validated by the scheduler instead of accepting every all-blocked state.
 
-A separate finite closure run exercises SHUTDOWN forwarding, both process exits
+A separate finite closure run exercises SHUTDOWN forwarding, all child and init exits
 and dispatcher reclamation before the resident session is installed. The
 software-wake probe resumes the rooted wait graph with a concrete queued command.
 Neither mechanism provides interrupts, preemption, general service discovery or

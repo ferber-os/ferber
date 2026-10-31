@@ -3,7 +3,7 @@
 Ferber uses Linux-style argument registers with its own syscall numbers.
 This ABI cooperatively schedules resident user tasks, independently loaded ELF
 programs and userspace-created tasks on one active CPU with interrupts disabled.
-Minimal Ferrum init uses staged task construction to launch its first service.
+Ferrum init uses staged task construction to launch its filesystem and configured services.
 This does not provide Linux or musl compatibility, preemption or a general
 service manager.
 
@@ -15,7 +15,7 @@ service manager.
 | x86-64 | `rax` | `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` | `rax` |
 
 Enter through `ecall` on RISC-V and `syscall` on x86-64. Unused arguments are
-ignored for calls 0–16. Task-construction calls 17–22 require them to be zero. Returning calls preserve general registers other than the result and
+ignored for calls 0–16. Task-construction calls 17–22 and wait-many call 23 require unused arguments to be zero. Returning calls preserve general registers other than the result and
 the x86 `syscall` architectural clobbers (`rcx`, `r11`). x86 return flags are
 sanitized. FP/vector state is outside the resident ABI. x86-64 clears
 `CR4.FSGSBASE` and `CR4.PKE`, and sets `CR0.TS` before user execution. This
@@ -50,6 +50,7 @@ harness's fatal exception path.
 | `20` | Initial thread create | Controller, entry, bootstrap slot or `u64::MAX`, options (`0`) | `0` |
 | `21` | Process start | Controller, options (`0`) | `0` |
 | `22` | Process abort | Controller, options (`0`) | `0` |
+| `23` | Channel wait-many | Handle-array address, count (1–16), four zero arguments | Lowest ready index; consumes no message |
 
 The [task-creation contract](task-creation.md) defines descriptor layout, explicit
 Job authority, draft lifecycle, target allocation ownership and atomic publication.
@@ -320,3 +321,20 @@ it must not emit `cooperative_scheduling`, `blocking_channel_receive`, or
 may complete before the deliberate deadlock. Both architecture smoke suites
 check the diagnostic rather than treating a timeout or an arbitrary panic as
 success; the log parser rejects missing, duplicate, and truncated evidence.
+
+## Channel wait sets (syscall 23)
+
+`sys_chan_wait_many(handles_ptr, count, 0, 0, 0, 0)` copies an array of
+little-endian `u32` handle slots, with `count` from 1 through 16. Every handle
+must name a live channel with READ and WAIT rights. Duplicate endpoint identities,
+including aliases, are rejected. The result is the lowest ready input index;
+a queued message or closed peer is ready. No message is consumed and no timeout
+is supplied. Existing receive calls distinguish queued data from peer closure.
+
+All entries are authorized before any ready result. Invalid pointers return
+`-14`, invalid slots `-9`, revoked nodes `-116`, missing rights `-13`, and invalid
+counts, duplicate endpoints or nonzero reserved arguments `-22`. Closing or
+revoking any watched slot cancels the entire suspended wait, including slot reuse.
+Every registration shares a generation and is removed on return, cancellation,
+setup failure or task teardown. Rooted-idle analysis includes every member;
+waiting on a filesystem session creates no implicit external wake source.

@@ -138,7 +138,11 @@ run_case debug accounting 256 4
 run_case debug payload-missing 128 1
 run_case debug payload-invalid 128 1
 run_case debug payload-exit 128 1
-for scenario in init-missing init-malformed-ready init-replay-challenge init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
+for scenario in init-fs-malformed init-fs-flood; do
+    run_case debug "$scenario" 128 1
+done
+
+for scenario in init-missing-service init-invalid-service init-missing init-malformed-ready init-replay-challenge init-exit-before-ready init-exit-after-ready init-close-bootstrap init-wrong-channel; do
     run_case debug "$scenario" 128 1
 done
 smoke_passed=1

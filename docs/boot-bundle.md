@@ -1,94 +1,76 @@
-# Init and its first service arrive in one bounded bundle
+# The boot envelope delivers init and a named archive
 
-Init builds consume an externally delivered bundle containing exactly two
-independently linked static ELF executables: Ferrum init and its resident test
-service. The firmware still transports one opaque file through BootInfo v3.
-The bundle is bounded to 4 MiB including metadata and padding. It is not a VFS,
-a general archive or an authenticated boot format.
+Init builds consume two independent payloads in one bounded firmware file:
+Ferrum init's static ELF and an [immutable initramfs archive](initramfs-format.md).
+The envelope identifies those bootstrap roles; the archive contains named files
+and directories. Neither format authenticates executable bytes. BootInfo v3
+still transports one opaque file, bounded to 4 MiB including all envelope
+metadata, padding, init and archive bytes.
 
-## The parser rejects ambiguous layouts before admission
+## Envelope v2 preserves the bounded handoff
 
-`shared/boot_bundle.rs` defines the allocation-free parser. All integers are
-little-endian. The 32-byte header is followed immediately by two 32-byte entries.
+`shared/boot_bundle.rs` defines the allocation-free parser. Integers are
+little-endian. The header is 32 bytes followed by exactly two 32-byte entries.
 
 | Header offset | Width | Value |
 | --- | --- | --- |
 | 0 | 8 | Magic `FRBOOT01` |
-| 8 | 4 | Version `1` |
+| 8 | 4 | Version `2` |
 | 12 | 4 | Entry count `2` |
 | 16 | 8 | Exact total file length |
 | 24 | 8 | Reserved, zero |
 
 | Entry offset | Width | Value |
 | --- | --- | --- |
-| 0 | 4 | Kind: first `1` (init), then `2` (service) |
+| 0 | 4 | Kind: first `1` (init ELF), then `3` (archive) |
 | 4 | 4 | Flags, zero |
 | 8 | 8 | File offset |
 | 16 | 8 | Nonzero exact file length |
 | 24 | 8 | Reserved, zero |
 
-Entries must appear in that order with 8-byte-aligned offsets. Payloads cannot
-overlap metadata or one another. Padding between entries is zero, and the final
-entry ends exactly at the declared bundle length. Unknown/duplicate kinds,
-reserved bits, overflow, truncated ranges, oversized input and trailing bytes
-are rejected. Payload ELF restrictions are defined by the shared bounded
-[ELF parser](elf-loading.md); Ferrum uses that same parser for its service image.
+Offsets are 8-byte aligned and cannot overlap metadata or preceding payloads.
+Inter-entry padding is zero; the archive ends exactly at the declared length.
+Unknown/duplicate kinds, v1 envelopes, nonzero reserved fields, overflow,
+truncated ranges, oversized input and trailing bytes are rejected. The firmware
+handoff needs no change to carry this version.
 
-## The kernel delegates bytes and authority, not a running child
+## Authority belongs to each explicitly delegated reference
 
-The kernel loads only the init executable. It constructs a dedicated services
-Job with a 16 MiB allocation limit and grants init a concrete weak Job authority.
-The structural Job tree keeps the Job alive; placing its authority in init does
-not create a strong Job/process/handle ownership cycle.
+The kernel loads only init's envelope ELF. A dedicated services Job provides
+bounded launch authority. Init's separate bootstrap v3 START record carries
+exact archive byte length and two attached handles in order: weak Job authority,
+then a fresh owned, page-rounded, sealed archive VMO. Its rights are READ, MAP,
+INSPECT and TRANSFER; it has neither WRITE nor EXECUTE authority.
 
-The service ELF bytes are copied into a fresh page-rounded owned VMO, zero-filled
-past the exact file length, sealed, and granted with READ, MAP and INSPECT rights.
-Init can inspect those bytes through an RO mapping. It does not receive WRITE or
-EXECUTE authority to that source object. The kernel does not parse and run the
-service on init's behalf. Ferrum constructs fresh segment VMOs, writes the
-file-backed bytes, retains zero-filled BSS, seals executable segments and installs
-the child mappings through the task-construction ABI.
+Init maps the archive read-only, validates it and locates `sbin/initfs`. It loads
+that ELF using existing task/VMO syscalls, explicitly installs filesystem session
+channels and starts the child. Init unmaps the archive and moves its source VMO
+through initfs's control channel. Initfs validates its received archive and keeps
+an RO mapping after closing the source handle. Mapping ownership retains the
+backing without an open handle.
 
-Startup ABI v1 still discovers one bootstrap channel. A separate init protocol
-v2 START record supplies exactly two attached handles in order: launch Job, then
-service-image VMO. The record carries the exact ELF byte length, independently of
-its rounded VMO capacity. Missing/extra handles or malformed records are rejected.
-General channel transfer of graph-owning capabilities remains disallowed; these
-initial Job grants are an explicit kernel bootstrap operation.
+Init obtains `etc/services.conf` and configured executable bytes through its
+filesystem session. It constructs each required service with fresh segment
+VMOs, sealed executable backing, a guarded stack and explicit capabilities.
+Configured services receive their own filesystem channel only when requested
+by configuration. No filesystem channel or archive mapping is inherited.
+See [the filesystem service](initramfs.md) and [init](init.md) for those protocols.
 
-## Ferrum launches, checks and retains a resident service
+## Packaging remains independent of the kernel
 
-Init creates a draft child under the supplied Job, maps the validated segments,
-creates a channel pair and moves one endpoint into the child. It creates one
-initial thread with the fixed guarded stack and startup record, then starts it.
-The parent closes its controller after start; the Job and scheduler retain the
-running child independently. Temporary image mappings and construction handles
-are released after setup.
+`scripts/build-init-bundle.sh TARGET PROFILE [OUTPUT]` builds init, initfs and
+resident service executables, stages the initial layout, emits an extensionless
+`initramfs` archive beside the output, and writes `boot.bundle` by default under
+`target/userspace-init/TARGET/PROFILE/`.
 
-The service announces READY over its delegated channel. Init then announces
-readiness to the kernel control session. A PING challenge passes through init to
-the service, and its PONG returns through init to the kernel. The normal release
-path leaves both processes blocked on rooted message paths. It requires
-`service_launch`, `multiservice_idle`, `init_ready`, `init_waiting` and
-`boot_payload` PASS markers alongside normal memory verification.
+The initial tree has `sbin/initfs`, `etc/services.conf`, two executable names
+under `libexec/services/`, and test data under `share/`. The same test service
+binary occupies both configured executable names; they become separate isolated
+processes. Init stays in the envelope rather than being duplicated in the archive.
 
-A finite closure regression sends SHUTDOWN through init to the service. The
-service closes its endpoint and exits zero; init closes its endpoints and exits
-with the expected closure status. Dispatcher reclamation retires both tasks
-before repeated frame, capability-node and process baseline checks. This finite
-test is distinct from the resident normal boot.
-
-The `service-wake-probe` build adds a second concrete software PING after the
-first valid quiescent state. Its temporary software-source lease survives until
-the matching PONG drains that work. Successful resumption additionally requires
-`software_wake: PASS`; no hardware interrupt or external event producer is implied.
-
-## Packaging preserves the firmware contract
-
-`scripts/build-init-bundle.sh TARGET PROFILE [OUTPUT]` builds both executables
-and emits `target/userspace-init/TARGET/PROFILE/boot.bundle` by default.
-`make run INIT=1` passes that bundle as the RISC-V initrd;
-`make x86-iso INIT=1` packages the same format under the UEFI filename
-`BOOT.ELF`. The legacy filename does not identify the internal payload format.
-Raw-ELF verification builds retain their existing delivery format. See
-[boot-payload ownership](boot-payload.md) for permanent RO/NX source reservations.
+`make run INIT=1` passes the envelope as the RISC-V initrd;
+`make x86-iso INIT=1` packages it under the legacy UEFI transport name `BOOT.ELF`.
+Raw-ELF verification builds retain their existing delivery format. Source bytes
+remain reserved through the permanent supervisor RO/NX alias, as described in
+[boot-payload ownership](boot-payload.md). Replacing archive contents does not
+require recompiling the kernel, subject to the total envelope and Job budgets.
