@@ -282,3 +282,14 @@ mod tests {
         });
     }
 }
+
+#[test]
+fn firmware_ram_provenance_survives_handoff() {
+    for kind in [1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 15] {
+        assert_eq!(abi::region_kind(kind), abi::REGION_RAM_RESERVED);
+    }
+    assert_eq!(abi::region_kind(7), abi::REGION_USABLE);
+    for kind in [0, 11, 12] {
+        assert_eq!(abi::region_kind(kind), abi::REGION_RESERVED);
+    }
+}

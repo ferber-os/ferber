@@ -21,6 +21,13 @@ Every region of virtual memory is backed by a named kernel object called a VMO.
 - **Explicit Lifetime:** Page-table mappings do not own or free mapped frames. Their VMO owners must outlive every use of those mappings.
 
 ## Physical Allocation
+
+The common boot map distinguishes usable RAM (`1`), reserved or device space (`2`),
+and firmware-owned or unusable RAM (`3`). Only usable RAM enters the allocator.
+Keeping reserved RAM identifiable also prevents platform discovery from treating it
+as a device aperture. A reserved entry alone is not proof that a range is safe MMIO;
+device mappings additionally require validated platform resource ownership.
+
 The bitmap allocator owns physical page allocation. The runtime buddy heap suballocates
 blocks from those pages; requests larger than one page use the bitmap allocator's
 contiguous-frame path.

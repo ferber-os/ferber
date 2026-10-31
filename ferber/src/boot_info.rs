@@ -24,6 +24,8 @@ pub const KERNEL_IMAGE_BASE: u64 = 0xffff_ffff_8000_0000;
 
 pub const MEMORY_USABLE: u32 = 1;
 pub const MEMORY_RESERVED: u32 = 2;
+/// Firmware-owned or unusable RAM, never a device register aperture.
+pub const MEMORY_RAM_RESERVED: u32 = 3;
 
 pub const PIXEL_FORMAT_NONE: u32 = 0;
 #[cfg(target_arch = "x86_64")]

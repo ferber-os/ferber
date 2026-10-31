@@ -1,6 +1,6 @@
 //! Packed supervisor aliases for discovered RAM; gaps consume no virtual space.
 
-use crate::boot_info::{BootInfo, MEMORY_RESERVED, MEMORY_USABLE};
+use crate::boot_info::{BootInfo, MEMORY_RAM_RESERVED, MEMORY_RESERVED, MEMORY_USABLE};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -84,7 +84,10 @@ fn normalize(map: &mut Map, info: &BootInfo) {
     for region in unsafe { info.regions() } {
         assert!(region.start < region.end, "invalid boot memory interval");
         assert!(
-            matches!(region.kind, MEMORY_USABLE | MEMORY_RESERVED),
+            matches!(
+                region.kind,
+                MEMORY_USABLE | MEMORY_RESERVED | MEMORY_RAM_RESERVED
+            ),
             "invalid boot memory kind"
         );
         assert!(
@@ -134,7 +137,7 @@ fn normalize(map: &mut Map, info: &BootInfo) {
         }
     }
     for region in unsafe { info.regions() } {
-        if region.kind == MEMORY_RESERVED {
+        if matches!(region.kind, MEMORY_RESERVED | MEMORY_RAM_RESERVED) {
             subtract(map, region.start, region.end);
         }
     }
@@ -351,6 +354,27 @@ mod tests {
             (high as usize + 2 * PAGE, high as usize + 3 * PAGE)
         );
         assert!(map.entries[1].virtual_start - map.entries[0].virtual_start < 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn firmware_owned_ram_stays_reserved() {
+        let mut reserved = MemoryRegion::reserved(0x8000, 0xa000);
+        reserved.kind = MEMORY_RAM_RESERVED;
+        let regions = [MemoryRegion::usable(0x1000, 0x20000), reserved];
+        let mut info = BootInfo::new(
+            &regions,
+            0x1000,
+            0x2000,
+            crate::boot_info::KERNEL_IMAGE_BASE,
+            0x2000,
+            regions.as_ptr() as u64,
+        );
+        info.memory_regions = 0x3000;
+        let mut map = empty_map();
+        normalize(&mut map, &info);
+        assert!(map.entries[..map.count]
+            .iter()
+            .all(|e| e.end <= 0x8000 || e.start >= 0xa000));
     }
 
     #[test]

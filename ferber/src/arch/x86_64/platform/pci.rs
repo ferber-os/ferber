@@ -99,7 +99,7 @@ impl<'a> Capabilities<'a> {
             return Err(Error);
         }
         let identity = Identity::parse(bytes)?.ok_or(Error)?;
-        if identity.header != 0 {
+        if identity.header > 1 {
             return Err(Error);
         }
         let mut seen = [false; 64];
@@ -149,4 +149,22 @@ impl<'a> Capabilities<'a> {
             Some(out)
         })
     }
+}
+
+/// Decode the response to an authorized, quiescent BAR sizing transaction.
+pub fn bar_length(low: u32, high: u32, wide: bool) -> Result<u64, Error> {
+    if low & 1 != 0 {
+        return Err(Error);
+    }
+    let mask = (low as u64 & !15)
+        | if wide {
+            (high as u64) << 32
+        } else {
+            0xffff_ffff_0000_0000
+        };
+    let length = (!mask).checked_add(1).ok_or(Error)?;
+    if length < 16 || !length.is_power_of_two() {
+        return Err(Error);
+    }
+    Ok(length)
 }

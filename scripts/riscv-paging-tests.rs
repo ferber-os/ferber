@@ -313,3 +313,22 @@ fn retained_owner_ancestor_quota_and_free_before_decharge() {
     assert_eq!(BudgetRef::system().used(), system_before);
     assert_eq!(bitmap::count(), 0);
 }
+
+#[test]
+fn device_mapping_is_nx_and_transactional() {
+    let _lock = bitmap::LOCK.lock().unwrap();
+    let mut space = Sv39AddressSpace::new_user().unwrap();
+    let before = bitmap::snapshot();
+    assert_eq!(unsafe { space.map_device_pages(0, 0x10000000, 1, MapFlags::user_rx()) }, Err(PageError::OutOfRange));
+    assert_eq!(bitmap::snapshot(), before);
+    for fail in 0..2 {
+        bitmap::fail_after(Some(fail));
+        assert_eq!(unsafe { space.map_device_pages(0, 0x10000000, 1, MapFlags::user_rw()) }, Err(PageError::OutOfMemory));
+        bitmap::fail_after(None);
+        assert_eq!(bitmap::snapshot(), before);
+    }
+    unsafe { space.map_device_pages(0, 0x10000000, 1, MapFlags::user_rw()).unwrap(); }
+    assert_eq!(space.query(0), Some((0x10000000, MapFlags::user_rw())));
+    assert_eq!(unsafe { leaf(&space, 0).read() } & (1 << 3), 0);
+    unsafe { space.unmap_page(0).unwrap(); }
+}

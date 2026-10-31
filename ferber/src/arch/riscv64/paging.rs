@@ -318,6 +318,14 @@ impl AddressSpace for Sv39AddressSpace {
         self.map_pages(va, &VmoFrames::contiguous(pa, 1), 0, 1, flags)
     }
 
+    unsafe fn map_device_pages(&mut self, va: usize, physical: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
+        if flags.executable || !flags.readable || count == 0 || count.checked_mul(PAGE_SIZE).and_then(|n| physical.checked_add(n)).is_none() {
+            return Err(PageError::OutOfRange);
+        }
+        // QEMU virt UART/PLIC attributes come from platform PMAs, not Svpbmt.
+        self.map_pages(va, &VmoFrames::contiguous(physical, count), 0, count, flags)
+    }
+
     unsafe fn map_pages(&mut self, va: usize, frames: &VmoFrames, first: usize,
         count: usize, flags: MapFlags) -> Result<(), PageError> {
         self.validate_range(va, count)?;

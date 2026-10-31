@@ -170,6 +170,24 @@ fn physical_bits() -> u32 {
     if extended >= 0x8000_0008 { (core::arch::x86_64::__cpuid(0x8000_0008).eax & 255).min(52) } else { 36 }
 }
 
+fn uc_pat_bits(pat: u64) -> Result<u64, PageError> {
+    if (pat >> 24) & 255 != 0 { return Err(PageError::OutOfRange); }
+    Ok(PTE_PCD | PTE_PWT)
+}
+
+fn device_cache_bits() -> Result<u64, PageError> {
+    #[cfg(test)]
+    { uc_pat_bits(0x0007_0406_0007_0406) }
+    #[cfg(not(test))]
+    {
+        if core::arch::x86_64::__cpuid(1).edx & (1 << 16) == 0 { return Err(PageError::OutOfRange); }
+        let low: u32;
+        let high: u32;
+        unsafe { core::arch::asm!("rdmsr", in("ecx") 0x277u32, out("eax") low, out("edx") high, options(nomem, nostack)); }
+        uc_pat_bits((u64::from(high) << 32) | u64::from(low))
+    }
+}
+
 struct PendingTables(Vec<usize>, FrameCharge);
 impl Drop for PendingTables {
     fn drop(&mut self) {
@@ -585,6 +603,46 @@ impl Pml4AddressSpace {
         pa
     }
 
+    unsafe fn map_pages_with_cache(&mut self, va: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags, cache_bits: u64) -> Result<(), PageError> {
+        Self::validate_range(va, frames, first, count, flags)?;
+        let needed = self.preflight_free_range(va, count)?;
+        if needed > self.table_limit - self.table_pages { return Err(PageError::TableBudget); }
+        let mut pending = PendingTables(Vec::new(), FrameCharge::reserve(self.budget(), 0).map_err(accounting_error)?);
+        accounting::with_budget(self.budget(), || accounting::attempt(|| pending.0.try_reserve_exact(needed)))
+            .map_err(accounting_error)?;
+        for _ in 0..needed { pending.0.push(allocate_owned_table(&mut pending.1)?); }
+        for page in 0..count {
+            let addr = va + page * PAGE_SIZE;
+            let indices = [pml4_index(addr), pdpt_index(addr), pd_index(addr), pt_index(addr)];
+            let mut table = self.root_paddr;
+            for index in &indices[..3] {
+                let slot = table_ptr(table).add(*index);
+                if slot.read() == 0 {
+                    slot.write(make_table_entry(pending.0.pop().expect("preflight counted tables")));
+                    self.table_pages += 1;
+                } else { open_table(slot, flags); }
+                table = pte_to_paddr(slot.read());
+            }
+            table_ptr(table).add(indices[3]).write(make_leaf_entry(frames.get(first + page).unwrap(), flags) | cache_bits);
+        }
+        debug_assert!(pending.0.is_empty());
+        self.charge.merge(core::mem::replace(&mut pending.1,
+            FrameCharge::reserve(self.budget(), 0).expect("zero table charge")));
+        self.flush_tlb_all();
+        if flags.executable {
+            // Code written through a different linear alias requires instruction serialization.
+            #[cfg(test)]
+            crate::paging_test_publish(self, va, count);
+            #[cfg(not(test))]
+            {
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+                core::arch::x86_64::__cpuid(0);
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        Ok(())
+    }
+
     pub fn root_paddr(&self) -> usize {
         self.root_paddr
     }
@@ -605,43 +663,15 @@ impl AddressSpace for Pml4AddressSpace {
     }
 
     unsafe fn map_pages(&mut self, va: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
-        Self::validate_range(va, frames, first, count, flags)?;
-        let needed = self.preflight_free_range(va, count)?;
-        if needed > self.table_limit - self.table_pages { return Err(PageError::TableBudget); }
-        let mut pending = PendingTables(Vec::new(), FrameCharge::reserve(self.budget(), 0).map_err(accounting_error)?);
-        accounting::with_budget(self.budget(), || accounting::attempt(|| pending.0.try_reserve_exact(needed)))
-            .map_err(accounting_error)?;
-        for _ in 0..needed { pending.0.push(allocate_owned_table(&mut pending.1)?); }
-        for page in 0..count {
-            let addr = va + page * PAGE_SIZE;
-            let indices = [pml4_index(addr), pdpt_index(addr), pd_index(addr), pt_index(addr)];
-            let mut table = self.root_paddr;
-            for index in &indices[..3] {
-                let slot = table_ptr(table).add(*index);
-                if slot.read() == 0 {
-                    slot.write(make_table_entry(pending.0.pop().expect("preflight counted tables")));
-                    self.table_pages += 1;
-                } else { open_table(slot, flags); }
-                table = pte_to_paddr(slot.read());
-            }
-            table_ptr(table).add(indices[3]).write(make_leaf_entry(frames.get(first + page).unwrap(), flags));
+        self.map_pages_with_cache(va, frames, first, count, flags, 0)
+    }
+
+    unsafe fn map_device_pages(&mut self, va: usize, physical: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
+        if flags.executable || !flags.readable || count == 0 || count.checked_mul(PAGE_SIZE).and_then(|n| physical.checked_add(n)).is_none() {
+            return Err(PageError::OutOfRange);
         }
-        debug_assert!(pending.0.is_empty());
-        self.charge.merge(core::mem::replace(&mut pending.1,
-            FrameCharge::reserve(self.budget(), 0).expect("zero table charge")));
-        self.flush_tlb_all();
-        if flags.executable {
-            // Code written through a different linear alias requires instruction serialization.
-            #[cfg(test)]
-            crate::paging_test_publish(self, va, count);
-            #[cfg(not(test))]
-            {
-                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-                core::arch::x86_64::__cpuid(0);
-                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
-            }
-        }
-        Ok(())
+        let cache_bits = device_cache_bits()?;
+        self.map_pages_with_cache(va, &VmoFrames::contiguous(physical, count), 0, count, flags, cache_bits)
     }
 
     unsafe fn unmap_pages_exact(&mut self, va: usize, frames: &VmoFrames, first: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
@@ -717,13 +747,15 @@ impl AddressSpace for Pml4AddressSpace {
             return Err(PageError::NotMapped);
         }
 
+        let cache = pte & (PTE_PCD | PTE_PWT | PTE_HUGE);
+        if cache != 0 && flags.executable { return Err(PageError::OutOfRange); }
         unsafe {
             open_table(pml4.add(l4_idx), flags);
             open_table(pdpt.add(l3_idx), flags);
             open_table(pd.add(l2_idx), flags);
         }
         let phys_addr = pte_to_paddr(pte);
-        let new_pte = make_leaf_entry(phys_addr, flags);
+        let new_pte = make_leaf_entry(phys_addr, flags) | cache;
         unsafe {
             pt.add(l1_idx).write(new_pte);
         }
@@ -1021,6 +1053,35 @@ mod transaction_tests {
     }
 
     #[test]
+    fn device_mapping_is_uc_nx_and_transactional() {
+        assert_eq!(uc_pat_bits(0x0007_0406_0607_0406), Err(PageError::OutOfRange));
+        let boot = allocate_table().unwrap();
+        BOOT_ROOT.store(boot, core::sync::atomic::Ordering::SeqCst);
+        let mut space = Pml4AddressSpace::new_user().unwrap();
+        assert_eq!(unsafe { space.map_device_pages(0, 0x1000, 1, MapFlags::user_rx()) }, Err(PageError::OutOfRange));
+        assert_eq!(space.table_pages(), 1);
+        for fail in 0..3 {
+            crate::mock_bitmap::STATE.lock().unwrap().1 = fail;
+            assert_eq!(unsafe { space.map_device_pages(0, 0x1000, 1, MapFlags::user_rw()) }, Err(PageError::OutOfMemory));
+            crate::mock_bitmap::STATE.lock().unwrap().1 = usize::MAX;
+            assert_eq!(space.table_pages(), 1);
+            assert!(space.query(0).is_none());
+        }
+        unsafe { space.map_device_pages(0, 0x1000, 1, MapFlags::user_rw()).unwrap(); }
+        let mut table = space.root_paddr;
+        for _ in 0..3 { table = pte_to_paddr(unsafe { table_ptr(table).read() }); }
+        let bits = unsafe { table_ptr(table).read() };
+        assert_eq!(bits & (PTE_PCD | PTE_PWT | PTE_NO_EXECUTE), PTE_PCD | PTE_PWT | PTE_NO_EXECUTE);
+        assert_eq!(unsafe { space.protect_page(0, MapFlags::user_rx()) }, Err(PageError::OutOfRange));
+        assert_eq!(unsafe { table_ptr(table).read() }, bits);
+        unsafe { space.protect_page(0, MapFlags::user_ro()).unwrap(); }
+        assert_eq!(unsafe { table_ptr(table).read() } & (PTE_PCD | PTE_PWT), PTE_PCD | PTE_PWT);
+        unsafe { space.unmap_page(0).unwrap(); }
+        drop(space);
+        bitmap::free_frame(boot).unwrap();
+    }
+
+    #[test]
     fn production_range_transactions() {
         let boot = allocate_table().unwrap();
         BOOT_ROOT.store(boot, core::sync::atomic::Ordering::SeqCst);
@@ -1138,4 +1199,21 @@ mod transaction_tests {
         drop(space);
         bitmap::free_frame(boot).unwrap();
     }
+}
+
+/// Add a permanent supervisor-only UC register aperture during platform boot.
+/// # Safety
+/// The caller proves MMIO provenance/no RAM overlap, unique virtual space and
+/// bootstrap exclusivity before any process root copies the kernel mappings.
+/// An allocation failure may retain a mapped prefix; the complete VA span must
+/// remain quarantined until reboot and must never be retried in place.
+pub unsafe fn map_platform_mmio(va:usize,pa:usize,length:usize)->Result<(),PageError>{
+    if va<0xffff_fffe_1000_0000||va.checked_add(length).is_none_or(|e|e>0xffff_fffe_7000_0000)||(va|pa|length)&4095!=0||length==0{return Err(PageError::OutOfRange);}
+    let cache_bits = device_cache_bits()?;
+    let root=BOOT_ROOT.load(core::sync::atomic::Ordering::Acquire);
+    if root==0{return Err(PageError::NotMapped);}
+    let current:usize;core::arch::asm!("mov {},cr3",out(reg)current,options(nomem,nostack));
+    if current&!4095!=root{return Err(PageError::OutOfRange);}
+    map_kernel_range(root,va,pa,length,PTE_PRESENT|PTE_WRITABLE|PTE_NO_EXECUTE|cache_bits)?;
+    core::arch::asm!("mov cr3,{}",in(reg)root,options(nostack));Ok(())
 }

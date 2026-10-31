@@ -13,6 +13,16 @@ pub const MMIO_BASE: u64 = 0xffff_fffe_8000_0000;
 pub const KERNEL_IMAGE_BASE: u64 = 0xffff_ffff_8000_0000;
 pub const REGION_USABLE: u32 = 1;
 pub const REGION_RESERVED: u32 = 2;
+pub const REGION_RAM_RESERVED: u32 = 3;
+/// Preserve RAM provenance even when firmware memory is not allocatable.
+pub const fn region_kind(firmware_kind: u32) -> u32 {
+    match firmware_kind {
+        crate::uefi::EFI_CONVENTIONAL_MEMORY => REGION_USABLE,
+        1..=6 | 8..=10 | 13..=15 => REGION_RAM_RESERVED,
+        _ => REGION_RESERVED,
+    }
+}
+
 pub const PIXEL_NONE: u32 = 0;
 pub const PIXEL_RGB: u32 = 1;
 pub const PIXEL_BGR: u32 = 2;

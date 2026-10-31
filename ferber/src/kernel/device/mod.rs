@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 #[path = "../../../../shared/device_abi.rs"]
 pub mod abi;
 pub mod irq;
+pub mod region;
 pub mod state;
 use state::Lifecycle;
 pub use state::{Error, State};

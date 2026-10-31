@@ -24,8 +24,9 @@ fn observe_charge_before_free() {
 
 #[path = "../ferber/src/boot_info.rs"] mod boot_info;
 #[path = "../ferber/src/kernel/memory/paging.rs"] pub mod paging_hal;
-#[path = "../ferber/src/arch/x86_64/paging.rs"] mod paging;
-mod arch { pub use crate::paging::Pml4AddressSpace as ArchAddressSpace; }
+#[path = "../ferber/src/arch/x86_64/paging.rs"] pub mod paging;
+#[path = "../ferber/src/arch/x86_64/platform/mmio.rs"] mod platform_mmio;
+mod arch { pub use crate::paging; pub use crate::paging::Pml4AddressSpace as ArchAddressSpace; }
 mod kernel { pub use crate::sync; pub mod memory {
     pub use crate::accounting;
     pub use crate::paging_hal as paging;

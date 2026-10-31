@@ -156,6 +156,14 @@ pub trait AddressSpace {
         flags: MapFlags,
     ) -> Result<(), PageError>;
 
+    /// Install approved device pages transactionally with non-executable device memory attributes.
+    /// The caller proves MMIO provenance, physical bounds and absence of conflicting RAM aliases.
+    /// Unsupported implementations reject the operation before modifying tables.
+    unsafe fn map_device_pages(&mut self, _va: usize, _physical: usize, _count: usize,
+        _flags: MapFlags) -> Result<(), PageError> {
+        Err(PageError::OutOfRange)
+    }
+
     /// Validate the complete expected mapping before allocation-free removal and table retirement.
     unsafe fn unmap_pages_exact(
         &mut self,

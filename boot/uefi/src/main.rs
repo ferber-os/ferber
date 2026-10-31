@@ -489,11 +489,7 @@ unsafe fn exit_with_map(
                     MemoryRegion {
                         start: descriptor.physical_start,
                         end,
-                        kind: if descriptor.kind == uefi::EFI_CONVENTIONAL_MEMORY {
-                            abi::REGION_USABLE
-                        } else {
-                            abi::REGION_RESERVED
-                        },
+                        kind: abi::region_kind(descriptor.kind),
                         reserved: 0,
                     },
                 );
