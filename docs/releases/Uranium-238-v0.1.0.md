@@ -1,10 +1,8 @@
 # Uranium-238 v0.1.0
 
-Wolfram's first nightly release marks completion of the Phase 1 boot milestone.
-It demonstrates a shared kernel core starting on both RISC-V and x86-64, including
-a successful boot on the MSI B650M-A PRO WIFI.
+*Wolfram reaches its first repeatable boot milestone on RISC-V 64 and x86-64. The kernel also boots from USB on the MSI B650M-A PRO WIFI and reaches the expected `spawn init` panic.*
 
-## Included
+## What changed
 
 - RISC-V 64 boot through OpenSBI, with device-tree RAM detection, a bitmap frame
   allocator, trap handling, and secondary-hart parking.
@@ -15,7 +13,7 @@ a successful boot on the MSI B650M-A PRO WIFI.
 - MSI B650M-A PRO WIFI USB boot through memory allocation to the expected,
   diagnosed `spawn init` panic.
 
-## Trying the ISO
+## Run this release
 
 Use the attached `wolfram.iso` with a UEFI virtual machine such as QEMU/OVMF.
 For real hardware, the Phase 1 check used a FAT32 USB stick with

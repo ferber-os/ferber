@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.14
 
-*Job memory limits now account for physical storage across the hierarchy on RISC-V64 and x86-64. Allocations retain their original budget through capability transfer, creator exit and foreign destruction. Uranium decays. The outstanding charge waits for the last owner.*
+*Physical allocation charges now follow their original Job budget through transfer, creator exit and final destruction. Hierarchical admission checks prevent descendants from exceeding ancestor limits.*
 
 ## Job limits include their descendants
 
@@ -108,7 +108,7 @@ Additional adversarial checks exercised 30,000 mixed allocator operations across
 seven bounded owners, 12,000 operations with foreign-context frees, 260 payload
 size/alignment combinations, and forced allocation/reallocation failures across
 40 combinations. A temporary weakened closed-ancestor check was detected by the
-cached-arena regression. No confirmed bugs remained from the independent reviews.
+cached-arena regression. The identified regression was fixed.
 Host metadata allocation and instrumented paging remain distinct from native
 execution evidence.
 
@@ -122,4 +122,4 @@ The kernel and UEFI loader advance to `0.2.14` without dependency upgrades.
 The published ISO continues to boot minimal Ferrum init using startup ABI v1.
 This remains a prerelease; `0.3.0` stays reserved. Userspace task creation,
 service launch, preemption, IRQ-safe allocation and SMP remain pending. The
-accounting contract is documented in [Job accounting](../job-accounting.md).
+accounting contract is documented in [Job accounting](../reference/job-accounting.md).

@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.11
 
-*Userspace can create, read and write owned-RAM VMOs through capability handles. Byte copies validate complete ranges and stage their data; allocation charges survive aliases, transfer and queued ownership. Two isolated processes verify shared backing and read-only enforcement. Uranium-238 still decays; closing a handle is not a half-life.*
+*Userspace gains owned-RAM VMO creation and byte reads/writes. Cross-process tests verify shared backing, read-only authority and allocation ownership after capability transfer.*
 
 ## Three syscalls expose fresh memory without physical authority
 
@@ -66,12 +66,11 @@ protocol, two VMO core and one production VMO syscall allocation test.
 Both kernel targets passed default and VMO-feature Clippy with warnings
 denied; shell syntax and strict log-parser self-checks passed.
 
-Release preflight repeated all 64 host tests, minimal-init and VMO-feature
+Additional validation repeated all 64 host tests, minimal-init and VMO-feature
 Clippy on both kernel targets, release UEFI Clippy, shell/parser checks and a
 freshly built `0.2.11` minimal-init release ISO boot through OVMF. The release
 ELF shape check passed.
 
-Three independent QA reviewers found no confirmed implementation bugs.
 Additional adversarial checks covered byte-copy boundaries, output-alias
 validation, every intermediate frame-allocation failure, final-owner release
 and queued revoked descendants. One consolidated error-table documentation

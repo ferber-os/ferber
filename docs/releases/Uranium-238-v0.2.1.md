@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.1
 
-*Userspace can close handles, duplicate permitted capabilities, and inspect their type and rights on RISC-V 64 and x86-64. Runtime syscall dispatch is separate from resident-probe bookkeeping. This is a prerelease with one resident task; exit still halts the kernel.*
+*Userspace gains handle close, duplicate and inspect operations on both architectures. Authorization uses the calling process’s table; this release still runs one resident task whose exit halts the kernel.*
 
 ## Handle operations enforce the calling process's authority
 
@@ -29,7 +29,7 @@ revoked capabilities. Unknown syscalls return `-38`. Yield (`0`) returns zero
 independently of probe sequencing. Exit (`1`) marks the current thread Dead
 and halts. These values and Linux-style argument registers do not provide
 Linux or musl compatibility. The full interface is documented in
-[the resident syscall ABI](../syscall-abi.md).
+[the resident syscall ABI](../reference/syscall-abi.md).
 
 ## Resident probes check useful operations and rejected requests
 
@@ -67,7 +67,7 @@ configurations, and the UEFI loader. Debug/release freestanding x86 ELF checks,
 formatting, shell syntax, and smoke-log parser self-tests also pass. These are
 local results; they do not claim a hosted GitHub Actions run.
 
-The user booted a release-profile ISO of this implementation on physical x86-64
+A release-profile ISO of this implementation booted on physical x86-64
 hardware and reported a PASS followed by the expected halt. That run preceded
 the version metadata bump and verifies the normal resident path. The dedicated
 protection-fault builds were tested in QEMU, not on physical hardware.

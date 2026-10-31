@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.7
 
-*Checkpoint B gives the static ELF fixture one explicitly delegated channel endpoint after process creation and before scheduler admission. The handle table is empty at birth; the fixture receives a prequeued challenge through the existing nonblocking syscall, returns a reply, closes its handle, and exits. The kernel verifies the reply and cleanup on RISC-V 64 and x86-64. This is test startup plumbing, not init's production ABI. Uranium's half-life is long. This protocol is deliberately not.*
+*The ELF fixture now receives one explicitly delegated bootstrap channel after its initially empty handle table is created. A finite receive/reply/close/exit exchange verifies authority handoff and cleanup.*
 
 ## The test fixture proves delegation follows empty-at-birth
 
@@ -35,7 +35,7 @@ release packaging path. Kernel and probe Clippy checks pass with `-D warnings`
 for both targets; release UEFI Clippy and x86 ELF checks pass as well. Hosted
 GitHub Actions is not claimed as locally run.
 
-The maintainer booted the ELF build on physical x86-64 hardware. The
+The ELF build booted on physical x86-64 hardware. The
 `userspace_elf` and `userspace_bootstrap_channel` markers passed. No physical
 RISC-V run is claimed. The boot preceded the version metadata bump.
 

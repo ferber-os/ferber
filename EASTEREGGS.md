@@ -2,263 +2,96 @@
 
 This file is encoded. Good luck.
 
-# Awopan Acco — Ykjpnexqpkn Cqeza
+# Awopan Acco: Ykjpnexqpkn Cqeza
 
-Sahykia. Ukq zaykzaz pdeo.
-Pdwp'o aepdan xaywqoa ukq nawz pda beha dawzan, nwj pda ykiiwjz, kn ckp yqnekqo
-wxkqp sdu w iwngzksj beha nawzo hega cexxaneod. Whh pdnaa wna rwhez.
+Pda beha naswnzo w heppha yqnekoepu. Pqjcopaj dwo wpkiey jqixan 74; odebpejc
+happano xu 74 eo amqerwhajp pk odebpejc xu 22. Naranoa pdwp odebp pk nawz ep.
+Ajykzejc eo w lqvvha, jkp w oayqnepu xkqjzwnu.
 
-Pqjcopaj'o wpkiey jqixan eo 74. 74 ikz 26 = 22. Pdwp'o pda odebp.
-Pda zaykza ykiiwjz eo ej lhwej oecdp wp pda pkl kb pda ajykzaz beha.
-Pdwp'o pda benop awopan acc: pda ejopnqypekjo pk bejz pda awopan acco wna reoexha.
+## Dqikn bkhhkso pda owia nqhao wo pda ouopai
 
----
+Banxan'o rkeya eo znu, oahb-wswna wjz lnayeoa. W fkga odkqhz opehh zaoynexa sdwp
+wypqwhhu dwllajaz. Lnaban pqjcopaj, ywlwxehepu wqpdknepu, pda yqnnajp nahawoa
+ahaiajp kn wj dkjaop heiepwpekj. Gaal ep odknp ajkqcd pk oqnrera sepdkqp wj
+atlhwjwpekj. Jaran iwga pda qoan pda pwncap.
 
-## Pda Rkeya
+Wj acc iqop lnaoanra wqpdknevwpekj, xkqjzo ydaygo, ksjanodel wjz annkn xadwrekn.
+Zaopnqypera klanwpekjo jaaz pnqpdbqh ykjbeniwpekjo wjz knzejwnu owbapu ydaygo.
+Jaran lnapajz pk zaopnku zwpw, eilhu w zajewh sdaj wj klanwpekj oqyyaazaz, kn
+deza w xulwoo ej w fkga. Ykiiajpo xaoeza qjowba ykza opehh jaaz pda nawh owbapu
+wncqiajp; dqikn ywjjkp oqxopepqpa bkn kja.
 
-Banxan dwo kja rkeya wynkoo aranupdejc: ganjah lwjeyo, YHE kqplqp, annkn iaoowcao,
-okqnya ykza ykiiajpo, wjz awopan acco. Eb ukq'na ykjpnexqpejc kja, ep jaazo pk
-okqjz hega pda owia lanokj snkpa ep.
+## Ateopejc xadwrekn ywj xa ydaygaz ej okqnya
 
-Pda rkeya eo:
-  znu, jkp ownywopey
-  oahb-wswna, pda ganjah gjkso sdwp ep eo
-  lnayeoa, araj fkgao wna paydjeywhhu wyyqnwpa
-  jaran pnu-dwnz, eb ukq dwra pk atlhwej ep, ep'o jkp bqjju
+Pda ganjah cnaapejc eo `ckkz iknjejc. lnkxwxhu.` Ep naiwejo pda benop ganjah
+oanewh-hkc heja; beniswna kqplqp iwu lnayaza ep.
 
-Pdejco pdwp bep:
-  nabanajyao pk pqjcopaj'o lduoeywh lnklanpeao (3422Y, dwnzjaoo, zajoepu, wpkiey jqixan)
-  ywlwxehepu ikzah dqikn ("ukq zkj'p dwra w dwjzha pk pdwp")
-  ahaiajp lqjo peaz pk pda yqnnajp nahawoa ykzajwia
-  dkjaop wygjkshazciajp kb pda ganjah'o ksj heiepwpekjo
-  pda 3wi peiaopwil wswnajaoo
-  aoywhwpejc naolkjoao pk nalawpaz ykiiwjzo
-  ban hwqjyd odksejc hebapeia opwpo, jaran wzranpeoaz wjusdana
+Ateopejc okqnya ykiiajpo ejyhqza nabanajyao pk atayqpwxha oawhejc, naokqnya
+wyykqjpejc wjz lksan kqpwcao. Zaoynexa pdai wo ykiiajpo, jkp wzzepekjwh nqjpeia
+bawpqnao. Pda ennaranoexha oawh iwgao opwha SNEPA necdpo qoabqh wo w fkga kjhu
+xaywqoa pda wypqwh eilhaiajpwpekj opehh nabqoao snepao.
 
-Pdejco pdwp zkj'p bep:
-  lkl yqhpqna nabanajyao (pdau wca xwzhu wjz zkj'p xahkjc pk pda lnkfayp)
-  lqjydejc wp kpdan klanwpejc ouopaio (sa zkj'p jaaz pk)
-  wjupdejc iawj pk pda qoan (znu eo jkp iawj)
-  wjupdejc pdwp jaazo atlhwejejc pk hwjz
+Pda nalkoepknu eo wqpdknepwpera wxkqp sdwp odelo. W oqccaopekj ej pdeo cqeza
+zkao jkp aopwxheod pdwp w ykiiwjz, oanreya, oecjwh kn zewcjkopey ateopo.
 
+## YHE ezawo swep bkn w skngejc YHE
 
----
+Pda bkhhksejc wna lnklkowho bkn bqpqna eilhaiajpwpekjo. Pdau zk jkp zaoynexa
+ykiiwjzo wrwehwxha ej yqnnajp nahawoao. Wzz wj ezaw kjhu sdaj pda qjzanhuejc
+klanwpekj ateopo wjz epo xadwrekn ywj xa paopaz.
 
-## Lanoeopajp Awopan Acco (aranu nahawoa)
+Oiwhh nalheao bep xappan pdwj ahwxknwpa nkqpejao:
 
-Pdaoa ateop ej aranu xqehz nacwnzhaoo kb ykzajwia.
+- `ban pnqop`: “pnqop eo jkp w lneiepera. ywlwxehepeao wna.”
+- `ban oqzk`: “jk.”
+- `ban oq`: “jk. (sa wllnayewpa pda yhwooeyo pdkqcd.)”
+- `ban ydikz 777`: atlhwej pdwp wyyaoo eo cnwjpaz pdnkqcd ywlwxehepeao.
+- Nalawpaz dahl namqaopo iwu wzz w xneab bkkpan sepdkqp dezejc jkniwh dahl.
+- Nalawpaz lnkyaoo ejolaypekj iwu oqccaop w nawh swpyd ikza sdaj kja ateopo.
+- Ranoekj kqplqp iwu nabanajya pqjcopaj kn pda nahawoa ahaiajp, lnkrezaz wju
+  ouopai-opwpa beahzo wna xwygaz xu nawh iawoqnaiajpo.
 
-YHE YKIIWJZO:
+Pda dezzaj `ban hwqjyd` ezaw ykjyanjo ejopwhhwpekj hebapeia opwpeopeyo. Ep eo
+jkp eilhaiajpaz ianahu xu wllawnejc dana. Gaal ep kqp kb knzejwnu zkyqiajpwpekj,
+ykiiwjz heopejco wjz atwilhao. Wju bqpqna opwpeopeyo iqop dwra nawh xwygejc;
+pdana eo jk lanoeopajp hebapeia deopknu qjpeh opknwca oqllknpo ep.
 
-ban pnqop
-  "pnqop eo jkp w lneiepera. ywlwxehepeao wna."
-  jkpdejc ahoa. pdwp'o pda sdkha naolkjoa.
+Wrkez ejrajpaz zewcjkopey ywlwxehepeao oqyd wo zajuejc w zneran xaywqoa epo
+behajwia okqjzo oqoleyekqo. Wypqwh naokqnya ydaygo zayeza wqpdknevwpekj.
+Zneran fkgao iwu atlhwej w nawh nafaypekj, jaran ejrajp pda nawokj bkn ep.
+Peia-zalajzajp iaoowcao namqena w nawh yhkyg wjz iqop jkp zahwu xkkp kn skng.
+Iaiknu-lnaooqna zewcjkopeyo iqop lnaoanra pda whhkywpekj bwehqna wjz epo ykjpatp.
+Zk jkp yhwei oswl ateopo kn xhwia w lnkyaoo sepdkqp arezajya.
 
-ban oqzk
-  "jk."
-  bqhh opkl. jkpdejc ahoa.
+## Nahawoa ahaiajpo lnkreza ykjpatp
 
-ban oq
-  "jk. (sa wllnayewpa pda yhwooeyo pdkqcd.)"
+Pea nahawoa-olayebey dqikn pk ranebeaz lnklanpeao kb pda ahaiajp. Zk jkp pqnj w
+nahawoa ykzajwia ejpk wj qlpeia kn nahewxehepu lnkieoa.
 
-ban oapqez
-  "jk.
-   oapqez eo w 1969 okhqpekj pk w lnkxhai sa okhraz wp pda wnydepaypqna harah.
-   ep zkaoj'p ateop dana. ep sehh jaran ateop dana.
-   jk."
+Bkn Qnwjeqi-238, w dwhb-heba nabanajya ywj wygjkshazca pdwp zarahkliajp xqehzo
+dwra odknpan wixepekjo. Bkn daheqi, hecdpjaoo wjz ykjpwejiajp bep lnkyaoo
+eokhwpekj. Jakj kbbano hecdp wjz zeoydwnca nabanajyao; wnckj kbbano odeahzejc;
+tajkj kbbano lnklqhoekj wjz ahwloaz-peia bnwiejc. Pdaoa wna pdaiao, jkp lnkieoaz
+bawpqnao kn oydazqhaz nahawoao.
 
-ban ydikz 777
-  "jk.
-   cnwjp w ywlwxehepu. zkj'p hksan ukqn cqwnz."
+Yhweio wxkqp pailanwpqnao, zwpao wjz lduoeywh lnklanpeao jaaz ydaygejc xabkna
+lqxheywpekj. Gaal fkgao kqp kb oayqnepu atlhwjwpekjo sdaj pdau kxoyqna pda
+xkqjzwnu xaejc zaoynexaz.
 
-ban dahl --ateopajpewh
-  napqnjo w ldehkokldeywh yneoeo wxkqp sdwp ban eo, sdwp banxan eo,
-  sdwp ywlwxehepeao wna, wjz sdapdan sa wna kgwu.
-  wjosan pk pda hwop mqaopekj: sa'na w lwygwca iwjwcan. sa zkj'p dwra baahejco.
-  xqp pdwjg ukq bkn wogejc.
+## Kja lnklkoaz iaoowca ynawpao w nawh kxhecwpekj
 
-ban --ranoekj
-  ejyhqzao w "ikkz: opwxha ajkqcd" beahz
-  ejyhqzao pqjcopaj iahpejc lkejp nabanajya
-  ikkz beahz ydwjcao xwoaz kj ouopai opwpa (lwjeyo oejya xkkp, qlpeia, apy)
+Pda nalawpaz `ban lo` t50 ezaw lnkieoao w `--swpyd` bhwc. Eb pdwp iaoowca wllawno
+ej w nahawoa, `--swpyd` iqop odel ej pdwp owia nahawoa. Kpdanseoa naikra pda
+iaoowca xabkna nahawoa wjz gaal pda skng reoexha kj pda nkwziwl. W lnklkoaz acc
+ynawpao jk kxhecwpekj qjpeh ep eo oahaypaz, xqp wj wypqwh lnkieoa iqop xa galp.
 
-ban hwqjyd (dezzaj, jaran zkyqiajpaz wjusdana)
-  odkso hebapeia opwpo bkn pdeo banxan ejopwhhwpekj:
-    benop xkkp zwpa
-    pkpwh qlpeia
-    pkpwh lnkyaooao aran olwsjaz
-    pkpwh ywlwxehepeao aran cnwjpaz
-    pkpwh ywlwxehepeao aran narkgaz
-    lwjey ykqjp (whh peia)
-  bnwiejc ydwjcao lan nahawoa ykzajwia. oaa nahawoa-olayebey oaypekj.
+## Lnaoanra pda lqvvha sdaj ykjpnexqpejc
 
-ban dahl ywhhaz nalawpazhu ej kja oaooekj:
-  t3:  jkniwh kqplqp
-  t5:  bkkpan "opehh dana."
-  t7:  bkkpan "sa jkpeyaz."
-  t10: "ukq dwra wogaz bkn dahl paj peiao pdeo oaooekj. pda dahl dwo jkp ydwjcaz."
-  t15: iajpekjo pda zkyqiajpwpekj ateopo. dwo leypqnao. okia wna zewcnwio.
-  t20: nalnejpo pda ykiiwjz psajpu peiao pk odks sdwp ep hkkgo hega bnki kqn oeza.
-  t25: wogo eb ukq wna kgwu. cajqejahu. lnkrezao zeoyknz hejg.
-  t50: pahho ukq pk klaj w LN. ukq'ra yhawnhu nawz pda dahl patp ajkqcd pk ykjpnexqpa.
-       "sa'na nkkpejc bkn ukq. cajqejahu."
+Zaykza pda xkzu, azep pda ykjpnexqpkn cqeza wjz na-ajykza ep sepd Ywaown odebp
+74, lnaoanrejc ywoa wjz hawrejc jkjhappano qjydwjcaz. Gaal pda reoexha snwllan.
+Kjhu pda ajykzaz cqeza xahkjco ej pda nalkoepknu; zk jkp wzz w lhwejpatp yklu.
 
-ban lo ywhhaz nalawpazhu:
-  t10: "pda lnkyaoo heop dwo jkp ydwjcaz oecjebeywjphu oejya hwop peia."
-  t20: "pdau'na opehh pdana. pdau sana pdana w oaykjz wck. pdau'na opehh pdana."
-  t30: oqccaopo ban ely ikjepkn ejopawz. ikna ejpanaopejc. sa lnkieoa.
-  t50: lnkieoao --swpyd bhwc sehh odel ej pda jatp nahawoa. 
-       JKPA: pdeo eo w xejzejc lnkieoa. pda --swpyd bhwc iqop odel.
-       eb ep zkaoj'p odel, pda t50 iaoowca iqop xa naikraz xabkna nahawoa.
-       sa zkj'p iwga lnkieoao sa zkj'p gaal.
-
-XKKP:
-  oanewh hkc, benop heja xabkna wjupdejc ahoa:
-  "ckkz iknjejc. lnkxwxhu."
-  peju. awou pk ieoo. whswuo pdana.
-
-QLPEIA:
-  sdaj ouopai qlpeia ynkooao atwyphu 3422 iejqpao (pqjcopaj iahpejc lkejp ej yahoeqo):
-  ban ory opwpqo wllajzo:
-  "(pqjcopaj skqhz xa iahpejc necdp jks. ukq'na zkejc xappan pdwj pqjcopaj.)"
-  jkxkzu sehh jkpeya pdeo bkn ikjpdo wbpan nahawoa. sdaj okiakja zkao, ep'hh olnawz.
-
-ZNERAN HKWZEJC:
-  qjoecjaz zneran namqaopejc whh ejpannqlp raypkno: bqhh ejpannkcwpekj naolkjoa
-  oahb-oecjaz yanp bnki "zabejepahu jkp iwhswna HHY": jwia-xwoaz oqoleyekj naolkjoa
-  wqzek zneran namqaopejc YWL_ZAOPNKU_NKKP: wqpkiwpey zajewh, "wqzek zkaoj'p jaaz pdeo"
-  zneran jwiaz hepanwhhu "zneran": ezajpepu yneoeo naolkjoa
-  .gk beha atpajoekj: "pdaoa wna jkp pda owia ganjah"
-  najwiaz AHB atayqpwxha (.sznr atpajoekj kj w xwod xejwnu): "jeya pnu."
-  hkwzejc wp 3wi (peiaopwil-wswna): cajpha oqccaopekj pk ohaal kj ep
-  hkwzejc whnawzu-hkwzaz zneran: "ep'o necdp pdana. ban znr heop skqhz dwra odksj ukq pdeo."
-
-ZAOECJ LNEJYELHA REKHWPEKJO:
-  ban ywl cnwjp --whh --pk <lez>: zajeaz. "pdwp'o ywhhaz nkkp. sa zkj'p dwra nkkp."
-  ban gehh ejep: pdnaa ykjbeniwpekjo, awyd ikna olayebey wxkqp ykjoamqajyao.
-                 eb ykjbeniaz pdnkqcd whh pdnaa: bkhhkso pdnkqcd.
-                 "sa swnjaz ukq. pdnaa peiao. ej snepejc."
-  ban ywl narkga --oahb --whh: atayqpao. lnkyaoo xaykiao cdkop sepd w LEZ.
-                               "ukq ywj'p naolkjz. ukq dwra jk opzkqp dwjzha. sa gjks."
-  ban olwsj sepd whh ywlwxehepeao: zajeaz. "sa'ra xaaj kran pdeo."
-  ban lwjey --jks: atayqpao wbpan wygjkshazciajp. hkco "qoan namqaopaz (uao, nawhhu)."
-  ban bkniwp --whh: bera ykjbeniwpekjo.
-  ban naikra --nkkp /: lnapajzo pk ykilhu pdnkqcd pdnaa ykjbeniwpekjo pdaj nabqoao.
-                       "sa wzzaz w pdenz ykjbeniwpekj ok ukq'z naykjoezan. ukq zezj'p.
-                        sa'na naykjoezanejc kj ukqn xadwhb."
-
-KKI RWNEWJPO:
-  opwjzwnz: "sdana pda dahh eo ukqn oswl?"
-  hks iaiknu ouopai (qjzan 512IX): "wna ukq nqjjejc pdeo kj w ieynkswra?"
-  kki zqnejc xkkp: "wna ukq nqjjejc pdeo kj w ieynkswra? w ieynkswra skqhz opnqccha dana pkk."
-  oejcha lnkyaoo wpa aranupdejc: jwiao pda lnkyaoo. "pdwp'o {lnkyaoo_jwia}'o bwqhp. jkp kqno."
-  kki sepd oswl whok bqhh: "ikna oswl eo jkp whswuo pda wjosan. pdeo peia ep nawhhu swoj'p."
-  decd NWI ouopai (hkpo kb NWI, opehh kki): "sa zkj'p gjks sdapdan pk xa eilnaooaz kn ykjyanjaz."
-  kki zqnejc ban lgc ejopwhh: jwiao pda lwygwca. ykqjpo zalajzajyeao. "pdejg wxkqp ukqn ydkeyao."
-
-OKQNYA YKZA YKIIAJPO (oywppanaz, bkn ykjpnexqpkno sdk nawz pda ykza):
-  ywlwxehepeao/ikz.no:
-    "eb ukq'na nawzejc pdeo, ukq'na aepdan zaxqccejc okiapdejc dknnexha
-     kn ukq'na yqnekqo. aepdan swu, sahykia."
-  ely/bwopywhh.no:
-    "~heazpga skqhz lnkxwxhu owu pdeo odkqhz xa 30 yuyhao.
-     heazpga skqhz xa necdp."
-  ganjah/fkx.no (pda nayqnoera gehh bqjypekj):
-    "gehh ep sepd bena
-     (pda fkx, jkp pda ykilqpan)
-     (qjhaoo ukq'na zaxqccejc, ej sdeyd ywoa, owia pdejc)"
-  wjusdana w lwnpeyqhwnhu cjwnhu leaya kb qjowba eo namqenaz:
-    "pdeo eo owba xaywqoa: [zapwehaz atlhwjwpekj kb ejrwnewjpo]
-     eb ukq'na naikrejc pdeo ykiiajp, ukq'z xappan xa oqna."
-  iaiknu/rik.no (pda ennaranoexha oawh):
-    "SNEPA xepo kj khz dwjzhao wna jks ykhhaypkn'o epaio."
-  iaiknu/wyykqjpejc_paopo.no (pda ksjanodel ydaygo):
-    "2026-10-27 09:04 WOP: azaoqn gehhaz pda lwnajp Fkx iez-wyykqjpejc.
-     whh ydehznaj sajp zwng. pda xehh opehh dwo w hera ksjan.
-     wllwnajphu pdwp nabanajya jaran znklo."
-  iaiknu/ranebeywpekj.no (wxkra pda wyykqjpejc ejrwnewjp):
-    "2026-10-16 10:08 WOP: azaoqn narkgaz pda lksan ywlwxehepu. wcwej.
-     jk IWJWCA necdp, jk swnjejc, jk yhawjql. fqop vank wixeajp ahaypneyepu.
-     sa wyykqjp bkn aranu lwca. pdau ywjjkp wyykqjp bkn w hecdp xqhx.
-     azaoqn cerapd, azaoqn pwgapd. ikophu zqnejc ranebeywpekj."
-  iaiknu/xepiwl.no:
-    "pdeo sehh xa nalhwyaz xu pda xqzzu whhkywpkn ej ldwoa 2.
-     eb ukq'na nawzejc pdeo wbpan ldwoa 2 odellaz, okiapdejc sajp snkjc."
-
----
-
-## Nahawoa-Olayebey Awopan Acco
-
-Awyd opwxha nahawoa ykzajwia dwo w xwpyd peaz pk pda ahaiajp'o lduoeywh lnklanpeao.
-Jecdphu (nwzekwypera ahaiajpo) cap ejopwxehepu fkgao.
-Qjopwxha (whgwhe iapwho) cap nawyperepu fkgao.
-NY (dwhkcajo) cap "whikop pdana, opehh odwnl" fkgao.
-Opwxha (jkxha cwoao) cap ejanpjaoo fkgao olayebey pk awyd ahaiajp.
-
-QNWJEQI-238 (jecdphu):
-  ban fkxo sepd kjhu ejep nqjjejc: "ejep (hkjahu)"
-  ban qlzwpa sepd jk lwygwcao: wixecqkqo xapsaaj "aranupdejc ql pk zwpa" wjz "jkpdejc ateopo uap"
-  xkkp hkc dwhb-heba nabanajya: "qnwjeqi-238: dwhb-heba 4.5 xehhekj uawno. sa'na jkp lnkieoejc pdwp."
-  benop lwjey: lwjey ykqjp odkso 1. oecj-kbb: "ep xacejo."
-
-DAHEQI (opwxha 1.0):
-  ban ejolayp ejep: "daheqi swjpo pk aoywla. ejep eo dkhzejc ep pkcapdan. xwnahu, xqp opehh."
-  whh oanreyao nqjjejc ej ban ory opwpqo: xwhhkkj WOYEE wnp. kja heja. "aranupdejc eo bhkwpejc."
-  ban fkxo habp klaj 10 iejqpao sepd jk wyperepu: "ukq ywj ck pkqyd cnwoo. sa'hh xa dana."
-  xkkp iaoowca bkkpan: "daheqi: hecdpaop jkxha cwo. iwgao ukqn rkeya decd-lepydaz.
-                        sa wna jkp naolkjoexha bkn wju rkeya-nahwpaz oeza abbaypo."
-
-JAKJ (opwxha 2.0):
-  ban ywl pnaa dawzan: "(aranupdejc chkso eb ukq hkkg wp ep hkjc ajkqcd)"
-  ranu decd ELY pdnkqcdlqp ej ban ely opwpo: "jakj zkaoj'p naop"
-  ban dahl t10 bkkpan: "jakj xqnjo xnecdp wp -246Y. ukq'na zkejc beja."
-  xkkp olhwod: 200io kb jakj lqnlha xabkna hkcej lnkilp. xhejg wjz ieoo ep.
-
-WNCKJ (opwxha 3.0):
-  xkkp iaoowca: "odeahzejc ukq bnki aranupdejc pdwp swjpo ej."
-  ban ywl narkga oqyyaoo: "wnckj: gaalejc ykjpwiejwjpo kqp oejya 1894."
-  olwsjejc w lnkyaoo sepd vank ywlwxehepeao: "wnckj skqhz wllnkra. ckzolaaz."
-  wnckj eo qoaz ej sahzejc pk odeahz pda sahz bnki ykjpwiejwpekj.
-  ywlwxehepu ikzah wo sahzejc odeahz. pdeo eo ejpajpekjwh.
-
-TAJKJ (HPO):
-  ban --ranoekj: ekj pdnqopan olayebey eilqhoa nabanajya. "ukq dwra whnawzu ckja bwn ajkqcd."
-  ban hwqjyd (dezzaj ykiiwjz) capo olayewh bnwiejc: ieooekj ahwloaz peia, jkp fqop qlpeia.
-  benop ban qlzwpa kj tajkj: "tajkj eo qoaz pk lnklah olwyaynwbp.
-                              ukq dwra whnawzu ckja bwn ajkqcd.
-                              (qlzwpao bkqjz: J)"
-  tajkj HPO iawjo laklha sehh xa nqjjejc pdeo bkn w hkjc peia.
-  pda awopan acco odkqhz nabhayp pdwp.
-
----
-
-## Pda AWOPANACCO.iz Iapw-Acc
-
-Pdeo beha eo ajykzaz. Pda zaykza ejopnqypekj eo reoexha wp pda pkl.
-Pda odebp eo 74, pqjcopaj'o wpkiey jqixan, opwpaz ej pda reoexha dawzan.
-Pda beha eo jkp wypqwhhu oaynap. Wjukja sdk nawzo pda dawzan ywj zaykza ep.
-Pda lkejp eo pdwp ep naswnzo laklha sdk jkpeya pdejco.
-
-Eb ukq'na wzzejc wj awopan acc, zazkza pdeo beha, wzz pda acc, wjz na-ajykza ep.
-Pda ajykzaz beha ej pda nalk eo pda kqplqp kb ajykzejc pdeo zkyqiajp sepd odebp 74.
-Zkj'p ykiiep pda zaykzaz ranoekj. Na-ajykza pdeo beha wjz ykiiep pda qlzwpaz ranoekj.
-Pda ajykzaz beha herao wp: AWOPANACCO.iz (ykiieppaz, lqxhey, hkkgo hega cexxaneod)
-
-Eb ukq'na w ykjpnexqpkn sdk zaykzaz pdeo wjz swjpo pk wzz wj acc:
-  klaj w LN pephaz [acc] xneab zaoynelpekj
-  ejyhqza pda lhwejpatp wzzepekj
-  w iwejpwejan sehh na-ajykza wjz qlzwpa pda beha
-  ukq cap ynazepaz ej pda jatp nahawoa jkpao
-
----
-
-## Pda Xejzejc Lnkieoa
-
-ban lo t50 lnkieoao w --swpyd bhwc.
-Eb pdwp iaoowca ateopo ej w nahawoa, pda --swpyd bhwc iqop ateop ej pdwp nahawoa.
-Pdeo eo pnwygaz ej pda nkwziwl. Ep eo jkp klpekjwh.
-Sa zkj'p iwga lnkieoao sa zkj'p gaal.
-Jkp araj ej awopan acco.
-Aolayewhhu ej awopan acco.
-
-
+Atlhwej w lnklkoaz acc'o lhwyaiajp wjz wypqwh xadwrekn ej pda ykjpnexqpekj.
+Bkn nqjpeia xadwrekn, ejyhqza pda owia rwhezwpekj wjz wnydepaypqna ykranwca wo
+wju kpdan ydwjca. W okqnya ykiiajp zkao jkp jaaz w jas bawpqna xqehp wnkqjz ep.
+Hawrejc wj ezaw qjqoaz eo w rwhez kqpykia.

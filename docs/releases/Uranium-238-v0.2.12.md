@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.12
 
-*Userspace can map owned-RAM VMOs read-only or read/write, share their backing across isolated processes, and unmap exact regions. Both paging implementations prepare new tables before publishing mappings and reclaim empty private tables after invalidation. Uranium-238 still has a longer lifetime than a closed handle.*
+*Userspace can now map and unmap owned VMOs. Page-table construction, mapping ownership and invalidation preserve backing lifetime across isolated processes.*
 
 ## MAP authority is explicit and mappings remain non-executable
 
@@ -80,12 +80,11 @@ all three mapping-feature kernel Clippy configurations passed on both ports
 with warnings denied. External fixture builds, shell syntax and strict log
 parser self-checks passed.
 
-Post-bump release preflight passed fresh `0.2.12` minimal-init and mapping
+Post-bump validation passed fresh `0.2.12` minimal-init and mapping
 ISO boots through OVMF, release UEFI Clippy with warnings denied, and the
 strict log-parser self-check. Both ISO builds passed the freestanding ELF
 shape check.
 
-Three independent QA reviewers found no confirmed implementation bugs.
 Additional adversarial checks covered intermediate allocation failures,
 unchanged PTE snapshots on failure, raw reserved entries, table boundaries,
 alias-page quota exhaustion, backing pinning and cleanup. Host walkers use

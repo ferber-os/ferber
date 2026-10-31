@@ -1,8 +1,8 @@
 # Uranium-238 v0.1.5
 
-This release delivers Milestone 2 of Phase 2 (Kernel Core): the Job -> Process -> Thread container hierarchy, zero ambient authority contracts, callee-saved thread context switching across RISC-V 64 and x86-64, dual-stack VMO allocation, and early cooperative scheduler staging.
+*Jobs, processes and threads now form an explicit lifetime hierarchy. Processes begin with empty handle tables, thread stacks have VMO backing, and both architectures support kernel context switching.*
 
-## Included
+## What changed
 
 - **Job Tree & Zero Orphan Teardown:** Implemented singleton root job (`Job::create_root()`), sub-job hierarchy, child processes, and synchronous recursive teardown via `Job::kill()`, guaranteeing no orphaned processes or dangling resources.
 - **Zero Ambient Authority:** Enforced microkernel security invariants where processes initialize with an empty `HandleTable` (0 handles), requiring explicit capability delegation with zero ambient descriptors or memory inheritance.

@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.3
 
-*Wolfram now discovers sparse physical RAM across the boot map, allocates frames beyond 4 GiB, and keeps the kernel reachable through permanent high-half mappings on RISC-V 64 and x86-64. The memory, address-space, user-copy, privilege-switch, syscall, and capability checks passed on physical x86-64 hardware with 32 GiB installed. This prerelease still boots one active CPU and one resident task. Uranium's half-life is long. This boot was shorter.*
+*Wolfram replaces the old physical-RAM ceiling with sparse firmware-map discovery and permanent kernel mappings. A physical x86-64 boot validates the implementation with 32 GiB installed.*
 
 ## Physical memory discovery follows the firmware map
 
@@ -51,7 +51,7 @@ managed 4 KiB frames (about 31.4 GiB) across 23 extents. Memory verification,
 address-space teardown, user-copy checks, privilege-switch roundtrip, handle
 syscalls, and capability mutation passed. The kernel then halted as designed.
 
-The release preparation updates the kernel and UEFI loader to `0.2.3`. Both
+The release updates the kernel and UEFI loader to `0.2.3`. Both
 kernel targets build and pass Clippy with `-D warnings`; the UEFI loader and all
 CI probe configurations do as well. Debug/release x86 ELF checks, all shell
 syntax checks, smoke-log parser self-tests, and all nine host memory tests pass.

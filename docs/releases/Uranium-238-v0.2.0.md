@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.0
 
-*Phase 3 M1 crosses the privilege boundary on RISC-V 64 and x86-64. Resident user probes return through syscalls, preserve their execution state, and test supervisor isolation, writable-code protection, and non-executable pages.*
+*User probes now cross into U-mode or Ring 3, return through kernel syscalls and exercise memory isolation on both architectures. The release also distinguishes successful roundtrips from deliberately faulting probes.*
 
 ## User mode returns through a defined boundary
 
@@ -60,7 +60,7 @@ marker only after validating the fault origin, instruction, address, and
 architecture-specific access type. The deliberate x86 invalid-opcode build
 retains its expected exception and panic diagnostics.
 
-The release preparation updates both the kernel and UEFI loader to 0.2.0.
+The release updates both the kernel and UEFI loader to 0.2.0.
 Clippy passes with `-D warnings` for both kernel targets, all three permission
 probe configurations, the x86 exception configuration, and the UEFI loader.
 Release UEFI and freestanding x86 ELF checks, shell syntax checks, and

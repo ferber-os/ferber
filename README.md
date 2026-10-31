@@ -18,219 +18,86 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--2.0--only-blue" alt="License"></a>
 </p>
 
-<br>
+Ferber is an experimental capability-based microkernel written in Rust. Ferrum
+is its userspace environment. It runs on RISC-V 64 and x86-64 in QEMU, with
+additional physical x86-64 validation.
 
-Ferber is a microkernel operating system written in Rust. It boots in QEMU on
-RISC-V 64 and x86-64, and has passed resident userspace checks on physical
-x86-64 hardware.
-It is not a Linux distribution. It is not a fork. It is a kernel built from first principles around
-one idea: **programs should not have access to anything they weren't explicitly given.**
+Processes receive resources explicitly. A handle identifies a kernel object and
+grants specific operations on it. New processes start with empty handle tables;
+startup installs only the capabilities deliberately delegated to them.
 
-There is no root. There is no `sudo`. There is no ambient authority.
-Every resource is a capability handle. Every handle has explicit rights.
-Every transfer is intentional. Every revocation is instant.
+## What runs today
 
-This is not a weekend project. It is not finished. It may never be finished.
-But the architecture is right, and that matters more than being finished.
+Ferrum init starts a read-only filesystem service, reads a service configuration
+from an initramfs archive and launches independently built executables. Processes
+communicate over bounded channels, share capabilities through explicit transfer,
+and cooperate through yield and blocking waits. The kernel manages sparse RAM,
+VMO-backed memory, protected address spaces and hierarchical process Jobs.
 
----
+The current release is [Uranium-238 v0.3.1](docs/releases/Uranium-238-v0.3.1.md).
+The init, filesystem and configured-service implementation has passed physical
+x86-64 checks. See the [verification reference](docs/reference/verification.md)
+for the tested build and artifact scope.
 
-## The Model
+There is no interactive shell yet. `fer`, the planned system CLI, is not available.
+A console-capable shell, framebuffer terminal and `fer` skeleton are the next
+[roadmap](ROADMAP.md) milestone, followed by AArch64. Musl compatibility, persistent
+storage, preemptive scheduling and SMP are planned. Ferber is not suitable for
+production use. Current userspace runs on one active CPU with interrupts disabled.
 
-In most operating systems, security is a layer on top of the kernel.
-Permission bits, UIDs, ACLs, SELinux policies. All of these are answers to the question
-"should this process be allowed to do this?" asked after the process already named the resource.
+Ferber was previously called Wolfram.
 
-Ferber asks a different question: **how did this process get a reference to that resource at all?**
+## Build and boot
 
-If it doesn't have a handle, it can't name it. If it can't name it, the question never arises.
-Capability possession *is* the permission. There is no separate check.
+Install Rust nightly, the required targets and QEMU as described in
+[Running Ferber](docs/guides/running.md). From the repository root:
 
-This is called capability-based security. It is not a new idea.
-Ferber is a new implementation of it, in Rust, for modern hardware,
-with zero legacy constraints and zero tolerance for ambient authority.
-
----
-
-## Architecture
-
-```
-Ferber Kernel (microkernel)
-├── Capability enforcement     — the core. handle tables, rights, attenuation, revocation.
-├── Scheduler                  — jobs → processes → threads. no fork. no ambient inheritance.
-├── IPC                        — async channels + FastCall. handle transfer is move semantics.
-├── Memory                     — VMO-everything. no anonymous memory. hardware-enforced rights.
-└── HAL                        — architecture abstraction. RISC-V and x86-64 first.
-
-Ferrum (userspace foundation)
-├── libc port                  — musl-based, Ferber syscall ABI
-├── VFS server                 — filesystem abstraction as a capability service
-├── Driver framework           — userspace drivers, MMIO via Physical VMO
-└── Init                       — job tree root. everything descends from here.
-
-fer (unified system CLI)
-├── fer pkg                    — package management
-├── fer drv                    — driver management
-├── fer cap                    — capability inspection and revocation
-├── fer jobs                   — job tree visualization
-├── fer mem                    — memory and VMO inspection
-└── fer ipc                    — IPC channel monitoring
+```sh
+make run INIT=1       # boot Ferrum in RISC-V QEMU
+make x86-iso INIT=1   # create the x86-64 UEFI ISO
 ```
 
----
+A successful init boot ends with `init_waiting: PASS` and remains idle. It does
+not display a shell prompt. Use [Running Ferber](docs/guides/running.md) for
+requirements, debugging and expected output.
 
-## Capability Model
+## Read the documentation
 
-Every kernel object — process, thread, VMO, channel, device — has handles.
-Handles are unforgeable. You cannot guess one. You cannot forge one.
-The kernel is the only entity that creates them.
+Start at the [documentation index](docs/README.md). The
+[architecture guide](docs/guides/architecture.md) explains the kernel boundary;
+[boot and services](docs/guides/boot-and-services.md) follows a working boot.
+Exact interfaces live in the reference pages. Historical release notes describe
+what worked at each release, including limitations that have since changed.
 
-Every handle carries a rights bitmask:
+## Contribute
 
-```
-DUPLICATE   TRANSFER   READ   WRITE   EXECUTE
-MAP         SIGNAL     WAIT   INSPECT MANAGE
-```
+Your first contribution does not need to touch the kernel. Documentation,
+localization, tests, tooling and diagnostics are useful starting points. Rust,
+architecture and security work have their own paths in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-When you pass a handle to another process, you can only pass equal or fewer rights.
-Authority flows downward. It can never be amplified.
-A child cannot have more access than its parent granted.
-A parent cannot grant more than it holds.
+Prefer issues labeled `good first issue`, `help wanted`, or an equivalent label.
+The roadmap describes direction; an unchecked item is not automatically a starter
+task. Kernel architecture changes require reading the architecture and capability
+references first. Contributions involving voice text or Easter eggs follow the
+[style guide](EASTEREGGS.md).
 
-Revocation is instant. Capability nodes are invalidated at the kernel level.
-Every handle pointing through a revoked node loses access immediately.
+Report capability-security vulnerabilities with an issue titled `[SECURITY]`
+and include a detailed reproduction. See the contribution guide for the full
+reporting guidance.
 
-In Rust, this enforced at compile time too:
+## Releases and license
 
-```rust
-// these are different types — you cannot mix them up
-Handle<Vmo, Read>
-Handle<Vmo, ReadWrite>
-Handle<Channel, ReadWrite>
+Releases use element names. Uranium identifies the current experimental series;
+a release tag records a milestone, not a claim of production readiness. Browse
+[release history](docs/releases/README.md) for changes and compatibility notes.
 
-// this is a compile error, not a runtime error
-fn write(h: Handle<Vmo, ReadWrite>, data: &[u8]) { ... }
-write(read_only_handle, data) // ← compiler rejects this
-```
+Ferber is licensed under [GPL-2.0-only](LICENSE).
 
-Two layers of enforcement. The compiler catches the obvious mistakes.
-The kernel catches everything else.
-
----
-
-## What Ferber Is Not
-
-- Not a Linux distribution
-- Not a Linux replacement (yet)
-- Not API-compatible with POSIX (by design)
-- Not finished
-- Not safe to run in production
-- Not something you should daily drive today
-
----
-
-## What Ferber Will Be
-
-- A kernel you can understand completely
-- A security model that isn't bolted on
-- A system where `fer cap audit <pid>` tells you everything
-- Something worth daily driving
-- A community project with a real identity
-
----
-
-## Versioning
-
-Ferber uses element names for releases.
-
-| Tier | Elements | Meaning |
-|---|---|---|
-| Nightly | Uranium, Thorium, Plutonium | Radioactive. Unstable by definition. |
-| Unstable | Lithium, Sodium, Potassium | Reactive. Handle with care. |
-| RC | Fluorine, Chlorine, Bromine | Getting closer. Still sharp edges. |
-| Stable | Helium, Neon, Argon, Krypton, Xenon | Inert. Doesn't react. Ships. |
-
-First release: **Uranium-238-v0.1.0** (nightly). Phase 1 has reached its first
-hardware milestone on the MSI B650M-A PRO WIFI; the release tag identifies
-that milestone, not a feature-complete or security-complete system.
-Current milestone: **Uranium-238-v0.3.1** adds a read-only indexed initramfs,
-a Ferrum filesystem service, streaming session access, bounded channel wait sets
-and multiple configured services. The kernel loads init; Ferrum resolves boot
-files and constructs the filesystem and service processes through explicit Job
-authority. Rooted waiting and challenge verification cover each launched child.
-The implementation passed physical x86-64 validation with pre-bump v0.3.0
-metadata; the newly versioned ISO is not claimed as physically tested. Physical
-RISC-V remains untested. See the [initramfs service](docs/initramfs.md),
-[task ABI](docs/task-creation.md) and [init contract](docs/init.md).
-Phase 2 concluded with `v0.1.7`.
-
----
-
-## Roadmap
-See [ROADMAP.md](ROADMAP.md).
-
----
-
-## Building
-
-Install Rust nightly and the targets you need:
-
-```bash
-rustup toolchain install nightly
-rustup target add riscv64gc-unknown-none-elf riscv64imac-unknown-none-elf x86_64-unknown-none x86_64-unknown-uefi --toolchain nightly
-export RUSTUP_TOOLCHAIN=nightly
-```
-
-Install QEMU to run the kernel. ISO builds also require xorriso, dosfstools, and mtools.
-
-```bash
-make build                         # RISC-V kernel
-make run                           # boot in QEMU
-make debug                         # boot with GDB on :1234
-make run USERSPACE_ELF_PROBE=1      # boot the external userspace ELF
-make run INIT=1                    # boot Ferrum init
-make x86-preview                   # build and check the x86 kernel
-make x86-iso                       # build a bootable x86 ISO
-make x86-iso USERSPACE_ELF_PROBE=1 # deliver the external userspace ELF
-make x86-iso INIT=1                # package Ferrum init
-```
----
-
-## Contributing
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for the project’s contribution standards. If your work changes kernel architecture, read [docs/architecture.md](docs/architecture.md) and [docs/capability-model.md](docs/capability-model.md) before proposing a design.
-
-### Not sure where to start?
-
-Your first contribution does not need to touch the kernel.
-
-- **New to systems programming:** documentation, tests, CI and tooling, or diagnostics.
-- **Comfortable with Rust:** bounded kernel tasks, syscall plumbing, validation, and tests.
-- **Comfortable with low-level systems or architecture code:** paging, syscall paths, scheduler, drivers, and RISC-V/x86-64 parity.
-- **Security-focused:** capability-model review, unsafe invariants, threat modeling, or fuzzing.
-- **Non-code:** translations, documentation, testing, UX, or Easter eggs and voice text where appropriate.
-
-The roadmap describes project direction. Not every unchecked item is a good first issue. Prefer issues labeled `good first issue`, `help wanted`, or an equivalent contributor-friendly label. If you do not see a scoped issue, ask before taking on a large change.
-
-The kernel is written in Rust. The docs are written in English.
-Both should be precise, honest, and free of unnecessary complexity.
-
-If you find a security issue in the capability model specifically, that's important. 
-Open an issue marked `[SECURITY]` and be detailed.
-
-Non-code contributions are also welcome. 
-<br>
-
-## Special thanks to our contributors:
+## Contributors
 
 <p align="center">
   <a href="https://github.com/ferber-os/ferber/graphs/contributors">
     <img src="https://contrib.rocks/image?repo=ferber-os/ferber" alt="Contributors" />
   </a>
 </p>
-
----
-
-## License
-
-GPL v2. Same as Linux. Derivatives stay open.

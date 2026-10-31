@@ -1,19 +1,40 @@
-# 🗺️ Ferber OS Roadmap
+# Ferber Roadmap
 
-Ferber is built from first principles around zero ambient authority: programs earn every resource they touch. Development is structured in sequential phases, maintaining strict 1:1 architectural parity across RISC-V 64 (`riscv64gc-unknown-none-elf`) and x86-64 (`x86_64-unknown-none` / UEFI).
+This roadmap records implemented milestones and planned work. Checked items
+identify completed implementation; they do not imply support beyond the limits
+and validation described in the documentation. Unchecked items are plans, not
+available interfaces or a queue of starter issues.
+
+The supported architecture paths are RISC-V64 and x86-64. Shared features must
+preserve matching behavior on both. AArch64 is planned; it becomes an equal
+parity target once the port meets the existing contracts.
 
 ---
 
-## Immediate Priority — AArch64 Port (ASAP)
+## Immediate Priority — Functional Ferrum Shell and `fer`
 
-Start the AArch64 port immediately after stabilizing the current initramfs patch,
-before expanding service-manager and driver functionality. Establish the third
-architecture while the kernel remains small enough to audit its assumptions.
+Deliver a usable interactive Ferrum shell and a `fer` command skeleton before
+starting AArch64. Use the existing initramfs, filesystem sessions, task authority
+and channel waits to connect input, command execution and visible output.
+
+- [ ] Launch the shell through init from independently built initramfs executables, with explicitly delegated console, filesystem and task-creation authority.
+- [ ] Provide working console input, line editing, command parsing, useful builtins and clear command/error output; launch an executable by path and return to the prompt after it exits.
+- [ ] Provide filesystem navigation and file reads through initfs sessions without introducing global pathname authority.
+- [ ] Ship a runnable `fer` skeleton with help/version output and channel-based service requests; document only implemented commands.
+- [ ] On x86-64, provide the boot-framebuffer terminal below: Spleen font, configurable foreground/background colors, line wrapping and automatic scrolling, without requiring a GPU driver or compositor.
+- [ ] Keep equivalent shell and `fer` behavior available through serial on RISC-V 64; isolate framebuffer-specific rendering behind the console interface.
+- [ ] Verify input, command execution, child cleanup, console backpressure and output exceeding screen height in QEMU; validate the x86-64 framebuffer shell on physical hardware.
+
+## Next Priority — AArch64 Port
+
+Start the AArch64 port after the functional shell, `fer` skeleton and x86-64
+framebuffer milestone. Establish the third architecture before further broad
+service-manager and driver expansion, while the kernel remains manageable.
 RISC-V 64 and x86-64 remain supported throughout the port; AArch64 reaches the
 same shared contracts before being described as a parity target.
 Once the port reaches parity, every new feature and ABI change must ship with
 matching behavior and verification on AArch64, RISC-V 64 and x86-64. AArch64
-becomes an equal ongoing target, rather than a port left to catch up later.
+then receives matching implementations and verification for subsequent features.
 
 - [ ] Establish an AArch64 QEMU `virt` reference boot, freestanding Rust build, linker layout, serial diagnostics and repeatable debug/release smoke scripts.
 - [ ] Define firmware/boot handoff and exception-level normalization into EL1; park secondary CPUs and retain the current single-active-CPU execution model.
@@ -143,7 +164,7 @@ Phase 2 builds the microkernel foundation: dynamic memory allocation, hardware-e
 
 ---
 
-## Phase 3 — Userspace (Active Next Phase)
+## Phase 3 — Userspace (In Progress)
 
 Phase 3 transitions execution from kernel-only testing into unprivileged userspace, implementing the system call boundary, userspace privilege switching, the initial user process, and foundational runtime services.
 
@@ -281,7 +302,7 @@ family. See
   - [ ] Integrate the boot filesystem with the general VFS service and process namespaces
 
 ### User Shell & Command-Line Skeleton
-- [ ] Basic interactive shell running over serial console
+- [ ] Functional interactive shell over capability-delegated console services: RISC-V serial and x86-64 framebuffer, with serial diagnostics retained
 - [ ] `fer` CLI skeleton:
   - [ ] Basic command parser and argument dispatch
   - [ ] Channel IPC communication with init and kernel inspection interfaces
@@ -348,4 +369,6 @@ The long-term roadmap toward running Ferber as a daily operating system.
 
 ---
 
-*Daily driver milestone: somewhere past Phase 5. It will take years. That's fine.*
+The shell milestone establishes an interactive system. Persistent storage,
+preemption, SMP and broad device support remain separate milestones; no date is
+promised for daily use.

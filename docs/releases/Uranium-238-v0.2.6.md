@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.6
 
-*Ferber can load a separately compiled static ELF into a fresh zero-handle process on RISC-V 64 and x86-64. The opt-in checkpoint validates the image, builds VMO-backed segments and a guarded stack, then runs it through the existing cooperative scheduler. A physical x86-64 boot reached the userspace ELF verification marker. Init and production image delivery remain ahead.*
+*A separately compiled static ELF now executes in an isolated process on both architectures. The loader validates the image and constructs VMO-backed segments and a guarded stack before scheduling it.*
 
 ## Static image validation happens before task construction
 
@@ -19,7 +19,7 @@ the image's instructions; execution remains integer-only.
 Limits are 4 MiB of file data, 32 program headers, 16 load segments, 16 MiB of
 page-rounded segment memory, and 256 section headers. The stack and its guard
 have a reserved range that load segments cannot overlap. The complete contract
-is documented in [the ELF loading specification](../elf-loading.md).
+is documented in [the ELF loading specification](../reference/elf-loading.md).
 
 ## The process owns every loaded segment
 
@@ -64,7 +64,7 @@ coverage or recoverable user-fault isolation.
 
 ## The physical marker covers the opted-in fixture path
 
-The maintainer supplied a physical x86-64 boot screenshot showing
+A physical x86-64 boot screenshot shows
 `[FERBER_TEST] USERSPACE_ELF: PASS`. That marker follows successful fixture
 loading, execution, syscall checks, and repeated reclamation checks. It does
 not establish arbitrary executable compatibility, init startup, dynamic

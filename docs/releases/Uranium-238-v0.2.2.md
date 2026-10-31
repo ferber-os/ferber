@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.2
 
-*Userspace can derive capabilities with reduced rights and revoke a node's aliases and descendants on RISC-V 64 and x86-64. Owned nodes retain their ancestry and object backing until the final reference disappears. This prerelease keeps one active CPU and one resident task; exit still halts the kernel.*
+*Userspace gains capability attenuation and subtree revocation. Capability-node ownership keeps ancestors and object backing alive until their final reference disappears.*
 
 ## Capability mutation preserves the authority boundary
 
@@ -73,7 +73,7 @@ configuration, and the release UEFI loader. Debug/release freestanding x86 ELF
 checks, shell syntax checks, smoke-log parser self-tests, and diff checks pass.
 These are local results, not a completed hosted GitHub Actions run.
 
-The user booted the newly flashed release ISO of this implementation on
+The release ISO of this implementation booted on
 physical x86-64 hardware and confirmed all three normal PASS markers followed
 by the intended halt. That run preceded the version metadata bump. Dedicated
 protection-fault probes remain QEMU validation.

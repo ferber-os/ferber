@@ -1,6 +1,6 @@
 # Uranium-238 v0.3.0
 
-*Ferrum init now constructs and launches an independently built resident service on RISC-V64 and x86-64. Staged task creation keeps construction authority separate from running-process lifetime, while tracked wake sources distinguish legitimate multi-service waiting from cooperative deadlock.*
+*Ferrum init now constructs and launches a separately built resident service. Explicit task authority governs construction, while rooted wait tracking recognizes legitimate multi-process idle.*
 
 ## Userspace constructs a child before publishing it
 
@@ -85,8 +85,7 @@ the version bump. Coverage includes production task syscalls and lifetime rules,
 allocation failures and admission retry, scheduler wait graphs/source leases,
 bundle and protocol validation, malformed/replayed bootstrap messages and native
 service execution. Existing capability, channel, VMO, paging, accounting and ELF
-regressions also passed. Four independent adversarial reviews completed with no
-confirmed issues remaining after fixes.
+regressions also passed. The regressions passed after the implementation fixes.
 
 After the feature rename, both architecture configurations built and passed
 Clippy with warnings denied. Fresh RISC-V init/replay boots and x86 release init
@@ -116,5 +115,5 @@ single-CPU and integer-only with interrupts masked. Initramfs, named-service
 loading, namespace/filesystem services, general service management, independent
 user-fault recovery, preemption, IRQ-safe allocation and SMP remain pending.
 
-See the [task ABI](../task-creation.md), [init contract](../init.md) and
-[boot-bundle contract](../boot-bundle.md) for exact rights, bounds and lifetimes.
+See the [task ABI](../reference/task-creation.md), [init contract](../reference/init.md) and
+[boot-bundle contract](../reference/boot-bundle.md) for exact rights, bounds and lifetimes.

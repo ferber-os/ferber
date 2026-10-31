@@ -1,6 +1,6 @@
 # Uranium-238 v0.3.1
 
-*Ferrum now reads boot files through a userspace filesystem service and launches multiple configured services. An independently versioned immutable archive, session-scoped streaming operations and bounded channel wait sets make executable discovery explicit without putting pathname resolution in the kernel.*
+*Ferrum now reads named boot files through a userspace filesystem service and starts multiple configured services. An independently versioned archive and bounded channel wait sets support that startup without kernel pathname lookup.*
 
 ## Boot delivery and filesystem layout have separate contracts
 
@@ -86,7 +86,7 @@ execution, software wake, protection faults, replay rejection, missing or invali
 configured executables, malformed-client containment, reply-queue flooding and
 disconnected waits. Release ISO boots passed for init and software wake. The
 freestanding ELF, shell syntax, workflow lint and strict log-parser checks passed.
-These local observations precede this PR's hosted CI results.
+Hosted CI results are not part of this local validation record.
 
 A physical x86-64 boot on the 32 GiB MSI B650M-A PRO WIFI reached:
 
@@ -101,10 +101,9 @@ A physical x86-64 boot on the 32 GiB MSI B650M-A PRO WIFI reached:
 
 The run managed 32218 MiB (31.46 GiB), 8247922 frames and 24 extents. It used the
 pre-bump `0.3.0` banner and validates the initramfs implementation build. The
-newly versioned `0.3.1` ISO is not claimed as physically tested. The policy to
-version and identify clean candidates before hardware validation was adopted
-after this run; its provenance cannot be reconstructed retroactively from the
-photo. The dedicated software-wake build was not flashed, and no physical
+newly versioned `0.3.1` ISO is not claimed as physically tested. The photo does
+not establish an exact source-commit or ISO-hash association. The dedicated
+software-wake build was not flashed, and no physical
 RISC-V validation is claimed.
 
 Integrated allocation-failure injection during multi-service preparation/start
@@ -116,5 +115,5 @@ restart/dependency policy, recoverable user faults, preemption and SMP remain
 outside this release. AArch64 is the next prioritized port and is not implemented.
 
 Both crates advance to `0.3.1` without dependency changes. See the
-[archive format](../initramfs-format.md), [filesystem protocol](../initramfs.md),
-[syscall ABI](../syscall-abi.md) and [init contract](../init.md).
+[archive format](../reference/initramfs-format.md), [filesystem protocol](../reference/initramfs.md),
+[syscall ABI](../reference/syscall-abi.md) and [init contract](../reference/init.md).

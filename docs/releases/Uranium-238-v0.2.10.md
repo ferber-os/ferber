@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.10
 
-*Ferber boots minimal Ferrum init as a separately delivered Rust executable. Init discovers its delegated bootstrap channel, completes startup and remains alive in a validated blocking receive. The scheduler still diagnoses ordinary cooperative deadlock. Uranium-238 now waits deliberately; it has no services to launch yet.*
+*Ferrum init now starts as an independently delivered Rust executable and remains alive while waiting for messages. The scheduler distinguishes that legitimate wait from cooperative deadlock.*
 
 ## Init owns a defined startup protocol
 
@@ -60,7 +60,6 @@ the x86 release init ISO. All 61 host tests passed: 17 memory, 12 channel,
 15 ELF parser, seven loader/startup, eight UEFI payload and two init protocol.
 Both minimal-init kernel Clippy checks passed with `-D warnings`; default
 RISC-V and x86 ELF checks, shell syntax and log-parser self-checks passed.
-Three independent adversarial QA reviews reported no confirmed bugs.
 
 A physical x86-64 boot on the 32 GiB MSI workstation reached all four required
 markers with the pre-bump `0.2.9` banner. The prerequisite close/resume/reclaim

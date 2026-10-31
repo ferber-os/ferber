@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.13
 
-*Userspace can write code into a VMO, seal its backing irreversibly, and execute it through an RX mapping on both architectures. Writable aliases anywhere block publication; old WRITE rights cannot reopen sealed memory. Uranium-238 decays. This state transition does not.*
+*Userspace can seal VMO backing and execute it through RX mappings. Writable mappings anywhere prevent sealing; closed or revoked handles do not erase those outstanding writers.*
 
 ## Executable authority is explicit before sealing
 
@@ -87,9 +87,9 @@ address, hardware cause and retained sealed RX metadata. Its marker is
 `vmo_sealing_write_rx`; that deliberate fault halt does not prove reclamation.
 Existing RO-write and NX-execute probes remain separate regressions.
 
-## Validation includes adversarial review and physical x86 execution
+## Validation covers runtime behavior and physical x86 execution
 
-Post-interruption implementation validation passed all 41 RISC-V and 35 x86
+Implementation validation passed all 41 RISC-V and 35 x86
 QEMU smoke cases, plus the release sealing ISO boot through OVMF's CD-ROM path.
 All 80 host tests passed: 17 memory, 12 channel, 15 ELF parser, seven loader/startup,
 eight UEFI payload, two init protocol, two VMO core, one production VMO syscall,
@@ -99,18 +99,16 @@ kernel targets with warnings denied, as did release UEFI Clippy. Both fixture
 modes built for both architectures in debug and release; shell syntax and the
 strict log-parser self-check passed.
 
-Release preflight repeated all 80 host tests and the parser self-check.
+Additional validation repeated all 80 host tests and the parser self-check.
 After the version bump, fresh `0.2.13` minimal-init and sealing release ISOs passed
 OVMF boots and freestanding ELF shape checks. Default, minimal-init, normal
 sealing and sealed-write-fault Clippy passed on both kernel targets, together
 with release UEFI Clippy, all with warnings denied.
 
-Four independent reviewers examined the patch: red team, blue team, contract
-lawyer and failure gremlin. No confirmed runtime bugs were found. One missing
-consolidated syscall error-table entry was fixed and rechecked. Additional
-adversarial checks covered rights subsets, options, permission encodings,
+A missing consolidated syscall error-table entry was fixed and rechecked.
+Additional adversarial checks covered rights subsets, options, permission encodings,
 publication recovery, provisional permit rollback, alias quotas, retained dead
-processes and final ownership. A blue-team mutation check verified that the
+processes and final ownership. A mutation check verified that the
 regressions detect premature writable-permit release. Host harness substitutes
 and instrumented walker results remain distinct from actual CPU execution.
 
@@ -122,10 +120,7 @@ fault probe remains QEMU-validated. Physical RISC-V hardware has not been
 available for validation. Hosted Actions results remain separate from local
 evidence.
 
-The QA protocol now includes the independent blue-team defensive-control lens.
-A dedicated Easter egg engineer protocol permits fitting comments, interactions
-and runtime behavior with ordinary safety and verification requirements. This
-patch adds one comment beside the seal transition and registers it in the
+The release adds one comment beside the seal transition and registers it in the
 encoded contributor guide: WRITE bits on old handles are now collector's items.
 
 The kernel and UEFI loader advance to `0.2.13` without dependency upgrades.

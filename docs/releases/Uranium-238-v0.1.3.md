@@ -1,8 +1,8 @@
 # Uranium-238 v0.1.3
 
-This patch release hardens kernel heap allocation boundaries and resolves test harness buffering discrepancies across emulator environments.
+*Heap allocations now have an explicit 128 MiB ceiling. QEMU serial logs also reach their output files directly, making failed boots easier to diagnose.*
 
-## Included
+## What changed
 
 - **Dynamic Kernel Versioning:** Dynamically derived the kernel startup greeting banner from `CARGO_PKG_VERSION`, bringing the banner in line with release `0.1.3`.
 - **Heap Allocation Upper Bound:** Enforced an explicit single-allocation ceiling (`MAX_ALLOC_SIZE = 128 MiB`) in `BuddyAllocator::alloc`. Allocations exceeding this threshold cleanly return `null` instead of forwarding unbounded multi-page requests to the physical frame allocator.

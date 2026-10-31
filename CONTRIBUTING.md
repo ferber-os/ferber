@@ -1,182 +1,105 @@
 # Contributing to Ferber
 
-Ferber is a kernel project. Your first contribution does not need to touch the kernel. Documentation, tests, CI and tooling, diagnostics, and localization all have useful entry points.
+Your first contribution does not need to touch the kernel. Documentation,
+translations, tests, CI and tooling, diagnostics and technical reviews all have
+useful entry points.
 
----
+## Find a bounded task
 
-## Before You Write Code
+| Experience or interest | Contribution paths |
+| --- | --- |
+| New to systems programming | Documentation, tests, tooling and diagnostics |
+| Comfortable with Rust | Bounded kernel tasks, syscall plumbing, validation and tests |
+| Low-level systems and architecture | Paging, traps, syscall entry, scheduling, drivers and architecture parity |
+| Security | Capability review, unsafe invariants, threat modeling and fuzzing |
+| Non-code | Localization, testing, documentation, UX and appropriate voice text |
 
-Start with this guide. Read the architecture documents when the change calls for them:
+Prefer issues labeled `good first issue`, `help wanted`, or equivalent contributor
+labels. The [roadmap](ROADMAP.md) describes project direction. Not every unchecked
+item is a good first issue. If no bounded task is clear, open an issue to discuss
+one. Coordinate larger changes before building incompatible solutions in parallel.
 
-- For kernel architecture work, read [docs/architecture.md](docs/architecture.md) and [docs/capability-model.md](docs/capability-model.md) before proposing a design.
-- For IPC or memory changes, also read [docs/ipc.md](docs/ipc.md) or [docs/memory.md](docs/memory.md), respectively.
+Translations and localization are welcome. Discuss a new language or translation
+scope in an issue so it can be maintained consistently.
 
-If something in the docs is wrong or unclear, that's a contribution too.
-Open a PR. Docs are code.
+## Read what your change depends on
 
----
+Start with the [documentation index](docs/README.md). Changes to kernel
+architecture require the [architecture guide](docs/guides/architecture.md) and
+[capability model](docs/reference/capability-model.md). Read the
+[IPC](docs/reference/ipc.md) or [memory](docs/reference/memory.md) reference when
+changing those subsystems. ABI changes need a matching reference update.
 
-## What To Work On
+A useful proposal states the current behavior, the proposed behavior, the
+required authority and the failure/cleanup rules. State architecture-specific
+assumptions explicitly. Existing RISC-V and x86-64 behavior must remain compatible
+unless a deliberate interface change is documented.
 
-Choose a task that fits your experience:
+## Keep code and contracts reviewable
 
-- **New to systems programming:** documentation, tests, CI and tooling, or diagnostics.
-- **Comfortable with Rust:** bounded kernel tasks, syscall plumbing, validation, and tests.
-- **Comfortable with low-level systems or architecture code:** paging, syscall paths, scheduler, drivers, and RISC-V/x86-64 parity.
-- **Security-focused:** capability-model review, unsafe invariants, threat modeling, or fuzzing.
-- **Non-code:** translations, documentation, testing, UX, or Easter eggs and voice text where appropriate.
+Use `rustfmt` and Clippy with `-D warnings`. Make commits describe one coherent
+engineering change, with a specific imperative subject. Keep unrelated edits
+separate.
 
-The [roadmap](ROADMAP.md) describes project direction, not a queue of starter tasks. Not every unchecked item is a good first issue. Prefer issues labeled `good first issue`, `help wanted`, or an equivalent contributor-friendly label. If none are available, open an issue to ask which bounded task needs help. Do not assume an unclaimed architecture item is ready to pick up.
+Explain each unsafe operation's caller obligations and invariants. Prefer
+fallible operations and explicit error handling at trust boundaries. Follow
+existing kernel logging conventions instead of introducing standard-library
+output. Comments should explain the reason for code or a non-obvious constraint;
+link the applicable specification when it establishes the rule.
 
-For larger contributions, open an issue first and describe what you're doing.
-Not because we'll say no. Because coordination prevents two people building
-the same thing in parallel with incompatible designs.
+Capability checks, memory ownership and failure atomicity are part of the
+interface. Do not add ambient authority or bypass validation for a supposedly
+trusted process. A narrower grant must never become broader authority through
+an implementation shortcut. Discuss any design that appears to require an
+exception before implementing it.
 
-### Non-code Contributions
+## Show what was verified
 
-Translations and localization are welcome, along with documentation, testing, UX, diagnostics, and Easter eggs or voice text where appropriate. Open an issue first for a new translation so the language and scope are clear.
+Add a regression for a bug or a new behavior. Exercise invalid authority,
+malformed input, partial failure and cleanup when those boundaries change.
+Report what actually ran: target, build profile, command and relevant result.
+Separate host tests, QEMU, hosted CI and physical hardware evidence.
 
----
+Common checks from the repository root include:
 
-## Code Style
-
-**Rust:**
-- `rustfmt` always. No exceptions. `cargo fmt` before every commit.
-- `clippy` always. `cargo clippy -- -D warnings`. Fix the warnings.
-- `unsafe` requires a comment explaining exactly why it's necessary
-  and exactly what invariants make it safe. One line is not enough.
-- No `unwrap()` in kernel code. Ever. Panics in the kernel are panics.
-  Use `Result`, use `Option`, handle the failure case.
-- No `println!` in kernel code. Use the kernel's serial logger.
-
-**Comments:**
-- Write comments for why, not what. The code says what.
-- If you're doing something non-obvious, explain it.
-- If you're citing a spec or paper, link it.
-- Easter eggs in comments are allowed and encouraged.
-  Read [EASTEREGGS.md](EASTEREGGS.md) for the style guide.
-
-**Commits:**
-- Present tense, imperative mood: "add capability revocation" not "added"
-- Be specific: "implement buddy allocator phase 2 migration" not "memory stuff"
-- One logical change per commit. Not one file. One change.
-
----
-
-## Milestone Branches and Releases
-
-Use a branch for each sprint or milestone, such as `feature/initramfs` or
-`feature/aarch64`. Keep `main` ready for release. Start from an up-to-date,
-clean `main` using `git pull --ff-only` before creating the branch; preserve
-existing work before switching or synchronizing branches.
-
-Commit coherent engineering checkpoints as work progresses. Each checkpoint
-should build and pass the checks relevant to its scope. A developing port may
-be incomplete, but its supported checkpoint behavior and remaining gaps must
-be explicit. Keep existing architectures working. Record validation in the PR
-so a regression can be traced to a meaningful commit with `git bisect`.
-
-Push milestone branches regularly, including before breaks. A local commit alone
-is not an off-machine backup. Before building the hardware candidate, bump the
-intended release version, draft `docs/releases/<tag>.md`, then sign, commit and
-push the candidate. Build from that clean commit and record its SHA and ISO
-SHA-256 alongside the hardware evidence. Keep the version unchanged while fixing
-the candidate; only the signed tag marks a release. Rebuild and repeat affected
-validation when candidate code changes.
-
-Open the PR targeting `main` after hardware validation and any fixes are pushed.
-An early draft PR is optional when explicitly requested. The PR workflow runs the
-required checks, and subsequent branch pushes update that PR.
-
-When the milestone meets its acceptance criteria, update documentation and run
-the applicable architecture suites and hardware validation. Merge with a regular
-merge commit, preserving the logical commits rather than squashing them. Verify
-the resulting commit on `main` before tagging it; PR results alone do not
-establish that the merge result passes.
-
-One completed milestone produces one version tag and one release. Prepare the
-version bump and `docs/releases/<tag>.md` before the merge. Ferber's release
-commits and annotated tags must be signed; use `git tag -s`, keeping signing
-requirements enabled. Push the tag only on the exact verified `main` commit.
-The tag workflow must pass before it publishes release assets. Intermediate
-checkpoint commits do not require version bumps or releases.
-
----
-
-## Testing
-
-```bash
-bash scripts/memory-tests.sh     # host memory/FDT/allocator regressions
-bash scripts/channel-tests.sh    # host channel concurrency/allocation failures
+```sh
+bash scripts/memory-tests.sh
+bash scripts/channel-tests.sh
 bash scripts/smoke-log.sh --self-test
-make run                        # RISC-V boot checks and resident user probe
-bash scripts/riscv-smoke.sh      # RISC-V normal and protection-fault matrix
-make x86-smoke                  # x86-64 UEFI normal and protection-fault matrix
-bash scripts/x86-iso-smoke.sh    # x86-64 release ISO boot
+bash scripts/riscv-smoke.sh
+make x86-smoke
+bash scripts/x86-iso-smoke.sh init
 ```
 
-If you're adding kernel functionality, add a test.
-If you're fixing a bug, add a test that would have caught it.
-If you're touching the capability model, add a lot of tests.
-The capability model is the whole point. It needs to be correct.
+Choose additional subsystem tests from the
+[verification reference](docs/reference/verification.md). A QEMU result does not
+establish physical hardware support. If a check was not run, say so and explain
+what remains uncertain.
 
----
+## Submit the change with enough context
 
-## The Capability Model Is Sacred
+A contribution should explain the concrete problem, resulting behavior,
+validation and limitations. Include reproduction steps for bugs and examples
+for user-facing interfaces. Documentation changes should use the same terms as
+the code and distinguish working behavior from plans.
 
-This is the one area where we will push back hard on PRs.
+A release history belongs in release notes; a specification describes the
+current contract. Keep internal coordination and personal development procedures
+out of public reference pages.
 
-The capability model is Ferber's reason for existing. Every design decision
-in the kernel exists to serve it. Changes that weaken it, add ambient
-authority, bypass handle checks, or introduce a shortcut for "trusted"
-processes will not be merged.
+## Security issues
 
-There are no trusted processes. That's the point.
-There is no root. That's the point.
-There is no shortcut. That's the point.
+If you find a vulnerability in the capability model, such as escalating authority,
+forging a handle or bypassing a rights check, open an issue titled
+`[SECURITY] <brief description>`. Include a detailed reproduction case where
+possible. Explain the authority initially available and the access obtained.
 
-If you think you need one of these things, open an issue and explain why.
-We'll figure out the right capability-based solution together.
+## Voice and non-code work
 
----
+Use precise, direct English. Define unfamiliar terms before relying on them.
+Avoid marketing claims and guarantees the implementation does not establish.
+Match existing user-facing wording when changing diagnostics or help text.
+Easter eggs and voice text follow [EASTEREGGS.md](EASTEREGGS.md).
 
-## Easter Eggs
-
-Yes, really. Read [EASTEREGGS.md](EASTEREGGS.md).
-Good easter eggs are welcome contributions.
-They have a style guide. Follow it.
-
----
-
-## Security Issues
-
-If you find a vulnerability in the capability model (e.g., a way to escalate
-authority beyond what was granted, forge a handle, or bypass a rights check),
-that's the most important kind of issue you can report.
-
-Open an issue titled `[SECURITY] <brief description>`.
-Be detailed. Include a reproduction case if possible.
-We'll respond fast. This is the core of what Ferber is.
-
----
-
-## The Tone
-
-Ferber has a voice. It's dry, honest, occasionally funny, always precise.
-Error messages, panic screens, CLI output, comments. They all sound like
-the same person wrote them. A person who cares deeply about the project
-and has a dark sense of humor about kernel development.
-
-If you're writing user-facing output, read the existing messages first.
-Match the tone.
-
----
-
-## Credit
-
-Everyone who contributes gets credited. In the repo, in release notes,
-in the model card if we ever train something on Ferber's codebase.
-
-You built part of a kernel. That should be on your GitHub forever.
-
----
+Contributors receive credit in the repository and release notes. Documentation,
+testing and localization count as contributions.

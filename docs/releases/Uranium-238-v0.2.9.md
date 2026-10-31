@@ -1,6 +1,9 @@
 # Uranium-238 v0.2.9
 
-*The userspace Rust ELF now arrives separately from the kernel. RISC-V receives it through the device tree; UEFI reads `BOOT.ELF` beside the kernel. Both execute the existing startup and bootstrap-channel protocol, then verify reclamation. Uranium-238 remains unstable. The executable no longer needs to be embedded to participate.*
+*The boot environment now supplies the userspace ELF independently of the kernel binary. Both ports execute the delivered program and verify its bootstrap exchange and reclamation.*
+
+UEFI reads the externally supplied executable from `BOOT.ELF`; RISC-V uses
+the device-tree initrd descriptor.
 
 ## Boot delivery no longer depends on kernel compilation
 
@@ -32,9 +35,9 @@ ranges are checked. Firmware RAM descriptions remain trusted; RISC-V does
 not independently audit every device node for overlapping MMIO. This is not
 verified boot, an archive format, an initramfs, or service-launching init.
 
-## Adversarial review tightened mapping and failure paths
+## Mapping and failure-path regressions exposed concrete bugs
 
-Three independent QA reviews found and drove fixes for high physical UEFI
+Failure-path testing exposed high physical UEFI
 addresses clobbering unrelated virtual mappings, payload allocation leaks on
 later pre-ExitBootServices failures, and negative-test logs accepting unrelated
 failure lines. Focused regressions cover those cases. UEFI cleanup does not
@@ -48,9 +51,9 @@ existing ELF protocol and reclamation checks; discovery alone cannot pass.
 ## Validation covers both ports and physical x86 execution
 
 The full local QEMU matrices passed 17 RISC-V and 15 x86 UEFI cases before
-the final QA fixes. Focused post-fix validation passed the RISC-V debug
+the final failure-path fixes. Focused post-fix validation passed the RISC-V debug
 external-ELF boot at 256 MiB/four harts and the x86 release ELF ISO boot.
-The normal release ISO also passed during QA. Host suites passed 17 memory,
+The normal release ISO also passed during testing. Host suites passed 17 memory,
 eight UEFI payload, 15 ELF parser and seven loader/startup tests. ELF kernel
 Clippy checks on both targets and release UEFI Clippy passed with
 `-D warnings`; smoke-log self-checks passed.

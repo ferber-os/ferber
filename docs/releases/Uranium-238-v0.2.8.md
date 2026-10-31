@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.8
 
-*Startup ABI v1 places a 32-byte versioned little-endian record at the ELF fixture's initial stack pointer. Shared `no_std` Rust code decodes it, discovers the explicitly delegated bootstrap channel in a nonzero handle slot, receives the prequeued challenge, sends the reply, closes the handle, yields, and exits. The existing protocol order remains unchanged on both architectures. Uranium-238's half-life is longer than this protocol's lifetime.*
+*A versioned startup record lets independently compiled Rust code discover its delegated channel without assuming a handle number. The fixture exercises the same finite protocol on both architectures.*
 
 ## The startup record describes a test process without granting authority
 
@@ -40,7 +40,7 @@ kernel panic path or emulate a malformed boot record fault.
 ## Local validation covers both architectures and the ELF ISO
 
 Host suites pass 43 tests: 15 ELF parser, seven loader/startup, nine memory,
-and 12 channel tests. A separate red-team mutation run checks 65,536 startup
+and 12 channel tests. A separate mutation run checks 65,536 startup
 record mutations. QEMU passes all 27 boots: 13 RISC-V cases, 12 x86 UEFI
 cases, and normal plus ELF release-ISO boots. Kernel base and ELF-probe Clippy
 checks pass with `-D warnings` on both targets; both separately compiled user

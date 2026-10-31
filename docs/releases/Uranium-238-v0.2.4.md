@@ -1,6 +1,6 @@
 # Uranium-238 v0.2.4
 
-*Userspace can create paired channel endpoints, send bounded messages, and receive messages with explicitly transferred capabilities on RISC-V 64 and x86-64. Failed sends preserve sender handles; failed receives preserve the queued message and user outputs. The original v0.2.4 build's channel syscall probe passed on physical x86-64 hardware with 32 GiB installed. One CPU still does all the work. Uranium has time.*
+*Userspace gains nonblocking channel creation, messaging and capability transfer. Failed operations preserve queued messages, source handles and output buffers. The re-release adopts the Ferber name while retaining the original implementation’s hardware evidence.*
 
 Ferber was previously called Wolfram. This re-release rebuilds v0.2.4 with the
 Ferber project, kernel, loader, and ISO names. Kernel behavior is unchanged;

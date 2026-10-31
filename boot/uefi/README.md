@@ -1,100 +1,92 @@
-# Ferber UEFI loader
+# Boot Ferber through UEFI
 
-This standalone Rust `no_std` UEFI application loads `FERBER.ELF` from the
-same FAT filesystem as the loader and optionally reads `\BOOT.ELF` from its
-root as an external userspace payload. The kernel must be an x86-64 ELF64
-position-independent `ET_DYN` image with only `R_X86_64_RELATIVE` dynamic
-relocations and a SysV entry point accepting `BootInfo *` in `RDI`. The loader
-asks UEFI for a contiguous physical run of pages and loads the image there.
-Relative relocations write to that physical allocation while producing
-addresses at the high virtual image base `0xffff_ffff_8000_0000`. After
-exiting boot services, the loader enters the high ELF entry; the kernel
-selects its high image-backed stack before Rust executes.
+The x86-64 UEFI loader reads `FERBER.ELF` and an optional `BOOT.ELF` from its FAT
+filesystem, prepares the kernel handoff and exits firmware boot services. Init
+builds use `BOOT.ELF` to carry the init/archive envelope; the name does not mean
+that every payload is a raw ELF file.
 
-Build with the pinned nightly toolchain after installing both x86 targets:
+## Build the normal init image
+
+From the repository root, with Rust nightly, both x86 targets and ISO tools
+installed:
+
+```sh
+make x86-iso INIT=1
+bash scripts/x86-iso-smoke.sh init
+```
+
+The first command creates `ferber.iso`. The smoke command builds and boots a
+separate temporary ISO through QEMU/OVMF with automated logging enabled. Set
+`OVMF_CODE` and `OVMF_VARS` if your firmware paths differ. See
+[Running Ferber](../../docs/guides/running.md) for setup and expected output.
+
+## Stage a FAT filesystem directly
+
+To build the pieces separately:
 
 ```sh
 rustup target add x86_64-unknown-none x86_64-unknown-uefi --toolchain nightly
 scripts/x86-preview.sh --release
 (cd boot/uefi && cargo +nightly build --target x86_64-unknown-uefi --release)
-```
-
-Stage files into a FAT32 partition or a QEMU EFI system partition directory:
-
-```sh
-boot/uefi/package.sh /path/to/ferber-kernel-elf /path/to/fat-root
-```
-
-The optional fourth argument supplies the boot payload; the third is the loader:
-
-```sh
 boot/uefi/package.sh KERNEL_ELF FAT_ROOT LOADER_EFI BOOT_ELF
 ```
 
-The result contains `EFI/BOOT/BOOTX64.EFI`, `FERBER.ELF`, and, when supplied,
-`BOOT.ELF`. Packaging without a payload removes any stale staged `BOOT.ELF`.
-The image is unsigned, so firmware Secure Boot policy must permit it. The loader requires a
-GOP mode with RGB or BGR 32-bit pixels, and passes its framebuffer and the UEFI
-memory map in version 3 of the shared 136-byte `BootInfo` structure. Physical
-reservation addresses are distinct from readable virtual pointers, including
-the framebuffer's virtual base. Only
-`EfiConventionalMemory` is passed as usable. All loader allocations and boot
-data are `EfiLoaderCode`/`EfiLoaderData` and remain reserved in the handoff.
-A present `BOOT.ELF` must be nonempty and at most 4 MiB. The loader allocates
-dedicated zeroed pages, reads the exact file length and closes handles before
-the final memory-map/ExitBootServices sequence. Only file-not-found means absent;
-other read failures stop the handoff. Resident kernels permit absence, while
-the ELF probe and init require a payload. Both loader and permanent kernel tables map
-its reserved backing supervisor RO/NX. See
-[the boot-payload contract](../../docs/boot-payload.md).
+Replace the uppercase arguments with actual paths. The third argument is the
+loader EFI binary; the optional fourth is the payload. Packaging writes:
 
-Before the jump, the loader installs temporary four-level page tables with
-the high kernel, boot-data and framebuffer mappings, scratch pages, and the
-identity mappings needed for the transition. Kernel segments receive
-per-page writable and executable permissions. The kernel builds packed
-aliases for eligible RAM, then replaces this root with permanent supervisor
-mappings and removes the identity and scratch windows. New process roots
-share the upper half and start with an empty lower half. RAM above the
-temporary identity window remains in the handoff and is reached through
-scratch-built aliases. The kernel validates supported physical-address
-width and alias capacity; it never calls UEFI boot services or reclaims
-firmware/loader memory after the handoff.
+```text
+EFI/BOOT/BOOTX64.EFI
+FERBER.ELF
+BOOT.ELF                # only when a payload is supplied
+```
 
-Debug and release kernels now complete returning userspace syscall probes in
-QEMU/OVMF. Separate probes verify supervisor-read, RX-write, and NX-execute
-protection faults. The memory discovery and high-half mapping transition also
-passed a physical x86-64 boot with 32 GiB installed: 8,240,704 managed frames
-across 23 extents.
+The two-argument form uses the default release loader and omits the payload.
+Omitting a payload removes a stale staged `BOOT.ELF`. The loader reads from its
+own FAT filesystem, so placing files only in the ISO's outer filesystem is not
+sufficient. ISO packaging embeds a FAT El Torito boot image.
 
-Run `make x86-smoke` from the repository root to repeat the debug and release
-userspace roundtrip and protection checks, plus an invalid-opcode exception
-probe. Normal and protection boots require `memory_verification: PASS` before
-their resident marker. Verification walks detected extents, checks permanent
-aliases, exercises an owned VMO page and user copies after activation, and
-restores allocator accounting. It has no RAM-size threshold. Normal boots also
-require `channel_syscalls: PASS` for nonblocking channel IPC.
-The smoke script
-builds its kernels in a temporary target directory, so its deliberate fault
-image cannot replace the ordinary kernel intended for a USB stick.
+The loader is unsigned. Secure Boot policy must allow it. It requires a GOP
+framebuffer mode using 32-bit RGB or BGR pixels. GOP is the firmware framebuffer
+interface; a general GPU driver is not required for boot diagnostics.
 
-For an optical-media QEMU test, install `libisoburn`, `dosfstools`, and
-`mtools` (Arch package names), then run `make x86-iso`. This creates an ignored
-`ferber.iso` at the repository root. It embeds a FAT El Torito image with both
-the UEFI loader and `FERBER.ELF`; `make x86-iso USERSPACE_ELF_PROBE=1` also
-places the independently built payload at `BOOT.ELF` on that FAT image.
-Placing these files only in the ISO filesystem
-would not work because the loader reads from its own FAT filesystem. Boot it
-with QEMU/OVMF using `-cdrom ferber.iso -boot order=d`. The ISO tests the CD
-boot path. This external-payload patch has no physical-hardware result claimed
-here.
+## The kernel ELF has a restricted contract
 
-Run `bash scripts/x86-iso-smoke.sh` to build and boot a temporary ISO
-automatically. It uses `scripts/build-iso.sh`, the same packager as
-`make x86-iso` and the release workflow, and requires the normal userspace
-PASS marker. The test kernel adds `qemu-debug-port` diagnostics for log
-capture. Set `OVMF_CODE` and `OVMF_VARS` to override the firmware paths.
+The loader accepts x86-64 ELF64 `ET_DYN`, with no dynamic interpreter or shared
+library dependencies and only `R_X86_64_RELATIVE` relocations. The preview script
+checks that freestanding contract before boot. The entry uses the System V ABI
+and receives a `BootInfo *` in `RDI`.
 
-`make x86-iso INIT=1` packages the init/archive boot envelope as `BOOT.ELF`.
-See [init](../../docs/init.md) for readiness and terminal-wait
-validation and [boot bundles](../../docs/boot-bundle.md) for its exact format.
-The loader transports the bundle through its bounded boot-payload handoff.
+A contiguous physical allocation holds the loaded image. Relocations write into
+that allocation and produce addresses relative to the high virtual image base
+`0xffff_ffff_8000_0000`. The loader jumps to the high entry after exiting boot
+services; the kernel selects its image-backed high stack before Rust execution.
+
+## Firmware memory remains reserved after handoff
+
+BootInfo version 3 is the shared 136-byte structure carrying the memory map,
+framebuffer and optional external payload. Physical reservation addresses and
+readable virtual pointers are distinct. Only `EfiConventionalMemory` is eligible
+RAM at this stage. Loader code, data, runtime/firmware allocations and boot data
+remain reserved; reclaiming them requires a separate ownership transition.
+
+A present payload must be nonempty and at most 4 MiB. The loader reads its exact
+length into dedicated zeroed pages and closes file handles before the final
+memory-map/ExitBootServices sequence. Only file-not-found means absent. Other
+read failures stop handoff. The resident probe path permits absence; ELF and
+init builds require their corresponding payload. See the
+[boot-payload reference](../../docs/reference/boot-payload.md).
+
+Temporary four-level tables cover the kernel, boot data, framebuffer and the
+identity/scratch mappings needed during transition. Kernel segments receive
+explicit writable/executable permissions. The kernel later installs permanent
+supervisor mappings and packed RAM aliases, removes transition windows and
+validates physical-address width and alias capacity. Newly created user roots
+share upper-half kernel mappings and start with empty lower halves.
+
+## Validation has separate emulator and hardware scope
+
+`make x86-smoke` exercises normal and deliberate fault paths. ISO smoke exercises
+the CD-ROM boot path using the shared packager. Neither result alone proves
+physical compatibility. Physical x86-64 evidence, its exact build provenance and
+limitations are recorded in the [verification reference](../../docs/reference/verification.md)
+and [release history](../../docs/releases/README.md).
