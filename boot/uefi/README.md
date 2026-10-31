@@ -63,7 +63,7 @@ services; the kernel selects its image-backed high stack before Rust execution.
 
 ## Firmware memory remains reserved after handoff
 
-BootInfo version 3 is the shared 136-byte structure carrying the memory map,
+BootInfo version 4 is the shared 168-byte structure carrying the memory map,
 framebuffer and optional external payload. Physical reservation addresses and
 readable virtual pointers are distinct. Only `EfiConventionalMemory` is eligible
 RAM at this stage. Loader code, data, runtime/firmware allocations and boot data

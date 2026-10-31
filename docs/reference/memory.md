@@ -96,7 +96,7 @@ execute-fault probe maps its code RO/NX instead.
 Both kernels execute at `0xffff_ffff_8000_0000` on high image-backed stacks before
 entering Rust. RISC-V retains a small physical assembly entry at `0x80200000`; x86 keeps
 its PIE/relative-relocation ELF contract while the loader writes through physical
-destinations and calculates high pointer values. BootInfo version 3 is 136 bytes and
+destinations and calculates high pointer values. BootInfo version 4 is 168 bytes and
 separates physical reservations from readable virtual pointers, including the
 framebuffer alias. Its appended 24-byte payload descriptor carries physical start, exact
 byte length and the validated kernel-readable alias.

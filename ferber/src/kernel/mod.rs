@@ -1,5 +1,6 @@
 pub mod boot_payload;
 pub mod capabilities;
+pub mod device;
 pub mod memory;
 pub mod scheduler;
 pub mod ipc;

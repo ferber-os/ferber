@@ -404,6 +404,10 @@ pub fn finalize(info: &BootInfo) -> Result<(), PageError> {
                 PTE_PRESENT | PTE_NO_EXECUTE,
             )?;
         }
+        if let Some((start, end)) = info.acpi.bounds().map_err(|_| PageError::OutOfRange)? {
+            map_kernel_range(root, info.acpi.virtual_start as usize, start as usize,
+                (end - start) as usize, PTE_PRESENT | PTE_NO_EXECUTE)?;
+        }
         if info.framebuffer.size != 0 {
             let offset = info.framebuffer.base as usize & (PAGE_SIZE - 1);
             let bytes = (offset + info.framebuffer.size as usize).div_ceil(PAGE_SIZE) * PAGE_SIZE;

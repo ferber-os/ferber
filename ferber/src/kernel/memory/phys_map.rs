@@ -141,6 +141,9 @@ fn normalize(map: &mut Map, info: &BootInfo) {
     if let Some((start, end)) = info.boot_payload.bounds().expect("invalid boot payload") {
         subtract(map, start, end);
     }
+    if let Some((start, end)) = info.acpi.bounds().expect("invalid ACPI snapshot") {
+        subtract(map, start, end);
+    }
     subtract(map, 0, PAGE as u64);
     subtract(map, info.kernel_start, info.kernel_end);
     subtract(

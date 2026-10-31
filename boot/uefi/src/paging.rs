@@ -219,7 +219,13 @@ pub unsafe fn build(
         return Err(uefi::LOAD_ERROR);
     }
     let payload_bounds = info.boot_payload.bounds().map_err(|_| uefi::LOAD_ERROR)?;
-    if let Some((start, end)) = payload_bounds {
+    let acpi_bounds = info.acpi.bounds().map_err(|_| uefi::LOAD_ERROR)?;
+    if let (Some((a, b)), Some((c, d))) = (payload_bounds, acpi_bounds) {
+        if a < d && c < b {
+            return Err(uefi::LOAD_ERROR);
+        }
+    }
+    for (start, end) in [payload_bounds, acpi_bounds].into_iter().flatten() {
         let overlaps = |a: u64, b: u64| start < b && a < end;
         if overlaps(kernel.start, kernel.end)
             || overlaps(info.boot_info_physical, info.boot_info_physical + PAGE_SIZE)
@@ -267,7 +273,7 @@ pub unsafe fn build(
         }
     }
     let tables = PageTables::new(services)?;
-    if payload_bounds.is_some() && !tables.nx_supported {
+    if (payload_bounds.is_some() || acpi_bounds.is_some()) && !tables.nx_supported {
         return Err(uefi::UNSUPPORTED);
     }
     let framebuffer = &info.framebuffer;
@@ -377,6 +383,24 @@ pub unsafe fn build(
         }
     }
     tables.map_payload(services, info.boot_payload)?;
+    if let Some((start, end)) = info.acpi.bounds().map_err(|_| uefi::LOAD_ERROR)? {
+        for offset in (0..end - start).step_by(PAGE_SIZE as usize) {
+            tables.map_4k(
+                services,
+                abi::acpi::SNAPSHOT_VA + offset,
+                start + offset,
+                tables.flags(false, false, false),
+            )?;
+            if start + offset < IDENTITY_LIMIT {
+                tables.map_4k(
+                    services,
+                    start + offset,
+                    start + offset,
+                    tables.flags(false, false, false),
+                )?;
+            }
+        }
+    }
     // A stable alias to the scratch leaf table lets the kernel access arbitrary
     // physical page-table frames before the permanent RAM aliases exist.
     const SCRATCH_TABLE: u64 = abi::BOOT_DATA_BASE + 0x20_0000;

@@ -2,6 +2,7 @@
 #![no_main]
 
 mod abi;
+mod acpi;
 mod elf;
 mod paging;
 mod payload;
@@ -242,6 +243,10 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
         return status;
     }
 
+    let (acpi, mut acpi_owner) = match acpi::discover(table, &EXIT_ATTEMPTED) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
     let boot_info = boot_page as *mut BootInfo;
     ptr::write(
         boot_info,
@@ -259,6 +264,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
             memory_regions_virtual: abi::BOOT_REGIONS_VA,
             framebuffer,
             boot_payload,
+            acpi,
         },
     );
 
@@ -268,6 +274,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
         Err(status) => return status,
     };
     payload_owner.disarm();
+    acpi_owner.disarm();
     jump_to_kernel(
         kernel.entry,
         abi::BOOT_INFO_VA as *const BootInfo,

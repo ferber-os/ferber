@@ -9,7 +9,9 @@ riscv_drop_to_user:
     sd tp, 8(a2)
     csrw sscratch, a2
     csrw sepc, a0
-    csrw sie, zero
+    la t0, RISCV_CONSOLE_SIE
+    ld t0, 0(t0)
+    csrw sie, t0
     csrr t0, sstatus
     li t1, 0x46702
     not t1, t1

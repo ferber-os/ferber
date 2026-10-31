@@ -1,4 +1,4 @@
-//! Early x86-64 exception diagnostics. Interrupts remain disabled in Phase 1.
+//! x86-64 exception diagnostics and explicitly configured external vectors.
 
 use core::arch::{asm, global_asm};
 
@@ -87,6 +87,9 @@ static mut IDT: [IdtEntry; 256] = [IdtEntry::EMPTY; 256];
 extern "C" {
     static x86_trap_vectors: [usize; 32];
     fn x86_unexpected_interrupt();
+    fn x86_irq_240();
+    fn x86_irq_241();
+    fn x86_irq_255();
 }
 
 pub fn init() {
@@ -125,6 +128,16 @@ pub fn init() {
         for (vector, &address) in x86_trap_vectors.iter().enumerate() {
             (*idt)[vector] = IdtEntry::new(address);
         }
+        for (vector, handler) in [
+            (super::irq::DEVICE_VECTOR, x86_irq_240 as *const () as usize),
+            (super::irq::TIMER_VECTOR, x86_irq_241 as *const () as usize),
+            (
+                super::irq::SPURIOUS_VECTOR,
+                x86_irq_255 as *const () as usize,
+            ),
+        ] {
+            (*idt)[vector as usize] = IdtEntry::new(handler);
+        }
         let descriptor = TablePointer {
             limit: (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
             base: idt as u64,
@@ -147,19 +160,38 @@ extern "C" fn x86_trap_handler(frame: *const TrapFrame) -> ! {
     // SAFETY: assembly passes a pointer to the hardware frame on this stack.
     let frame = unsafe { &*frame };
     if frame.vector == 14 && frame.cs & 3 == 3 {
-        let expected = if cfg!(any(feature = "user-write-probe", feature = "user-vmo-map-write-probe", feature = "user-vmo-seal-write-probe")) {
+        let expected = if cfg!(any(
+            feature = "user-write-probe",
+            feature = "user-vmo-map-write-probe",
+            feature = "user-vmo-seal-write-probe"
+        )) {
             0x7
-        } else if cfg!(any(feature = "user-execute-probe", feature = "user-vmo-map-execute-probe")) {
+        } else if cfg!(any(
+            feature = "user-execute-probe",
+            feature = "user-vmo-map-execute-probe"
+        )) {
             0x15
         } else {
             0x5
         };
-        assert_eq!(frame.error & 0x1f, expected, "unexpected user page-fault access");
+        assert_eq!(
+            frame.error & 0x1f,
+            expected,
+            "unexpected user page-fault access"
+        );
         let address: usize;
         unsafe {
             asm!("mov {}, cr2", out(reg) address, options(nomem, nostack));
         }
-        let cause = if cfg!(any(feature = "user-vmo-map-write-probe", feature = "user-vmo-map-execute-probe", feature = "user-vmo-seal-write-probe")) { frame.error as usize } else { 14 };
+        let cause = if cfg!(any(
+            feature = "user-vmo-map-write-probe",
+            feature = "user-vmo-map-execute-probe",
+            feature = "user-vmo-seal-write-probe"
+        )) {
+            frame.error as usize
+        } else {
+            14
+        };
         crate::kernel::syscall::user_fault(frame.rip as usize, address, cause);
     }
     panic!(

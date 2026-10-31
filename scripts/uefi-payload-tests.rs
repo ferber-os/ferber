@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 #[path = "../boot/uefi/src/abi.rs"]
 mod abi;
+#[path = "../boot/uefi/src/acpi.rs"]
+mod acpi_snapshot;
 #[path = "../boot/uefi/src/paging.rs"]
 mod paging;
 #[path = "../boot/uefi/src/payload.rs"]

@@ -7,8 +7,11 @@ pub const BOOT_INFO_MAGIC: u64 = 0x574f_4c46_5241_4d21; // Stable loader/kernel 
 #[path = "../../shared/boot_payload.rs"]
 pub mod payload;
 pub use payload::BootPayload;
+#[path = "../../shared/acpi.rs"]
+pub mod acpi;
+pub use acpi::AcpiSnapshot;
 
-pub const BOOT_INFO_VERSION: u32 = 3;
+pub const BOOT_INFO_VERSION: u32 = 4;
 #[cfg(target_arch = "x86_64")]
 pub const BOOT_DATA_BASE: u64 = 0xffff_fffe_0000_0000;
 #[cfg(target_arch = "x86_64")]
@@ -116,6 +119,7 @@ pub struct BootInfo {
     pub memory_regions_virtual: u64,
     pub framebuffer: Framebuffer,
     pub boot_payload: BootPayload,
+    pub acpi: AcpiSnapshot,
 }
 
 impl BootInfo {
@@ -141,6 +145,7 @@ impl BootInfo {
             memory_regions_virtual,
             framebuffer: Framebuffer::NONE,
             boot_payload: BootPayload::NONE,
+            acpi: AcpiSnapshot::NONE,
         }
     }
 
@@ -239,6 +244,30 @@ impl BootInfo {
                 }
             }
         }
+        if let Some((start, end)) = self.acpi.bounds().map_err(|_| "invalid ACPI snapshot")? {
+            if self.framebuffer.overlaps(start, end) {
+                return Err("ACPI snapshot overlaps framebuffer");
+            }
+            for (base, length) in [
+                (self.kernel_start, self.kernel_end - self.kernel_start),
+                (self.boot_info_physical, core::mem::size_of::<Self>() as u64),
+                (self.memory_regions, bytes as u64),
+            ] {
+                let protected_end = base
+                    .checked_add(length)
+                    .and_then(|v| v.checked_add(4095))
+                    .ok_or("ACPI reservation overflow")?
+                    & !4095;
+                if start < protected_end && (base & !4095) < end {
+                    return Err("ACPI snapshot overlaps protected memory");
+                }
+            }
+            if let Some((payload_start, payload_end)) = self.boot_payload.bounds()? {
+                if start < payload_end && payload_start < end {
+                    return Err("ACPI snapshot overlaps boot payload");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -255,7 +284,7 @@ impl BootInfo {
 
 const _: () = assert!(core::mem::size_of::<MemoryRegion>() == 24);
 const _: () = assert!(core::mem::size_of::<Framebuffer>() == 40);
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 136);
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 168);
 const _: () = assert!(core::mem::offset_of!(BootInfo, kernel_virtual_start) == 48);
 const _: () = assert!(core::mem::offset_of!(BootInfo, framebuffer) == 72);
 

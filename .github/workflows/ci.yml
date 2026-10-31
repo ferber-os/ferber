@@ -81,6 +81,13 @@ jobs:
           bash scripts/scheduler-tests.sh
           bash scripts/boot-bundle-tests.sh
 
+      - name: Test console and device foundations
+        run: |
+          bash scripts/platform-tests.sh
+          bash scripts/device-tests.sh
+          bash scripts/terminal-tests.sh
+          bash scripts/console-tests.sh
+
       - name: Test initramfs archive, tools and filesystem sessions
         run: bash scripts/initramfs-tests.sh
 

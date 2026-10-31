@@ -47,7 +47,7 @@ x86_syscall_entry:
 x86_enter_user:
     push 0x1b
     push rsi
-    push 2
+    push rdx
     push 0x23
     push rdi
     mov ax, 0x1b

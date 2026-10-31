@@ -4,6 +4,7 @@
 
 pub mod context;
 pub mod device_tree;
+pub mod irq;
 pub mod paging;
 pub mod serial;
 pub mod trap;
@@ -23,8 +24,8 @@ pub fn init() {
 }
 
 pub use paging::{
-    activate_kernel_address_space, bootstrap_aliases, finalize_kernel_space, physical_kernel_bounds,
-    runtime_physical_base,
+    activate_kernel_address_space, bootstrap_aliases, finalize_kernel_space,
+    physical_kernel_bounds, runtime_physical_base,
 };
 
 /// Check supervisor trap state before switching a kernel continuation.

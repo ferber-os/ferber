@@ -60,6 +60,10 @@ extern "C" fn kernel_trap_handler(frame: &mut TrapFrame) {
     let code = scause & !(1 << 63);
 
     if is_interrupt {
+        // Console top halves latch work only; scheduling happens after returning.
+        if unsafe { super::irq::capture(code) } {
+            return;
+        }
         // No interrupt controller is initialized yet. Returning without
         // acknowledging the source would immediately trap again.
         panic!("unhandled interrupt: cause={} sepc={:#x}", code, frame.sepc);

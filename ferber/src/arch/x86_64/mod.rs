@@ -1,7 +1,9 @@
 //! x86-64 early architecture support. Firmware services end before entry.
 
+pub mod platform;
 pub mod console;
 pub mod context;
+pub mod irq;
 pub mod paging;
 pub mod syscall;
 pub mod trap;

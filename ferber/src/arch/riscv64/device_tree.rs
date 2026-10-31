@@ -615,3 +615,8 @@ mod tests {
         );
     }
 }
+
+#[path = "device_tree_console.rs"]
+mod console;
+#[allow(unused_imports)]
+pub use console::ConsolePlatform;

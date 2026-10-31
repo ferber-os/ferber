@@ -12,9 +12,9 @@ filename, an init payload is not a single ELF.
 This page defines the handoff, validation and source-memory lifetime. It supplies no
 authenticated-boot guarantee.
 
-## BootInfo v3 describes exact bytes and reserved backing
+## BootInfo v4 describes exact bytes and reserved backing
 
-BootInfo v3 is 136 bytes. Its appended 24-byte `BootPayload` descriptor contains three
+BootInfo v4 is 168 bytes. Its 24-byte `BootPayload` descriptor contains three
 fixed-width `u64` fields in order: `physical_start`, `byte_len`, and `virtual_start`.
 `shared/boot_payload.rs` defines the shared descriptor and limits. All fields zero means
 absent; partially populated descriptors are invalid. A present file must have 1 byte
@@ -103,3 +103,16 @@ x86-iso INIT=1` supplies `boot.bundle` as the external payload, still named `BOO
 on UEFI media. Its `boot_payload` marker follows userspace service launch, a validated
 request/reply and rooted terminal waiting, rather than fixture exit/reclamation. See
 [the boot bundle](boot-bundle.md) and [init](init.md).
+
+## Firmware discovery is independent of executable delivery
+
+BootInfo v4 appends a 32-byte optional ACPI snapshot descriptor. UEFI copies
+validated discovery tables into owned, reserved memory before firmware exit.
+The snapshot has a separate supervisor RO/NX alias at `0xffff_fffe_0200_0000`,
+outside the boot-payload window. RISC-V supplies an absent descriptor.
+
+The snapshot supports platform discovery; its presence does not activate
+interrupts, device assignment or DMA translation. Those console mechanisms
+remain under development. Existing init boots retain their interrupt-disabled
+execution contract. Loader and kernel must agree on BootInfo v4; older handoff
+versions are rejected rather than reinterpreted.

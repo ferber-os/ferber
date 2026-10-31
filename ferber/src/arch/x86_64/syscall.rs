@@ -1,4 +1,4 @@
-//! Single-CPU syscall entry. Interrupts remain masked until timer scheduling exists.
+//! Single-CPU syscall entry. Kernel syscalls always execute with IF masked.
 
 use core::arch::{asm, global_asm};
 
@@ -93,8 +93,16 @@ pub fn init() {
         asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack));
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
         assert_ne!(cr0 & (1 << 3), 0, "integer-only user state requires CR0.TS");
-        assert_eq!(cr4 & (1 << 16), 0, "unsaved user FS/GS bases must be disabled");
-        assert_eq!(cr4 & (1 << 22), 0, "unsaved user PKRU state must be disabled");
+        assert_eq!(
+            cr4 & (1 << 16),
+            0,
+            "unsaved user FS/GS bases must be disabled"
+        );
+        assert_eq!(
+            cr4 & (1 << 22),
+            0,
+            "unsaved user PKRU state must be disabled"
+        );
         write_msr(0xc000_0080, read_msr(0xc000_0080) | 1 | (1 << 11));
         write_msr(0xc000_0081, (0x10u64 << 48) | (0x08u64 << 32));
         write_msr(0xc000_0082, x86_syscall_entry as *const () as u64);
@@ -107,7 +115,7 @@ pub fn init() {
 
 unsafe extern "C" {
     fn x86_syscall_entry();
-    fn x86_enter_user(pc: usize, sp: usize) -> !;
+    fn x86_enter_user(pc: usize, sp: usize, flags: u64) -> !;
     static x86_user_probe_start: u8;
     static x86_user_probe_end: u8;
     static x86_cooperative_probe_start: u8;
@@ -147,7 +155,7 @@ extern "C" fn x86_syscall_handler(frame: &mut SyscallFrame, entry_flags: u64) {
             && frame.rsp <= 0x7fff_ffff_ffff,
         "invalid user return addresses"
     );
-    frame.rflags = (frame.rflags & 0x8d5) | 2;
+    frame.rflags = (frame.rflags & 0x8d5) | 2 | super::irq::user_interrupt_flags();
 }
 
 /// Enter ring 3. Does not return.
@@ -163,7 +171,7 @@ pub unsafe fn drop_to_user(user_pc: usize, user_sp: usize, kernel_sp: usize) -> 
     write_msr(0xc000_0100, 0);
     write_msr(0xc000_0101, (&raw mut CPU) as u64);
     write_msr(0xc000_0102, 0);
-    x86_enter_user(user_pc, user_sp)
+    x86_enter_user(user_pc, user_sp, 2 | super::irq::user_interrupt_flags())
 }
 
 /// Bind both trusted entry paths to the selected task's retained kernel stack.

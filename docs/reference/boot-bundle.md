@@ -8,7 +8,7 @@ Use `make run INIT=1` for the RISC-V init path or `make x86-iso INIT=1` for a bo
 x86-64 image. The [boot-to-services guide](../guides/boot-and-services.md) explains the
 startup sequence. This reference specifies envelope v2 and its authority handoff.
 
-The firmware transports one opaque file through BootInfo v3. The complete envelope,
+The firmware transports one opaque file through BootInfo v4. The complete envelope,
 including metadata, padding, init and archive, is bounded to 4 MiB. Neither the envelope
 nor archive authenticates executable contents.
 
