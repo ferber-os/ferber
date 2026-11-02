@@ -57,6 +57,7 @@ jobs:
           for target in riscv64gc-unknown-none-elf x86_64-unknown-none; do
             scripts/build-user-elf.sh "$target" debug
             scripts/build-init-bundle.sh "$target" debug
+            scripts/build-user.sh console-echo "$target" debug
             scripts/build-user.sh job-accounting-probe "$target" debug
             scripts/build-user.sh vmo-probe "$target" debug
             scripts/build-user.sh vmo-seal-probe "$target" debug
@@ -69,7 +70,7 @@ jobs:
 
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh scripts/job-accounting-tests.sh scripts/task-tests.sh scripts/scheduler-tests.sh scripts/boot-bundle-tests.sh scripts/build-init-bundle.sh scripts/initramfs.sh scripts/initramfs-tests.sh scripts/platform-tests.sh scripts/device-tests.sh scripts/iommu-tests.sh scripts/terminal-tests.sh scripts/console-tests.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh scripts/job-accounting-tests.sh scripts/task-tests.sh scripts/scheduler-tests.sh scripts/boot-bundle-tests.sh scripts/build-init-bundle.sh scripts/initramfs.sh scripts/initramfs-tests.sh scripts/platform-tests.sh scripts/device-tests.sh scripts/iommu-tests.sh scripts/terminal-tests.sh scripts/console-tests.sh scripts/console-client-tests.sh scripts/irq-notification-tests.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
@@ -88,6 +89,8 @@ jobs:
           bash scripts/iommu-tests.sh
           bash scripts/terminal-tests.sh
           bash scripts/console-tests.sh
+          bash scripts/console-client-tests.sh
+          bash scripts/irq-notification-tests.sh
 
       - name: Test initramfs archive, tools and filesystem sessions
         run: bash scripts/initramfs-tests.sh

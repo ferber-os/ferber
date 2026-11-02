@@ -7,6 +7,7 @@ shift
 user_cfg=()
 linker="$repo_root/userspace/common/linker.ld"
 case "$program" in
+    console-echo) source_dir=console-echo; output_dir=userspace-console-echo; basename=echo ;;
     initfs) source_dir=initfs; output_dir=userspace-initfs; basename=initfs ;;
     service-malformed|service-flood) source_dir=service; output_dir=userspace-$program; basename=service; user_cfg+=(--cfg "fs_attack=\"${program#service-}\"") ;;
     service) source_dir=service; output_dir=userspace-service; basename=service ;;
