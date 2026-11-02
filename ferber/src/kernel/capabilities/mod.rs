@@ -51,6 +51,7 @@ pub enum ObjectType {
     Channel = 3,
     Job = 4,
     Resource = 5,
+    Device = 6,
 }
 
 pub struct Process;

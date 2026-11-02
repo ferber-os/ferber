@@ -13,6 +13,10 @@ complete process-entry example, start with [userspace startup](userspace-startup
 Test scenarios and expected markers are documented under
 [verification](verification.md).
 
+Device calls 24–28 and control call 31 are described in [device authority](device-abi.md).
+IRQ calls 29–30 and time/deadline control remain unavailable (`-95`); normal boot
+does not yet delegate hardware devices.
+
 ## Calling Convention
 
 | Architecture | Number | Arguments 0–5 | Signed result |
@@ -21,7 +25,7 @@ Test scenarios and expected markers are documented under
 | x86-64 | `rax` | `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` | `rax` |
 
 Enter through `ecall` on RISC-V and `syscall` on x86-64. Unused arguments are ignored
-for calls 0–16. Task-construction calls 17–22 and wait-many call 23 require unused
+for calls 0–16. Task-construction calls 17–22, wait-many call 23 and device calls require unused
 arguments to be zero. Returning calls preserve general registers other than the result
 and the x86 `syscall` architectural clobbers (`rcx`, `r11`). x86 return flags are
 sanitized. FP/vector state is outside the resident ABI. x86-64 clears `CR4.FSGSBASE` and
@@ -86,8 +90,8 @@ writable user address, which need not be aligned:
 | `0` | Object type | Little-endian `u32` |
 | `4` | Rights bitmask | Little-endian `u32` |
 
-Object types are Process `0`, Thread `1`, VMO `2`, Channel `3`, Job `4`, and Resource
-`5`. Rights use the bit positions in the [capability model](capability-model.md#rights).
+Object types are Process `0`, Thread `1`, VMO `2`, Channel `3`, Job `4`, Resource
+`5` and Device `6`. Rights use the bit positions in the [capability model](capability-model.md#rights).
 No pointers, internal node IDs, parent data, or names are exposed, and the object
 pointer is not dereferenced.
 
@@ -119,7 +123,9 @@ returns `-13`.
 Revoke requires `MANAGE`. It invalidates the selected node, all its aliases, and all
 descendants. Ancestors and siblings remain valid. A repeated revoke returns `-116`;
 revoked handles can still be closed. Revocation denies future capability operations. It
-does not remove existing VMO mappings or reclaim tasks.
+does not remove existing VMO mappings or reclaim tasks. Device authority has an
+additional containment boundary: revoking a node retained by its driver stops the
+assignment and removes its register views. See [device authority](device-abi.md).
 
 Tables, typed handles, and messages own `Arc<CapNode>` references. Each node owns its
 parent and object. A live descendant therefore retains its ancestry and backing even

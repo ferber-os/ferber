@@ -24,7 +24,8 @@ The references define the current implementation. Their bounds and failure
 rules matter when constructing programs or reviewing kernel changes.
 
 - Authority and communication: [capabilities](reference/capability-model.md),
-  [IPC](reference/ipc.md), [syscalls](reference/syscall-abi.md).
+  [IPC](reference/ipc.md), [syscalls](reference/syscall-abi.md),
+  [device authority](reference/device-abi.md).
 - Program startup: [ELF loading](reference/elf-loading.md),
   [startup record](reference/userspace-startup.md),
   [task construction](reference/task-creation.md), [init](reference/init.md).

@@ -14,6 +14,8 @@ pub enum SourceKind {
     TerminalBootstrap,
     /// The owner must cancel the lease when its concrete pending work is drained.
     Software,
+    /// A verified route is armed; its IRQ top half masks before publishing an event.
+    Hardware,
 }
 
 struct Source {
@@ -66,7 +68,7 @@ impl Drop for SourceLease {
 pub(super) fn snapshot() -> [Option<WaitRegistration>; MAX_SOURCES] {
     let sources = SOURCES.lock();
     core::array::from_fn(|index| sources.sources[index].as_ref().map(|source| {
-        match source.kind { SourceKind::TerminalBootstrap | SourceKind::Software => {} }
+        match source.kind { SourceKind::TerminalBootstrap | SourceKind::Software | SourceKind::Hardware => {} }
         source.channel.clone()
     }))
 }

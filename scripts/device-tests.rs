@@ -1,14 +1,21 @@
 //! Exercise production device ownership with deterministic platform failure injection.
 #![allow(dead_code)]
+#![feature(allocator_ext)]
 extern crate alloc;
 use alloc::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[path = "../ferber/src/kernel/device/mod.rs"]
 mod device;
+#[path = "../ferber/src/kernel/sync.rs"]
+pub mod sync;
 #[path = "../shared/device_abi.rs"]
 mod wire;
 mod kernel {
+    pub use crate::sync;
     pub mod capabilities {
+        pub trait KernelObject: core::any::Any + Send + Sync {
+            fn type_name(&self) -> &'static str;
+        }
         #[derive(Clone, Copy)]
         pub struct Rights(u32);
         impl Rights {
@@ -300,4 +307,139 @@ fn uncertain_hardware_retains_translation_backend_too() {
         drop(result);
         assert_eq!(drops.load(Ordering::SeqCst), usize::from(failure == 0));
     }
+}
+
+fn region() -> device::region::Region {
+    let info = device::abi::RegionInfo {
+        kind: device::abi::REGION_REGISTERS,
+        length: 4096,
+        permissions: 3,
+        width: 0,
+        height: 0,
+        stride: 0,
+        format: 0,
+    };
+    // SAFETY: host-only synthetic aperture is not dereferenced.
+    unsafe { device::region::Region::new(0x1000_0000, info).unwrap() }
+}
+#[test]
+fn assignment_query_never_claims_and_only_one_driver_can_mutate() {
+    let backend = Fake::new();
+    let assignment = device::Assignment::new(backend.clone(), &[region()]).unwrap();
+    assert_eq!(assignment.owner(), None);
+    assert_eq!(assignment.region(0).unwrap().info().length, 4096);
+    assert!(assignment.region(1).is_err());
+    assert_eq!(assignment.start(7), Err(Error::Permission));
+    assert_eq!(assignment.stop(7), Err(Error::Permission));
+    assert_eq!(assignment.claim(0), Err(Error::Invalid));
+    assert_eq!(assignment.owner(), None);
+    assignment.claim(7).unwrap();
+    assignment.claim(7).unwrap();
+    assert_eq!(assignment.claim(8), Err(Error::Permission));
+    let calls = backend.calls.load(Ordering::SeqCst);
+    assert_eq!(assignment.stop(8), Err(Error::Permission));
+    assert_eq!(backend.calls.load(Ordering::SeqCst), calls);
+    let mapping = assignment.map_dma(7, vmo(), rights(), request()).unwrap();
+    assignment.start(7).unwrap();
+    assert_eq!(assignment.claim(8), Err(Error::Busy));
+    assignment.stop(7).unwrap();
+    assert_eq!(assignment.unmap_dma(8, mapping.id), Err(Error::Permission));
+    assignment.unmap_dma(7, mapping.id).unwrap();
+    assignment.revoke(7).unwrap();
+    assert_eq!(assignment.state(), State::Revoked);
+    assert_eq!(assignment.claim(8), Err(Error::Revoked));
+}
+#[test]
+fn assignment_rejects_bad_mapping_before_claiming() {
+    let assignment = device::Assignment::new(Fake::new(), &[region()]).unwrap();
+    let mut map = device::abi::MapRequest {
+        region: 0,
+        address: 0x4000,
+        length: 8192,
+        permissions: 3,
+    };
+    assert_eq!(assignment.authorize_mapping(7, 0, map), Err(Error::Invalid));
+    assert_eq!(assignment.owner(), None);
+    map.length = 4096;
+    assert_eq!(assignment.authorize_mapping(7, 1, map), Err(Error::Invalid));
+    assert_eq!(assignment.owner(), None);
+    assert_eq!(assignment.authorize_mapping(7, 0, map), Ok(0x1000_0000));
+    assert_eq!(
+        assignment.authorize_mapping(8, 0, map),
+        Err(Error::Permission)
+    );
+}
+struct NonDma(Fake);
+// SAFETY: synthetic UART/display backend has no DMA engine, and no hardware access.
+unsafe impl Backend for NonDma {
+    fn requires_dma(&self) -> bool {
+        false
+    }
+    fn isolate(&mut self) -> Result<(), Error> {
+        self.0.isolate()
+    }
+    fn install(&mut self, _: usize, _: &Vmo, _: usize, _: usize, _: u64) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+    fn remove(&mut self, _: usize, _: usize) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+    fn start(&mut self) -> Result<(), Error> {
+        self.0.start()
+    }
+    fn quiesce(&mut self) -> Result<(), Error> {
+        self.0.quiesce()
+    }
+}
+#[test]
+fn only_explicit_non_dma_backend_can_start_without_dma_backing() {
+    let controller = device::Assignment::new(Fake::new(), &[]).unwrap();
+    controller.claim(7).unwrap();
+    assert_eq!(controller.start(7), Err(Error::Invalid));
+    let uart = device::Assignment::new(NonDma(Fake::new()), &[]).unwrap();
+    uart.claim(7).unwrap();
+    uart.start(7).unwrap();
+    assert_eq!(uart.state(), State::Running);
+    uart.stop(7).unwrap();
+}
+#[test]
+fn assignment_region_limit_precedes_isolation_and_failed_dma_keeps_backing() {
+    let backend = Fake::new();
+    assert!(matches!(
+        device::Assignment::new(backend.clone(), &[region(); 9]),
+        Err(Error::Quota)
+    ));
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+    let assignment = device::Assignment::new(backend.clone(), &[]).unwrap();
+    assignment.claim(7).unwrap();
+    let object = vmo();
+    let drops = object.drops.clone();
+    backend.fail.store(2, Ordering::SeqCst);
+    assert_eq!(
+        assignment.map_dma(7, object.clone(), rights(), request()),
+        Err(Error::Hardware)
+    );
+    assert_eq!(assignment.state(), State::Quarantined);
+    drop(object);
+    drop(assignment);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn containment_can_revoke_unclaimed_and_checks_do_not_claim() {
+    let assignment = device::Assignment::new(Fake::new(), &[region()]).unwrap();
+    assignment.configurable(7).unwrap();
+    assert_eq!(assignment.owner(), None);
+    let map = device::abi::MapRequest {
+        region: 1,
+        address: 0x4000,
+        length: 4096,
+        permissions: 3,
+    };
+    assert_eq!(assignment.authorize_mapping(7, 0, map), Err(Error::Invalid));
+    assert_eq!(assignment.owner(), None);
+    assignment.revoke_kernel().unwrap();
+    assert_eq!(assignment.state(), State::Revoked);
+    assert_eq!(assignment.configurable(7), Err(Error::Revoked));
+    assert_eq!(assignment.dma_bytes(), 0);
 }

@@ -18,6 +18,9 @@ use alloc::sync::Arc;
 #[path = "syscall_channel.rs"]
 mod channel;
 
+#[path = "syscall_device.rs"]
+pub(crate) mod device;
+
 #[path = "syscall_vmo.rs"]
 mod vmo;
 
@@ -377,6 +380,7 @@ pub(crate) fn dispatch_for_process(
 }
 
 fn dispatch_in_budget(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize; 6]) -> isize {
+    if (24..=31).contains(&nr) { return device::dispatch(process, nr, args); }
     if (17..=22).contains(&nr) {
         return super::syscall_task::dispatch(process, nr, args);
     }
@@ -506,6 +510,7 @@ fn dispatch_in_budget(process: &Arc<SpinLock<Process>>, nr: usize, args: [usize;
                 Arc::clone(node)
             };
             node.revoke();
+            crate::kernel::device::runtime::reconcile();
             0
         }
         _ => unreachable!(),

@@ -13,7 +13,8 @@ validate requests and avoid acting as confused deputies.
 
 Kernel objects include Jobs (process containers and resource budgets), Processes
 (address spaces and handle tables), Threads (execution contexts), VMOs (memory backing),
-Channels (message endpoints) and Resources (explicit hardware access). An object type
+Channels (message endpoints), Resources (leaf resource placeholders) and
+[Devices](device-abi.md) (kernel-approved hardware assignments). An object type
 tag is checked together with the actual backing type before use.
 
 A numeric handle cannot create an object reference. A syscall resolves it in the

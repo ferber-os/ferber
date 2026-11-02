@@ -853,6 +853,8 @@ extern "C" fn dispatch_loop() -> ! {
         RUNTIME.lock().current = None;
         reap();
         reconcile();
+        super::device::runtime::reconcile();
+        super::device::notifications::drain();
         #[cfg(feature = "init")]
         if super::init::pump() {
             reconcile();

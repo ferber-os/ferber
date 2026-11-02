@@ -8,6 +8,11 @@ mod accounting_host;
 pub use accounting_host::accounting;
 #[path = "../ferber/src/kernel/capabilities/mod.rs"]
 pub mod capabilities;
+#[path = "../ferber/src/kernel/device/mod.rs"]
+pub mod device_core;
+#[path = "../ferber/src/kernel/device/runtime.rs"]
+pub mod device_runtime;
+pub mod device { pub use crate::device_core::*; pub use crate::device_runtime as runtime; }
 #[path = "../ferber/src/kernel/ipc/channel.rs"]
 pub mod channel;
 #[path = "../ferber/src/kernel/memory/paging.rs"]
@@ -18,6 +23,8 @@ pub mod startup;
 pub mod sync;
 #[path = "../ferber/src/kernel/syscall_task.rs"]
 pub mod syscall_task;
+#[path = "../ferber/src/kernel/syscall_device.rs"]
+pub mod syscall_device;
 #[path = "../ferber/src/kernel/task/mod.rs"]
 pub mod task;
 #[path = "../ferber/src/kernel/memory/user_mem.rs"]
@@ -69,7 +76,7 @@ static ALLOCATOR: Allocator = Allocator;
 #[macro_export]
 macro_rules! kprintln { ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }}; }
 mod kernel {
-    pub use crate::{capabilities, scheduler, startup, sync, task};
+    pub use crate::{capabilities, device, scheduler, startup, sync, task};
     pub mod ipc {
         pub use crate::channel;
     }
@@ -102,7 +109,7 @@ mod kernel {
 }
 pub mod phys_map {
     pub fn phys_to_virt(address: usize) -> Option<usize> {
-        Some(address)
+        if (0xf000_0000..0xf001_0000).contains(&address) { None } else { Some(address) }
     }
     pub fn virt_to_phys(address: usize) -> Option<usize> {
         Some(address)
@@ -266,6 +273,10 @@ pub mod arch {
                     .push((va + i * 4096, frames.get(first + i).unwrap(), flags));
             }
             Ok(())
+        }
+        unsafe fn map_device_pages(&mut self, va: usize, pa: usize, count: usize, flags: MapFlags) -> Result<(), PageError> {
+            if flags.executable { return Err(PageError::OutOfRange); }
+            unsafe { self.map_pages(va, &vmo::VmoFrames::contiguous(pa, count), 0, count, flags) }
         }
         unsafe fn unmap_pages_exact(
             &mut self,
@@ -678,4 +689,112 @@ fn target_job_quota_is_enforced_without_spending_the_callers_budget() {
     assert_eq!(limited.lock().memory_used(), 0);
     assert_eq!(f.call(22, [control as usize, 0, 0, 0, 0, 0]), 0);
     assert_eq!(limited.lock().process_count(), 0);
+}
+
+struct DeviceBackend { stops: Arc<std::sync::atomic::AtomicUsize> }
+// SAFETY: synthetic host backend never performs DMA or touches hardware.
+unsafe impl device::Backend for DeviceBackend {
+    fn requires_dma(&self) -> bool { false }
+    fn isolate(&mut self) -> Result<(), device::Error> { Ok(()) }
+    fn install(&mut self, _: usize, _: &vmo::Vmo, _: usize, _: usize, _: u64) -> Result<(), device::Error> { Ok(()) }
+    fn remove(&mut self, _: usize, _: usize) -> Result<(), device::Error> { Ok(()) }
+    fn start(&mut self) -> Result<(), device::Error> { Ok(()) }
+    fn quiesce(&mut self) -> Result<(), device::Error> { self.stops.fetch_add(1, std::sync::atomic::Ordering::Relaxed); Ok(()) }
+}
+fn device_cap(f: &Fixture) -> (usize, Arc<device::Assignment>, Arc<std::sync::atomic::AtomicUsize>) {
+    let stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let info = device::abi::RegionInfo { kind: device::abi::REGION_UART, length: 4096, permissions: 3,
+        width: 0, height: 0, stride: 0, format: 0 };
+    let region = unsafe { device::region::Region::new(0xf000_0000, info).unwrap() };
+    let assignment = Arc::new(device::Assignment::new(DeviceBackend { stops: stops.clone() }, &[region]).unwrap());
+    let handle = f.cap(assignment.clone(), capabilities::ObjectType::Device, capabilities::Rights::all());
+    (handle, assignment, stops)
+}
+fn device_buffer(f: &Fixture) -> vmo::Vmo {
+    let buffer = vmo::Vmo::create(4096).unwrap();
+    unsafe { f.caller.lock().address_space_mut().map_vmo(0x1000, buffer.frames(), MapFlags::user_rw()).unwrap(); }
+    buffer
+}
+fn device_call(f: &Fixture, nr: usize, args: [usize; 6]) -> isize {
+    let budget = f.caller.lock().budget().clone();
+    accounting::with_budget(&budget, || syscall_device::dispatch(&f.caller, nr, args))
+}
+#[test]
+fn device_mappings_are_distinct_from_ram_and_revocation_removes_authority() {
+    let _serial = SERIAL.lock().unwrap();
+    let f = Fixture::new();
+    let (handle, assignment, stops) = device_cap(&f);
+    let mut buffer = device_buffer(&f);
+    assert_eq!(device_call(&f, 24, [handle, 0, 0x1040, 48, 0, 0]), 0);
+    assert_eq!(assignment.owner(), None);
+    let request = device::abi::MapRequest { region: 0, address: 0x4000, length: 4096, permissions: 3 };
+    buffer.write(0, &request.encode().unwrap()).unwrap();
+    assert_eq!(device_call(&f, 25, [handle, 0x1000, 32, 1, 0, 0]), -22);
+    assert_eq!(device_call(&f, 25, [handle, 0x1000, 32, 0, 0, 0]), 0);
+    assert_eq!(assignment.owner(), Some(f.caller.lock().id()));
+    assert_eq!(f.caller.lock().address_space().query(0x4000), Some((0xf000_0000, MapFlags::user_rw())));
+    assert_eq!(user_mem::preflight(f.caller.lock().address_space(), 0x4000, 1, false), Err(user_mem::UserMemError::NotMapped));
+    assert_eq!(device_call(&f, 24, [handle, 0, 0x4000, 48, 0, 0]), -14);
+    assert_eq!(device_call(&f, 31, [handle, 1, 0, 0, 0, 0]), 0);
+    assert_eq!(device_call(&f, 26, [handle, 0x4000, 4096, 0, 0, 0]), -16);
+    let node = { let process = f.caller.lock(); let table = process.handle_table().lock(); Arc::clone(table.lookup(handle as u32).unwrap()) };
+    node.revoke();
+    device_runtime::reconcile();
+    assert_eq!(assignment.state(), device::State::Revoked);
+    assert!(stops.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert_eq!(f.caller.lock().address_space().query(0x4000), None);
+    assert_eq!(device_call(&f, 24, [handle, 0, 0x1040, 48, 0, 0]), -116);
+    unsafe { f.caller.lock().address_space_mut().unmap_vmo(0x1000, 1).unwrap(); }
+}
+#[test]
+fn dma_syscalls_preflight_output_pin_backing_and_block_writers_sealing() {
+    let _serial = SERIAL.lock().unwrap();
+    let f = Fixture::new();
+    let (handle, assignment, _) = device_cap(&f);
+    let mut buffer = device_buffer(&f);
+    let backing = Arc::new(vmo::Vmo::create(4096).unwrap());
+    let vmo = f.cap(backing.clone(), capabilities::ObjectType::Vmo, capabilities::Rights::all());
+    let request = device::abi::DmaRequest { offset: 0, length: 4096, permissions: 3 };
+    buffer.write(0, &request.encode().unwrap()).unwrap();
+    assert_eq!(device_call(&f, 27, [handle, vmo, 0x1000, 32, 0x9000, 24]), -14);
+    assert_eq!(assignment.dma_bytes(), 0);
+    assert_eq!(assignment.owner(), None);
+    let insufficient = f.cap(backing.clone(), capabilities::ObjectType::Vmo, capabilities::Rights::MAP);
+    assert_eq!(device_call(&f, 27, [handle, insufficient, 0x1000, 32, 0x1080, 24]), -13);
+    assert_eq!(assignment.owner(), None);
+    f.close(insufficient);
+    assert_eq!(device_call(&f, 27, [handle, vmo, 0x1000, 32, 0x1080, 24]), 0);
+    assert_eq!(assignment.dma_bytes(), 4096);
+    let mut output = [0; 24]; buffer.read(128, &mut output).unwrap();
+    let id = u64::from_le_bytes(output[..8].try_into().unwrap());
+    assert!(id != 0);
+    assert_eq!(backing.seal(), Err(vmo::VmoError::Busy));
+    f.close(vmo);
+    assert_eq!(assignment.dma_bytes(), 4096);
+    assert_eq!(device_call(&f, 28, [handle, id as usize, 0, 0, 0, 0]), 0);
+    assert_eq!(assignment.dma_bytes(), 0);
+    backing.seal().unwrap();
+    unsafe { f.caller.lock().address_space_mut().unmap_vmo(0x1000, 1).unwrap(); }
+}
+#[test]
+fn device_authority_cannot_be_forged_or_redelegated_after_claim() {
+    let _serial = SERIAL.lock().unwrap();
+    let f = Fixture::new();
+    let (handle, assignment, _) = device_cap(&f);
+    let mut buffer = device_buffer(&f);
+    let forged = f.cap(Arc::new(capabilities::Resource), capabilities::ObjectType::Device, capabilities::Rights::all());
+    assert_eq!(device_call(&f, 24, [forged, 0, 0x1040, 48, 0, 0]), -22);
+    let node = { let p = f.caller.lock(); let table = p.handle_table().lock(); Arc::clone(table.lookup(handle as u32).unwrap()) };
+    let weak = node.attenuate(capabilities::Rights::INSPECT).unwrap();
+    let weak = f.caller.lock().handle_table().lock().insert(weak).unwrap() as usize;
+    buffer.write(0, &device::abi::MapRequest { region: 0, address: 0x4000, length: 4096, permissions: 3 }.encode().unwrap()).unwrap();
+    assert_eq!(device_call(&f, 25, [weak, 0x1000, 32, 0, 0, 0]), -13);
+    assert_eq!(assignment.owner(), None);
+    assert_eq!(device_call(&f, 25, [handle, 0x1000, 32, 0, 0, 0]), 0);
+    let control = f.create();
+    assert_eq!(f.call(19, [control, handle, 0, 0, 0, 0]), -22);
+    f.caller.lock().kill();
+    assert_eq!(assignment.state(), device::State::Revoked);
+    assert_eq!(f.caller.lock().address_space().query(0x4000), None);
+    unsafe { f.caller.lock().address_space_mut().unmap_vmo(0x1000, 1).unwrap(); }
 }

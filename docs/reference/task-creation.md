@@ -84,8 +84,10 @@ node into a free child slot. It returns the actual slot. The caller must derive 
 attenuated capability first if the child should receive fewer rights. No implicit
 duplication or attenuation occurs.
 
-Only owned-RAM VMO capabilities, concrete leaf Resource capabilities and channel
-endpoints can be given. Job, Process, Thread and other graph-owning backing is rejected.
+Owned-RAM VMO capabilities, concrete leaf Resource capabilities, channel endpoints
+and unclaimed concrete Device assignments can be given. A Device already claimed
+by a driver cannot move to another process. Job, Process, Thread and other
+graph-owning backing is rejected. See [device authority](device-abi.md).
 Channel payloads retain their separate existing ownership restrictions; this direct
 child handoff does not enable channel endpoints in queued messages. Failure leaves the
 source handle and child table unchanged. Once delegation succeeds, a later construction

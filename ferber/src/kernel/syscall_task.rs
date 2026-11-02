@@ -344,6 +344,7 @@ fn give(caller: &Arc<SpinLock<Process>>, raw: usize, handle: usize) -> Result<is
         ObjectType::Vmo => node.object_ref::<Vmo>().is_some_and(Vmo::is_owned_ram),
         ObjectType::Resource => node.object_ref::<Resource>().is_some(),
         ObjectType::Channel => node.object_ref::<Channel>().is_some(),
+        ObjectType::Device => node.object_ref::<crate::kernel::device::Assignment>().is_some_and(|device| device.owner().is_none()),
         _ => false,
     };
     if !valid {

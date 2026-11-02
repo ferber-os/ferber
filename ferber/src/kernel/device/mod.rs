@@ -6,11 +6,17 @@ use crate::kernel::memory::{
     paging::MapFlags,
     vmo::{Vmo, WritableMapping},
 };
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[path = "../../../../shared/device_abi.rs"]
 pub mod abi;
+pub mod assignment;
+pub use assignment::Assignment;
 pub mod irq;
+#[cfg(not(test))]
+pub mod runtime;
+#[cfg(not(test))]
+pub mod notifications;
 pub mod region;
 pub mod state;
 use state::Lifecycle;
@@ -29,6 +35,10 @@ pub static QUARANTINED_DMA_BYTES: AtomicUsize = AtomicUsize::new(0);
 /// Every uncertain hardware outcome must return an error. No method may allocate
 /// or release the driver's backing independently of the retained mapping leases.
 pub unsafe trait Backend: Send + Sync {
+    /// Non-DMA devices must opt out explicitly; ordinary controllers require backing.
+    fn requires_dma(&self) -> bool {
+        true
+    }
     fn isolate(&mut self) -> Result<(), Error>;
     fn install(
         &mut self,
@@ -41,6 +51,34 @@ pub unsafe trait Backend: Send + Sync {
     fn remove(&mut self, iova: usize, length: usize) -> Result<(), Error>;
     fn start(&mut self) -> Result<(), Error>;
     fn quiesce(&mut self) -> Result<(), Error>;
+}
+// SAFETY: type erasure forwards every operation to the same trusted backend.
+unsafe impl<B: Backend + ?Sized> Backend for Box<B> {
+    fn requires_dma(&self) -> bool {
+        (**self).requires_dma()
+    }
+    fn isolate(&mut self) -> Result<(), Error> {
+        (**self).isolate()
+    }
+    fn install(
+        &mut self,
+        iova: usize,
+        frames: &Vmo,
+        offset: usize,
+        length: usize,
+        permissions: u64,
+    ) -> Result<(), Error> {
+        (**self).install(iova, frames, offset, length, permissions)
+    }
+    fn remove(&mut self, iova: usize, length: usize) -> Result<(), Error> {
+        (**self).remove(iova, length)
+    }
+    fn start(&mut self) -> Result<(), Error> {
+        (**self).start()
+    }
+    fn quiesce(&mut self) -> Result<(), Error> {
+        (**self).quiesce()
+    }
 }
 pub struct UnavailableBackend;
 // SAFETY: no operation claims to establish hardware isolation or quiescence.
@@ -100,6 +138,9 @@ impl<B: Backend> Device<B> {
     }
     pub fn state(&self) -> State {
         self.lifecycle.state()
+    }
+    pub fn configurable(&self) -> Result<(), Error> {
+        self.lifecycle.configurable()
     }
     pub fn dma_bytes(&self) -> usize {
         self.bytes
@@ -195,7 +236,7 @@ impl<B: Backend> Device<B> {
     }
     pub fn start(&mut self) -> Result<(), Error> {
         self.lifecycle.configurable()?;
-        if self.bytes == 0 {
+        if self.bytes == 0 && self.backend.as_ref().expect("owned backend").requires_dma() {
             return Err(Error::Invalid);
         }
         if let Err(error) = self.backend.as_mut().expect("owned backend").start() {

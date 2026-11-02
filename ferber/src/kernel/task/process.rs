@@ -9,7 +9,8 @@ use super::job::Job;
 use super::thread::{Thread, ThreadState};
 use super::TaskError;
 use crate::arch::ArchAddressSpace;
-use crate::kernel::capabilities::{HandleTable, KernelObject};
+use crate::kernel::capabilities::{CapNode, HandleTable, KernelObject};
+use crate::kernel::device::Assignment;
 use crate::kernel::memory::accounting::{self, AllocError, BudgetRef};
 use crate::kernel::memory::paging::{AddressSpace, MapFlags};
 use crate::kernel::memory::vmo::{Vmo, WritableMapping};
@@ -67,6 +68,19 @@ pub(crate) struct MappingRecord {
     pub _writable: Option<WritableMapping>,
 }
 
+pub(crate) struct DeviceMappingRecord {
+    pub base: usize,
+    pub len: usize,
+    pub backing: Vmo,
+    pub flags: MapFlags,
+    pub assignment: Arc<Assignment>,
+    pub node: Arc<CapNode>,
+}
+pub(crate) struct OwnedDevice {
+    pub assignment: Arc<Assignment>,
+    pub node: Arc<CapNode>,
+}
+
 pub struct Process {
     id: u64,
     name: &'static str,
@@ -76,6 +90,8 @@ pub struct Process {
     handle_table: SpinLock<HandleTable>,
     backing: Vec<Vmo>,
     mappings: Vec<MappingRecord>,
+    device_mappings: Vec<DeviceMappingRecord>,
+    owned_devices: Vec<OwnedDevice>,
     threads: Vec<Arc<SpinLock<Thread>>>,
     self_weak: Option<Weak<SpinLock<Process>>>,
     budget: BudgetRef,
@@ -108,6 +124,8 @@ impl Process {
             handle_table: SpinLock::new(HandleTable::new()),
             backing: Vec::new(),
             mappings: Vec::new(),
+            device_mappings: Vec::new(),
+            owned_devices: Vec::new(),
             threads: Vec::new(),
             self_weak: None,
             budget,
@@ -175,6 +193,7 @@ impl Process {
             return;
         }
         self.state = ProcessState::Dead;
+        self.retire_devices(false);
         for thread in &self.threads {
             thread.lock().set_state(ThreadState::Dead);
         }
@@ -230,6 +249,35 @@ impl Process {
         &self.threads
     }
 
+    pub(crate) fn device_mappings(&self) -> &[DeviceMappingRecord] { &self.device_mappings }
+    pub(crate) fn device_mappings_mut(&mut self) -> &mut Vec<DeviceMappingRecord> { &mut self.device_mappings }
+    pub(crate) fn owned_devices(&self) -> &[OwnedDevice] { &self.owned_devices }
+    pub(crate) fn owned_devices_mut(&mut self) -> &mut Vec<OwnedDevice> { &mut self.owned_devices }
+
+    /// Quiesce before removing register views or releasing any process memory.
+    pub(crate) fn retire_devices(&mut self, revoked_only: bool) {
+        for owned in &self.owned_devices {
+            if !revoked_only || !owned.node.is_valid() {
+                let _ = owned.assignment.revoke_kernel();
+            }
+        }
+        let mut index = 0;
+        while index < self.device_mappings.len() {
+            let record = &self.device_mappings[index];
+            if revoked_only && record.node.is_valid()
+                && !matches!(record.assignment.state(), crate::kernel::device::State::Revoked | crate::kernel::device::State::Quarantined) {
+                index += 1;
+                continue;
+            }
+            unsafe {
+                self.address_space.unmap_pages_exact(record.base, record.backing.frames(), 0, record.len / 4096, record.flags)
+                    .expect("retire device mapping");
+            }
+            self.device_mappings.remove(index);
+        }
+        if !revoked_only { self.owned_devices.clear(); }
+    }
+
     pub(crate) fn mappings(&self) -> &[MappingRecord] {
         &self.mappings
     }
@@ -250,6 +298,7 @@ impl Process {
     }
 
     pub(crate) fn take_mappings(&mut self) -> Vec<MappingRecord> {
+        self.retire_devices(false);
         for record in &self.mappings {
             unsafe {
                 self.address_space
@@ -289,6 +338,10 @@ impl Process {
     pub(crate) fn set_self_weak(&mut self, weak: Weak<SpinLock<Process>>) {
         self.self_weak = Some(weak);
     }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) { self.retire_devices(false); }
 }
 
 fn alloc_error(error: AllocError) -> TaskError {
