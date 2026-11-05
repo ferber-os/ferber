@@ -81,3 +81,13 @@ safely removed, even if the original VMO handle has been closed.
 Neither host regressions nor dormant backend code establish physical DMA isolation.
 Platform discovery, firmware handoff, requester quiescence and interrupt routing must
 be verified before an assignment is exposed to an actual driver.
+
+The AMD-Vi backend requires Invalidate All support (IASup) and an enforceable
+SMI filter. Initial activation installs deny-default entries, invalidates all
+IOMMU caches and verifies command completion before allowing assignment. This
+does not invalidate remote device IOTLBs; ATS must already be disabled and all
+covered requesters quiesced. Completion waits use a one-second HPET deadline;
+faults, expired deadlines and clock failures poison the engine. After activation
+is attempted, its tables remain retained until reboot even on failure. Firmware
+ownership and requester draining remain platform prerequisites, not consequences
+of an IOMMU command completing.

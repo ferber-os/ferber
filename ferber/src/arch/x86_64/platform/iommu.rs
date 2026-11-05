@@ -2,7 +2,10 @@
 //! AMD 48882-PUB rev 3.11: https://docs.amd.com/v/u/en-US/48882_3.11_IOMMU_PUB
 //! The platform must quiesce *every* requester covered by the unit before takeover.
 #![allow(dead_code)]
-use super::MappedRegion;
+use super::{
+    hpet::{Clock, Deadline},
+    MappedRegion,
+};
 use crate::kernel::{
     device::{Backend, Error},
     memory::{phys_map, vmo::Vmo},
@@ -20,11 +23,12 @@ fn device_error(error: encoding::Error) -> Error {
 }
 struct Coherent {
     registers: MappedRegion,
+    clock: Clock,
     buffers: [Option<Vmo>; 7],
     retain: bool,
 }
 impl Coherent {
-    fn new(registers: MappedRegion) -> Result<Self, Error> {
+    fn new(registers: MappedRegion, clock: Clock) -> Result<Self, Error> {
         if registers.length() < 0x4000 {
             return Err(Error::Invalid);
         }
@@ -39,6 +43,7 @@ impl Coherent {
         }
         Ok(Self {
             registers,
+            clock,
             buffers,
             retain: false,
         })
@@ -62,6 +67,17 @@ impl Coherent {
     }
 }
 impl Hardware for Coherent {
+    type Deadline = Deadline;
+    fn deadline(&self, microseconds: u64) -> Result<Deadline, encoding::Error> {
+        self.clock
+            .deadline(microseconds)
+            .map_err(|_| encoding::Error::Fault)
+    }
+    fn expired(&self, deadline: &mut Deadline) -> Result<bool, encoding::Error> {
+        self.clock
+            .expired(deadline)
+            .map_err(|_| encoding::Error::Fault)
+    }
     fn read_register(&self, offset: usize) -> Result<u64, encoding::Error> {
         self.registers
             .read64(offset)
@@ -137,8 +153,10 @@ impl<R: Requester> AmdVi<R> {
     /// Firmware DMA and interrupts have drained and ATS/PASID are disabled.
     /// Exclusive ownership of this unit lasts until reboot. No user code can
     /// alter PCI configuration, interrupt routing, or the IOMMU aperture.
+    #[allow(clippy::too_many_arguments)] // Keep the trusted hardware inputs explicit.
     pub unsafe fn new(
         registers: MappedRegion,
+        clock: Clock,
         requester: R,
         rid: u16,
         alias: Option<u16>,
@@ -150,7 +168,7 @@ impl<R: Requester> AmdVi<R> {
             return Err(Error::Invalid);
         }
         encoding::interrupt(vector, apic).map_err(device_error)?;
-        let coherent = Coherent::new(registers)?;
+        let coherent = Coherent::new(registers, clock)?;
         let mut engine = Engine::new(coherent);
         engine.enable().map_err(device_error)?;
         Ok(Self {

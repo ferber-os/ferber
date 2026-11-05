@@ -69,6 +69,9 @@ pub fn ring_base(physical: u64) -> Result<u64, Error> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Command(pub [u64; 2]);
 impl Command {
+    pub const fn invalidate_all() -> Self {
+        Self([8 << 60, 0])
+    }
     pub const fn invalidate_device(rid: u16) -> Self {
         Self([(2 << 60) | rid as u64, 0])
     }
@@ -87,6 +90,9 @@ impl Command {
     }
 }
 pub const CONTROL: usize = 0x18;
+pub const EXTENDED_FEATURES: usize = 0x30;
+pub const IASUP: u64 = 1 << 6;
+pub const COMPLETION_TIMEOUT_US: u64 = 1_000_000;
 pub const STATUS: usize = 0x2020;
 pub const COMMAND_HEAD: usize = 0x2000;
 pub const COMMAND_TAIL: usize = 0x2008;
@@ -106,6 +112,9 @@ pub enum Buffer {
     Interrupts,
 }
 pub trait Hardware {
+    type Deadline;
+    fn deadline(&self, microseconds: u64) -> Result<Self::Deadline, Error>;
+    fn expired(&self, deadline: &mut Self::Deadline) -> Result<bool, Error>;
     fn read_register(&self, offset: usize) -> Result<u64, Error>;
     fn write_register(&mut self, offset: usize, value: u64) -> Result<(), Error>;
     fn physical(&self, buffer: Buffer) -> u64;
@@ -156,9 +165,9 @@ impl<H: Hardware> Engine<H> {
             return Err(Error::Busy);
         }
         // SMIs bypass DTE interrupt controls. Reject units without an enforceable filter.
-        let features = self.hardware.read_register(0x30)?;
+        let features = self.hardware.read_register(EXTENDED_FEATURES)?;
         let count = (features >> 18) & 7;
-        if (features >> 16) & 3 != 1 || count > 4 {
+        if features & IASUP == 0 || (features >> 16) & 3 != 1 || count > 4 {
             return Err(Error::Invalid);
         }
         for index in 0..(1usize << count) {
@@ -222,6 +231,8 @@ impl<H: Hardware> Engine<H> {
             if self.hardware.read_register(CONTROL)? & ENABLE != ENABLE {
                 return Err(Error::Fault);
             }
+            // Disabled translation does not imply empty hardware caches.
+            self.submit(Command::invalidate_all())?;
             self.complete()
         });
         if result.is_err() {
@@ -257,20 +268,22 @@ impl<H: Hardware> Engine<H> {
     fn complete(&mut self) -> Result<(), Error> {
         let sequence = self.sequence.checked_add(1).ok_or(Error::Fault)?;
         self.sequence = sequence;
+        let mut deadline = self.hardware.deadline(COMPLETION_TIMEOUT_US)?;
         self.submit(Command::completion(
             self.hardware.physical(Buffer::Completion),
             sequence,
         )?)?;
-        // shortcut: fixed poll budget can reject slow hardware; use the platform clock before activation.
-        for _ in 0..1_000_000 {
+        loop {
             self.hardware.fence();
             self.check_faults()?;
+            if self.hardware.expired(&mut deadline)? {
+                return Err(Error::Timeout);
+            }
             if self.hardware.read(Buffer::Completion, 0)? == sequence {
                 return Ok(());
             }
             core::hint::spin_loop();
         }
-        Err(Error::Timeout)
     }
     fn synchronize(&mut self, rid: u16, domain: u16) -> Result<(), Error> {
         let result = self
