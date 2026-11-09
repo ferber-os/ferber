@@ -52,6 +52,14 @@ It bounds each complete record, including protocol speed entries, and rejects
 unknown IDs or overlapping register descriptions before writes. Other capability
 layouts require explicit support before that controller can pass the probe.
 
+IVRS coverage remains mandatory for the selected controller and ordinary inventory
+functions. The diagnostic permits absent coverage only for a host bridge on the
+first bus of a validated MCFG region, or the exact IOMMU function identified by
+IVRS with matching IOMMU class. Both require a type-zero PCI header and standard programming interface.
+Conflicting coverage and shared requester aliases still reject the probe. These
+structural exceptions do not establish global DMA containment or authorize IOMMU
+activation.
+
 ## Success means the selected controller is stopped
 
 The probe uses HPET deadlines for BIOS ownership release, halt, reset and readiness.

@@ -480,3 +480,77 @@ fn hpet_accepts_unspecified_width_but_not_arbitrary_widths() {
         assert_eq!(tables::Hpet::parse(&b).is_ok(), matches!(width, 0 | 64));
     }
 }
+
+// Captured MSI B650M-A PRO WIFI IVRS: root bridge 0000 and IOMMU 0002 are outside requester scopes.
+fn physical_msi_ivrs() -> [u8; 200] {
+    [
+        0x49, 0x56, 0x52, 0x53, 0xc8, 0x00, 0x00, 0x00, 0x02, 0x2d, 0x41, 0x4d, 0x44, 0x20, 0x20, 0x00,
+        0x41, 0x6d, 0x64, 0x54, 0x61, 0x62, 0x6c, 0x65, 0x01, 0x00, 0x00, 0x00, 0x41, 0x4d, 0x44, 0x20,
+        0x01, 0x00, 0x00, 0x00, 0x41, 0x30, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x10, 0xb0, 0x44, 0x00, 0x02, 0x00, 0x40, 0x00, 0x00, 0x00, 0x70, 0xf7, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x6e, 0x8f, 0x04, 0x80, 0x03, 0x03, 0x00, 0x00, 0x04, 0xfe, 0xff, 0x00,
+        0x43, 0x00, 0xff, 0x00, 0x00, 0xa5, 0x00, 0x00, 0x04, 0xff, 0xff, 0x00, 0x48, 0x00, 0x00, 0x00,
+        0x00, 0xa0, 0x00, 0x02, 0x48, 0x00, 0x00, 0xd7, 0x20, 0xa0, 0x00, 0x01, 0x48, 0x00, 0x00, 0x00,
+        0x21, 0x01, 0x00, 0x01, 0x11, 0x30, 0x54, 0x00, 0x02, 0x00, 0x40, 0x00, 0x00, 0x00, 0x70, 0xf7,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x04, 0x00, 0xfa, 0x4a, 0x25, 0xa2,
+        0xef, 0x77, 0x65, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x00, 0x00,
+        0x04, 0xfe, 0xff, 0x00, 0x43, 0x00, 0xff, 0x00, 0x00, 0xa5, 0x00, 0x00, 0x04, 0xff, 0xff, 0x00,
+        0x48, 0x00, 0x00, 0x00, 0x00, 0xa0, 0x00, 0x02, 0x48, 0x00, 0x00, 0xd7, 0x20, 0xa0, 0x00, 0x01,
+        0x48, 0x00, 0x00, 0x00, 0x21, 0x01, 0x00, 0x01,
+    ]
+}
+
+fn coverage_function(requester: u16) -> pci::Function {
+    pci::Function { segment: 0, bus: (requester >> 8) as u8,
+        device: ((requester >> 3) & 31) as u8, function: (requester & 7) as u8 }
+}
+fn coverage_identity(class: u8, subclass: u8) -> pci::Identity {
+    pci::Identity { vendor: 0x1022, device: 0x14d8, class, subclass,
+        interface: 0, header: 0, multifunction: false }
+}
+#[test]
+fn physical_ivrs_distinguishes_structural_functions_from_requesters() {
+    let bytes = physical_msi_ivrs();
+    let parsed = tables::Ivrs::parse(&bytes).unwrap();
+    assert_eq!(parsed.units().count(), 1);
+    assert_eq!(parsed.unit_for(0, 0x1200).unwrap().1, 0x1200);
+    for id in [0, 2] {
+        assert!(parsed.unit_for_optional(0, id).unwrap().is_none());
+        assert!(parsed.unit_for(0, id).is_err());
+    }
+    let bridge = coverage_identity(6, 0);
+    let iommu = coverage_identity(8, 6);
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(0), bridge, true).unwrap().is_none());
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(2), iommu, true).unwrap().is_none());
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(0x1200), coverage_identity(0x0c, 3), false).unwrap().is_some());
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(0), bridge, false).is_err());
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(0), coverage_identity(0x0c, 3), true).is_err());
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(1), iommu, true).is_err());
+    for (id, mut identity) in [(0, bridge), (2, iommu)] {
+        identity.header = 1;
+        assert!(pci::diagnostic_unit_for(&parsed, coverage_function(id), identity, true).is_err());
+        identity.header = 0;
+        identity.interface = 1;
+        assert!(pci::diagnostic_unit_for(&parsed, coverage_function(id), identity, true).is_err());
+    }
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(2), coverage_identity(8, 5), true).is_err());
+    let mut wrong_segment = coverage_function(2);
+    wrong_segment.segment = 1;
+    assert!(pci::diagnostic_unit_for(&parsed, wrong_segment, iommu, true).is_err());
+}
+#[test]
+fn diagnostic_coverage_never_exempts_ambiguity_or_nonroot_hosts() {
+    let only_target = ivrs(&[ivhd(0x11, &[2, 0, 0x12, 0])]);
+    let parsed = tables::Ivrs::parse(&only_target).unwrap();
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(0x100), coverage_identity(6, 0), false).is_err());
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(0x100), coverage_identity(8, 6), false).is_err());
+    let a = ivhd(0x11, &[1, 0, 0, 0]);
+    let mut b = a.clone();
+    b[4..6].copy_from_slice(&3u16.to_le_bytes());
+    b[8..16].copy_from_slice(&0xf7704000u64.to_le_bytes());
+    let ambiguous = ivrs(&[a, b]);
+    let parsed = tables::Ivrs::parse(&ambiguous).unwrap();
+    assert!(parsed.unit_for_optional(0, 0).is_err());
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(0), coverage_identity(6, 0), true).is_err());
+    assert!(pci::diagnostic_unit_for(&parsed, coverage_function(2), coverage_identity(8, 6), true).is_err());
+}

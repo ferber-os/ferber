@@ -338,6 +338,14 @@ impl<'a> Ivrs<'a> {
         })
     }
     pub fn unit_for(&self, segment: u16, requester: u16) -> Result<(IommuUnit<'a>, u16), Error> {
+        self.unit_for_optional(segment, requester)?.ok_or(Error)
+    }
+    /// Absence is distinct from conflicting or malformed coverage.
+    pub fn unit_for_optional(
+        &self,
+        segment: u16,
+        requester: u16,
+    ) -> Result<Option<(IommuUnit<'a>, u16)>, Error> {
         let mut found = None;
         for u in self.units() {
             if u.segment != segment {
@@ -350,7 +358,7 @@ impl<'a> Ivrs<'a> {
                 found = Some((u, alias));
             }
         }
-        found.ok_or(Error)
+        Ok(found)
     }
 }
 fn parse_unit(bytes: &[u8]) -> Result<IommuUnit<'_>, Error> {

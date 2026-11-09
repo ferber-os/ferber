@@ -54,12 +54,20 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
             .function
             .requester()
             .map_err(|_| "inventory requester")?;
-        match ivrs.unit_for(other.function.segment, id) {
-            Ok((u, a)) if u.segment == unit.segment && u.device == unit.device && a == alias => {
+        let root_bus = mcfg
+            .regions()
+            .any(|r| r.segment == other.function.segment && r.first_bus == other.function.bus);
+        match pci::diagnostic_unit_for(&ivrs, other.function, other.identity, root_bus) {
+            Ok(Some((u, a))) if u.segment == unit.segment && u.device == unit.device && a == alias => {
                 return Err("shared requester alias")
             }
             Ok(_) => {}
-            Err(_) => return Err("incomplete IVRS coverage"),
+            Err(_) => {
+                crate::kprintln!("[xhci] IVRS inventory failure {:04x}:{:02x}:{:02x}.{} requester {:#x} class {:02x}:{:02x}:{:02x}",
+                    other.function.segment, other.function.bus, other.function.device, other.function.function,
+                    id, other.identity.class, other.identity.subclass, other.identity.interface);
+                return Err("incomplete IVRS coverage");
+            }
         }
     }
     // A bounded unique parent chain validates routing structure, not ACS/P2P isolation.

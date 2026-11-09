@@ -1,6 +1,32 @@
 //! Side-effect-free PCI configuration decoding.
 #![allow(dead_code)]
 use super::acpi::{u16_at, Error};
+use super::tables::{IommuUnit, Ivrs};
+
+/// Diagnostic-only inventory check; this does not authorize IOMMU activation.
+pub fn diagnostic_unit_for<'a>(
+    ivrs: &Ivrs<'a>,
+    function: Function,
+    identity: Identity,
+    root_bus: bool,
+) -> Result<Option<(IommuUnit<'a>, u16)>, Error> {
+    let requester = function.requester()?;
+    let coverage = ivrs.unit_for_optional(function.segment, requester)?;
+    if coverage.is_some() {
+        return Ok(coverage);
+    }
+    let root_bridge = root_bus && identity.class == 0x06 && identity.subclass == 0;
+    let unit_function = identity.class == 0x08
+        && identity.subclass == 0x06
+        && ivrs
+            .units()
+            .any(|u| u.segment == function.segment && u.device == requester);
+    if identity.header == 0 && identity.interface == 0 && (root_bridge || unit_function) {
+        Ok(None)
+    } else {
+        Err(Error)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Function {
     pub segment: u16,
