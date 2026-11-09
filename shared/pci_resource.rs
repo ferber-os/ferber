@@ -92,11 +92,11 @@ pub fn descriptor(bytes: &[u8], raw_bar: u64) -> Result<(u64, u64), Error> {
     let word = |at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
     let base = word(14);
     let length = word(38);
-    // GetBarAttributes reports the BAR alignment mask in AddrRangeMax.
+    // Firmware reports either the inclusive end or EDK2's BAR alignment mask.
     if !matches!(word(6), 32 | 64)
         || word(30) != 0
         || length == 0
-        || word(22) != length - 1
+        || (word(22) != length - 1 && base.checked_add(length - 1) != Some(word(22)))
         || base.checked_add(length).is_none()
         || base != raw_bar & !15
         || bytes[47] != 0 && bytes.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)) != 0
@@ -110,6 +110,29 @@ const _: () = assert!(core::mem::size_of::<ControllerResource>() == 64);
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn physical_msi_descriptor_accepts_inclusive_end_and_rejects_other_maxima() {
+        let words: [u64; 6] = [0x0040000000002b8a, 0, 0xffff00000000f6a0,
+            0x000000000000f6af, 0, 0x0079000000000010];
+        let mut bytes = [0; 48];
+        for (row, word) in bytes.chunks_exact_mut(8).zip(words) {
+            row.copy_from_slice(&word.to_le_bytes());
+        }
+        assert_eq!(descriptor(&bytes, 0xf6a00004), Ok((0xf6a00000, 0x100000)));
+        for maximum in [0xfffffu64, 0xf6afffff] {
+            bytes[22..30].copy_from_slice(&maximum.to_le_bytes());
+            assert!(descriptor(&bytes, 0xf6a00004).is_ok());
+        }
+        for maximum in [0xffffe, 0xf6affffe, 0xf6b00000, u64::MAX] {
+            bytes[22..30].copy_from_slice(&maximum.to_le_bytes());
+            assert!(descriptor(&bytes, 0xf6a00004).is_err());
+        }
+        bytes[22..30].copy_from_slice(&0xf6afffffu64.to_le_bytes());
+        assert!(descriptor(&bytes, 0xf6b00004).is_err());
+        let resource = ControllerResource { base: 0xf6a00000, length: 0x100000,
+            raw_bar: 0xf6a00004, ..record() };
+        assert_eq!(resource.validate(), Ok(Some((0xf6a00000, 0x100000))));
+    }
     fn record() -> ControllerResource {
         ControllerResource {
             version: 1,
