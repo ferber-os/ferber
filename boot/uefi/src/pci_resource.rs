@@ -10,6 +10,25 @@ const PCI_IO: Guid = Guid {
     data3: 0x4ca5,
     data4: [0x9e, 0xec, 0xb2, 0x3e, 0x3f, 0x50, 0x02, 0x9a],
 };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureError {
+    pub stage: &'static str,
+    pub status: Status,
+    pub raw_bar: Option<u64>,
+    pub descriptor: [u8; 48],
+    pub descriptor_len: usize,
+}
+impl CaptureError {
+    fn new() -> Self {
+        Self {
+            stage: "locate PCI handles",
+            status: 0,
+            raw_bar: None,
+            descriptor: [0; 48],
+            descriptor_len: 0,
+        }
+    }
+}
 #[repr(C)]
 struct PciIo {
     functions: [usize; 18],
@@ -41,26 +60,40 @@ impl PciIo {
         &mut self,
         services: &mut BootServices,
         raw: u64,
+        detail: &mut CaptureError,
     ) -> Result<(u64, u64), Status> {
         let f: extern "efiapi" fn(*mut Self, u8, *mut u64, *mut *mut c_void) -> Status =
             core::mem::transmute(self.functions[16]);
         let mut resources = ptr::null_mut();
+        detail.stage = "GetBarAttributes";
         let result = f(self, 0, ptr::null_mut(), &mut resources);
         if result != uefi::SUCCESS {
             return Err(result);
         }
+        detail.stage = "BAR descriptor pointer";
         if resources.is_null() {
             return Err(uefi::LOAD_ERROR);
         }
         // The firmware protocol owns the returned allocation and descriptor contract.
         let head = core::slice::from_raw_parts(resources.cast::<u8>(), 3);
+        detail.descriptor[..3].copy_from_slice(head);
+        detail.descriptor_len = 3;
+        detail.stage = "BAR descriptor shape";
         let parsed = if head == [0x8a, 43, 0] {
+            detail
+                .descriptor
+                .copy_from_slice(core::slice::from_raw_parts(resources.cast::<u8>(), 48));
+            detail.descriptor_len = 48;
+            detail.stage = "BAR descriptor values";
             pci_resource::descriptor(core::slice::from_raw_parts(resources.cast::<u8>(), 48), raw)
                 .map_err(|_| uefi::LOAD_ERROR)
         } else {
             Err(uefi::LOAD_ERROR)
         };
-        status(services.free_pool(resources.cast()))?;
+        if let Err(error) = status(services.free_pool(resources.cast())) {
+            detail.stage = "free BAR descriptor";
+            return Err(error);
+        }
         parsed
     }
 }
@@ -73,7 +106,17 @@ fn status(value: Status) -> Result<(), Status> {
 }
 /// # Safety
 /// Called before ExitBootServices with exclusive firmware protocol access.
-pub unsafe fn discover(services: *mut BootServices) -> Result<ControllerResource, Status> {
+pub unsafe fn discover(services: *mut BootServices) -> Result<ControllerResource, CaptureError> {
+    let mut detail = CaptureError::new();
+    capture(services, &mut detail).map_err(|status| {
+        detail.status = status;
+        detail
+    })
+}
+unsafe fn capture(
+    services: *mut BootServices,
+    detail: &mut CaptureError,
+) -> Result<ControllerResource, Status> {
     let services = &mut *services;
     let locate: extern "efiapi" fn(
         u32,
@@ -91,37 +134,53 @@ pub unsafe fn discover(services: *mut BootServices) -> Result<ControllerResource
         &mut count,
         &mut handles,
     ))?;
+    detail.stage = "PCI handle buffer";
     if handles.is_null() {
         return Err(uefi::LOAD_ERROR);
     }
     let result = (|| {
+        detail.stage = "PCI handle count";
         if count == 0 || count > 4096 {
             return Err(uefi::LOAD_ERROR);
         }
         let target = pci_resource::selected_identity(cfg!(feature = "xhci-target-msi"));
         let mut found = None;
         for &handle in core::slice::from_raw_parts(handles, count) {
+            detail.raw_bar = None;
+            detail.descriptor_len = 0;
+            detail.descriptor = [0; 48];
+            detail.stage = "PCI I/O protocol";
             let mut interface = ptr::null_mut();
             status(services.handle_protocol(handle, &PCI_IO, &mut interface))?;
+            detail.stage = "PCI I/O protocol pointer";
             if interface.is_null() || interface.addr() & (core::mem::align_of::<PciIo>() - 1) != 0 {
                 return Err(uefi::LOAD_ERROR);
             }
             let pci = &mut *interface.cast::<PciIo>();
             let mut config = [0u32; 16];
+            detail.stage = "PCI configuration read";
             pci.read(0, &mut config)?;
             if (config[0] as u16, (config[0] >> 16) as u16) != target || config[2] >> 8 != 0x0c0330
             {
                 continue;
             }
-            if found.is_some() || config[3] >> 16 & 0x7f != 0 {
+            detail.stage = "duplicate target";
+            if found.is_some() {
                 return Err(uefi::LOAD_ERROR);
             }
+            detail.stage = "target header";
+            if config[3] >> 16 & 0x7f != 0 {
+                return Err(uefi::LOAD_ERROR);
+            }
+            detail.stage = "BAR type";
             let raw_bar = match (config[4] >> 1) & 3 {
                 0 => config[4] as u64,
                 2 => config[4] as u64 | ((config[5] as u64) << 32),
                 _ => return Err(uefi::LOAD_ERROR),
             };
-            let (base, length) = pci.resource(services, raw_bar)?;
+            detail.raw_bar = Some(raw_bar);
+            let (base, length) = pci.resource(services, raw_bar, detail)?;
+            detail.stage = "PCI location";
             let (segment, bus, slot, function) = pci.location()?;
             let record = ControllerResource {
                 version: 1,
@@ -140,12 +199,19 @@ pub unsafe fn discover(services: *mut BootServices) -> Result<ControllerResource
                 class_revision: config[2],
                 reserved: [0; 2],
             };
+            detail.stage = "controller resource validation";
             record.validate().map_err(|_| uefi::LOAD_ERROR)?;
             found = Some(record);
         }
+        if found.is_none() {
+            detail.stage = "target not found";
+        }
         found.ok_or(uefi::NOT_FOUND)
     })();
-    status(services.free_pool(handles.cast()))?;
+    if let Err(error) = status(services.free_pool(handles.cast())) {
+        detail.stage = "free PCI handle buffer";
+        return Err(error);
+    }
     result
 }
 
@@ -265,7 +331,7 @@ mod tests {
         STATE.with(|s| s.borrow_mut().frees += 1);
         0
     }
-    fn run() -> Result<ControllerResource, Status> {
+    fn run() -> Result<ControllerResource, CaptureError> {
         let mut services: BootServices = unsafe { core::mem::zeroed() };
         services.functions[36] = locate as *const () as usize;
         services.functions[16] = protocol as *const () as usize;
@@ -291,8 +357,70 @@ mod tests {
                 }
                 *s.borrow_mut() = state;
             });
-            assert!(run().is_err());
+            let error = run().unwrap_err();
+            assert_eq!(
+                error.stage,
+                [
+                    "target not found",
+                    "duplicate target",
+                    "BAR descriptor shape"
+                ][scenario]
+            );
+            assert_eq!(
+                error.status,
+                if scenario == 0 {
+                    uefi::NOT_FOUND
+                } else {
+                    uefi::LOAD_ERROR
+                }
+            );
+            if scenario == 2 {
+                assert_eq!(error.raw_bar, Some(0xf0000004));
+                assert_eq!(error.descriptor_len, 3);
+                assert_eq!(error.descriptor[..3], [0, 43, 0]);
+            } else {
+                assert_eq!(error.raw_bar, None);
+                assert_eq!(error.descriptor_len, 0);
+            }
             STATE.with(|s| assert_eq!(s.borrow().frees, if scenario == 0 { 1 } else { 2 }));
+        }
+    }
+    #[test]
+    fn descriptor_values_and_record_rejections_preserve_evidence() {
+        for record_failure in [false, true] {
+            STATE.with(|s| {
+                let mut state = State::new();
+                if record_failure {
+                    state.devices[0].config[4] |= 1;
+                } else {
+                    state.descriptor[30] = 1;
+                }
+                *s.borrow_mut() = state;
+            });
+            let error = run().unwrap_err();
+            assert_eq!(
+                error.stage,
+                if record_failure {
+                    "controller resource validation"
+                } else {
+                    "BAR descriptor values"
+                }
+            );
+            assert_eq!(error.status, uefi::LOAD_ERROR);
+            assert_eq!(
+                error.raw_bar,
+                Some(if record_failure {
+                    0xf0000005
+                } else {
+                    0xf0000004
+                })
+            );
+            assert_eq!(error.descriptor_len, 48);
+            STATE.with(|s| {
+                let state = s.borrow();
+                assert_eq!(error.descriptor, state.descriptor);
+                assert_eq!(state.frees, 2);
+            });
         }
     }
 }

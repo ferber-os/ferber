@@ -121,6 +121,23 @@ unsafe fn print_hex(out: *mut uefi::SimpleTextOutput, number: u64) {
     }
 }
 
+#[cfg(feature = "xhci-handoff-probe")]
+unsafe fn capture_print(out: *mut uefi::SimpleTextOutput, message: &str) {
+    print(out, message);
+    #[cfg(not(feature = "xhci-target-msi"))]
+    for byte in message.bytes() {
+        asm!("out dx, al", in("dx") 0xe9u16, in("al") byte, options(nomem, nostack));
+    }
+}
+#[cfg(feature = "xhci-handoff-probe")]
+unsafe fn capture_hex(out: *mut uefi::SimpleTextOutput, number: u64) {
+    let mut text = *b"0x0000000000000000";
+    for (index, byte) in text[2..].iter_mut().enumerate() {
+        *byte = b"0123456789abcdef"[((number >> ((15 - index) * 4)) & 15) as usize];
+    }
+    capture_print(out, core::str::from_utf8(&text).unwrap());
+}
+
 #[derive(Clone, Copy, Default)]
 struct KernelSegment {
     start: u64,
@@ -255,12 +272,33 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
     #[cfg(feature = "xhci-handoff-probe")]
     let controller_resource = match pci_resource::discover(services) {
         Ok(record) => record,
-        Err(status) => {
+        Err(error) => {
+            capture_print((*table).console_out, "xHCI capture substage: ");
+            capture_print((*table).console_out, error.stage);
+            capture_print((*table).console_out, "\r\nStatus: ");
+            capture_hex((*table).console_out, error.status as u64);
+            capture_print((*table).console_out, "\r\n");
+            if let Some(raw) = error.raw_bar {
+                capture_print((*table).console_out, "BAR0: ");
+                capture_hex((*table).console_out, raw);
+                capture_print((*table).console_out, "\r\n");
+            }
+            if error.descriptor_len != 0 {
+                capture_print((*table).console_out, "Descriptor byte count: ");
+                capture_hex((*table).console_out, error.descriptor_len as u64);
+                capture_print((*table).console_out, "\r\nDescriptor words (little endian):\r\n");
+                for row in error.descriptor[..error.descriptor_len].chunks(8) {
+                    let mut word = [0; 8];
+                    word[..row.len()].copy_from_slice(row);
+                    capture_hex((*table).console_out, u64::from_le_bytes(word));
+                    capture_print((*table).console_out, "\r\n");
+                }
+            }
             #[cfg(not(feature = "xhci-target-msi"))]
             for byte in b"[FERBER_TEST] xhci_resource: FAIL\n" {
                 core::arch::asm!("out dx, al", in("dx") 0xe9u16, in("al") *byte, options(nomem, nostack));
             }
-            return status;
+            return error.status;
         }
     };
     #[cfg(not(feature = "xhci-handoff-probe"))]
