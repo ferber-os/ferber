@@ -5,7 +5,10 @@ pub use payload::BootPayload;
 #[path = "../../../shared/acpi.rs"]
 pub mod acpi;
 pub use acpi::AcpiSnapshot;
-pub const BOOT_VERSION: u32 = 4;
+#[path = "../../../shared/pci_resource.rs"]
+pub mod pci_resource;
+pub use pci_resource::ControllerResource;
+pub const BOOT_VERSION: u32 = 5;
 pub const BOOT_DATA_BASE: u64 = 0xffff_fffe_0000_0000;
 pub const BOOT_INFO_VA: u64 = BOOT_DATA_BASE;
 pub const BOOT_REGIONS_VA: u64 = BOOT_DATA_BASE + 0x1_0000;
@@ -76,10 +79,13 @@ pub struct BootInfo {
     pub framebuffer: Framebuffer,
     pub boot_payload: BootPayload,
     pub acpi: AcpiSnapshot,
+    pub controller_resource: ControllerResource,
 }
 
 const _: () = assert!(core::mem::size_of::<MemoryRegion>() == 24);
 const _: () = assert!(core::mem::size_of::<Framebuffer>() == 40);
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 168);
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 232);
 const _: () = assert!(core::mem::offset_of!(BootInfo, kernel_virtual_start) == 48);
 const _: () = assert!(core::mem::offset_of!(BootInfo, framebuffer) == 72);
+
+const _: () = assert!(core::mem::offset_of!(BootInfo, controller_resource) == 168);

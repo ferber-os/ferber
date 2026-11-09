@@ -102,31 +102,35 @@ impl<'a> Capabilities<'a> {
         if identity.header > 1 {
             return Err(Error);
         }
-        let mut seen = [false; 64];
+        let mut seen = [false; 256];
         let mut at = if u16_at(bytes, 6)? & 0x10 != 0 {
             bytes[0x34]
         } else {
             0
         };
         while at != 0 {
-            if at < 0x40 || at & 3 != 0 || at > 0xfc || seen[at as usize / 4] {
+            if at < 0x40 || at & 3 != 0 || at > 0xfc || seen[at as usize] {
                 return Err(Error);
             }
-            seen[at as usize / 4] = true;
             let size = match bytes[at as usize] {
                 5 => {
-                    if u16_at(bytes, at as usize + 2)? & 0x80 != 0 {
-                        14
-                    } else {
-                        10
+                    let control = u16_at(bytes, at as usize + 2)?;
+                    match (control & 0x80 != 0, control & 0x100 != 0) {
+                        (false, false) => 10,
+                        (true, false) => 14,
+                        (false, true) => 20,
+                        (true, true) => 24,
                     }
                 }
                 0x11 => 12,
+                0x10 => 0x14,
                 _ => 2,
             };
-            if at as usize + size > 256 {
+            let end = at as usize + size;
+            if end > 256 || seen[at as usize..end].iter().any(|occupied| *occupied) {
                 return Err(Error);
             }
+            seen[at as usize..end].fill(true);
             at = bytes[at as usize + 1];
         }
         Ok(Self { bytes })
@@ -167,4 +171,44 @@ pub fn bar_length(low: u32, high: u32, wide: bool) -> Result<u64, Error> {
         return Err(Error);
     }
     Ok(length)
+}
+
+/// Inspect extended capability chains without enabling translation extensions.
+pub fn validate_extensions(mut read: impl FnMut(usize) -> Result<u32, Error>) -> Result<(), Error> {
+    let mut seen = [false; 1024];
+    let mut at = 0x100;
+    loop {
+        if at < 0x100 || at & 3 != 0 || at > 0xffc || seen[at / 4] {
+            return Err(Error);
+        }
+        let h = read(at)?;
+        if h == 0 || h == u32::MAX {
+            return if at == 0x100 { Ok(()) } else { Err(Error) };
+        }
+        let id = h & 0xffff;
+        if h >> 16 & 15 == 0 {
+            return Err(Error);
+        }
+        let control = match id {
+            0x0f => Some((at + 4, 1 << 31)), // ATS control lives in upper halfword.
+            0x13 => Some((at + 4, 1)),       // PRI control is the lower halfword.
+            0x1b => Some((at + 4, 1 << 16)), // PASID control is the upper halfword.
+            _ => None,
+        };
+        let end = at + if control.is_some() { 8 } else { 4 };
+        if end > 4096 || seen[at / 4..end / 4].iter().any(|occupied| *occupied) {
+            return Err(Error);
+        }
+        seen[at / 4..end / 4].fill(true);
+        if let Some((offset, mask)) = control {
+            if offset > 0xffc || read(offset)? & mask != 0 {
+                return Err(Error);
+            }
+        }
+        let next = (h >> 20) as usize;
+        if next == 0 {
+            return Ok(());
+        }
+        at = next;
+    }
 }

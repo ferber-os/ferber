@@ -10,8 +10,11 @@ pub use payload::BootPayload;
 #[path = "../../shared/acpi.rs"]
 pub mod acpi;
 pub use acpi::AcpiSnapshot;
+#[path = "../../shared/pci_resource.rs"]
+pub mod pci_resource;
+pub use pci_resource::ControllerResource;
 
-pub const BOOT_INFO_VERSION: u32 = 4;
+pub const BOOT_INFO_VERSION: u32 = 5;
 #[cfg(target_arch = "x86_64")]
 pub const BOOT_DATA_BASE: u64 = 0xffff_fffe_0000_0000;
 #[cfg(target_arch = "x86_64")]
@@ -122,6 +125,7 @@ pub struct BootInfo {
     pub framebuffer: Framebuffer,
     pub boot_payload: BootPayload,
     pub acpi: AcpiSnapshot,
+    pub controller_resource: ControllerResource,
 }
 
 impl BootInfo {
@@ -148,6 +152,7 @@ impl BootInfo {
             framebuffer: Framebuffer::NONE,
             boot_payload: BootPayload::NONE,
             acpi: AcpiSnapshot::NONE,
+            controller_resource: ControllerResource::NONE,
         }
     }
 
@@ -160,6 +165,9 @@ impl BootInfo {
         {
             return Err("invalid boot information layout");
         }
+        self.controller_resource
+            .validate()
+            .map_err(|_| "invalid controller resource")?;
         if self.memory_region_count == 0 || self.memory_region_count > 4096 {
             return Err("invalid boot memory map count");
         }
@@ -286,7 +294,7 @@ impl BootInfo {
 
 const _: () = assert!(core::mem::size_of::<MemoryRegion>() == 24);
 const _: () = assert!(core::mem::size_of::<Framebuffer>() == 40);
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 168);
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 232);
 const _: () = assert!(core::mem::offset_of!(BootInfo, kernel_virtual_start) == 48);
 const _: () = assert!(core::mem::offset_of!(BootInfo, framebuffer) == 72);
 
@@ -387,3 +395,5 @@ mod tests {
 }
 
 const _: () = assert!(core::mem::offset_of!(BootInfo, boot_payload) == 112);
+
+const _: () = assert!(core::mem::offset_of!(BootInfo, controller_resource) == 168);

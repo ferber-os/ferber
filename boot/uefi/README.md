@@ -63,7 +63,7 @@ services; the kernel selects its image-backed high stack before Rust execution.
 
 ## Firmware memory remains reserved after handoff
 
-BootInfo version 4 is the shared 168-byte structure carrying the memory map,
+BootInfo version 5 is the shared 232-byte structure carrying the memory map,
 framebuffer and optional external payload. Physical reservation addresses and
 readable virtual pointers are distinct. Only `EfiConventionalMemory` is eligible
 RAM at this stage. Loader code, data, runtime/firmware allocations and boot data
@@ -90,3 +90,9 @@ the CD-ROM boot path using the shared packager. Neither result alone proves
 physical compatibility. Physical x86-64 evidence, its exact build provenance and
 limitations are recorded in the [verification reference](../../docs/reference/verification.md)
 and [release history](../../docs/releases/README.md).
+
+
+The opt-in [xHCI handoff diagnostic](../../docs/reference/xhci-handoff.md) adds a
+validated firmware BAR0 resource record to BootInfo. Build the matching loader
+and kernel together with `scripts/build-xhci-handoff.sh`; ordinary builds leave
+that record absent and do not take ownership of a USB controller.

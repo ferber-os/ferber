@@ -238,6 +238,7 @@ mod mmio {
         pub physical: u64,
     }
     impl MappedRegion {
+        pub fn length(&self) -> usize { self.length }
         pub fn virtual_base(&self) -> usize {
             self.base
         }
@@ -407,4 +408,75 @@ fn xhci_handoff_preserves_reserved_bits_and_disables_all_smi_enables() {
     unsafe { controller.firmware_handoff(&clock) }.unwrap();
     assert_ne!(registers[0x80 / 4] & (1 << 24), 0);
     assert_eq!(registers[0x84 / 4], 0xe1fee);
+}
+
+#[test]
+fn pci_translation_extensions_require_disabled_controls() {
+    for (id, enable) in [(0x0f, 1u32 << 31), (0x13, 1), (0x1b, 1 << 16)] {
+        let mut config = [0u32; 1024];
+        config[0x100 / 4] = id | (1 << 16);
+        assert!(pci::validate_extensions(|at| Ok(config[at / 4])).is_ok());
+        config[0x104 / 4] = enable;
+        assert!(pci::validate_extensions(|at| Ok(config[at / 4])).is_err());
+        // Capability/feature bits must not be mistaken for control enables.
+        config[0x104 / 4] = if id == 0x1b { 0x1f06 } else if id == 0x0f { 31 } else { 0 };
+        assert!(pci::validate_extensions(|at| Ok(config[at / 4])).is_ok());
+    }
+}
+#[test]
+fn pci_extended_chains_reject_cycles_invalid_links_and_truncation() {
+    for absent in [0, u32::MAX] {
+        assert!(pci::validate_extensions(|_| Ok(absent)).is_ok());
+    }
+    for next in [0x080, 0x101, 0x100, 0xfff] {
+        assert!(pci::validate_extensions(|at| if at == 0x100 { Ok(1 | (1 << 16) | (next << 20)) } else { Err(acpi::Error) }).is_err());
+    }
+    let mut config = [0u32; 1024];
+    config[0x100 / 4] = 1 | (1 << 16) | (0x200 << 20);
+    config[0x200 / 4] = 2 | (1 << 16) | (0x100 << 20);
+    assert!(pci::validate_extensions(|at| Ok(config[at / 4])).is_err());
+    for bad in [0, u32::MAX, 1] {
+        config[0x200 / 4] = bad;
+        assert!(pci::validate_extensions(|at| Ok(config[at / 4])).is_err());
+    }
+    for id in [0x0f, 0x13, 0x1b] {
+        config[0x200 / 4] = id | (1 << 16);
+        assert!(pci::validate_extensions(|at| if at >= 0x204 { Err(acpi::Error) } else { Ok(config[at / 4]) }).is_err());
+        config[0x200 / 4] = 1 | (1 << 16) | (0xffc << 20);
+        config[0xffc / 4] = id | (1 << 16);
+        assert!(pci::validate_extensions(|at| Ok(config[at / 4])).is_err());
+    }
+}
+
+#[test]
+fn pci_capability_payload_overlap_is_rejected() {
+    let mut b = [0u8; 256];
+    b[..2].copy_from_slice(&0x1022u16.to_le_bytes());
+    b[6] = 0x10;
+    b[0x34] = 0x40;
+    for (kind, control, next) in [(5, 0x80u16, 0x44), (5, 0x100, 0x50), (0x10, 0, 0x48)] {
+        b[0x40..].fill(0);
+        b[0x40] = kind;
+        b[0x41] = next;
+        b[0x42..0x44].copy_from_slice(&control.to_le_bytes());
+        b[next as usize] = 0x11;
+        assert!(pci::Capabilities::parse(&b).is_err());
+    }
+    for id in [0x0f, 0x13, 0x1b] {
+        let mut config = [0u32; 1024];
+        config[0x100 / 4] = id | (1 << 16) | (0x104 << 20);
+        config[0x104 / 4] = 2 | (2 << 16);
+        assert!(pci::validate_extensions(|at| Ok(config[at / 4])).is_err());
+    }
+}
+
+#[test]
+fn hpet_accepts_unspecified_width_but_not_arbitrary_widths() {
+    for width in [0, 64, 32, 1, 255] {
+        let mut b = sdt(b"HPET", 56);
+        b[41] = width;
+        b[44..52].copy_from_slice(&0xfed00000u64.to_le_bytes());
+        sum(&mut b);
+        assert_eq!(tables::Hpet::parse(&b).is_ok(), matches!(width, 0 | 64));
+    }
 }

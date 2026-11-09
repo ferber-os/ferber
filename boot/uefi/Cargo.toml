@@ -12,3 +12,7 @@ panic = "abort"
 lto = true
 codegen-units = 1
 
+
+[features]
+xhci-handoff-probe = []
+xhci-target-msi = ["xhci-handoff-probe"]

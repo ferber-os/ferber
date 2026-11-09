@@ -67,3 +67,6 @@ pub mod live_pci;
 pub mod hpet;
 pub mod iommu;
 pub mod xhci;
+
+#[cfg(feature = "xhci-handoff-probe")]
+pub mod handoff_probe;

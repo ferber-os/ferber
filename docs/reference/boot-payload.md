@@ -12,9 +12,9 @@ filename, an init payload is not a single ELF.
 This page defines the handoff, validation and source-memory lifetime. It supplies no
 authenticated-boot guarantee.
 
-## BootInfo v4 describes exact bytes and reserved backing
+## BootInfo v5 describes exact bytes and reserved backing
 
-BootInfo v4 is 168 bytes. Its 24-byte `BootPayload` descriptor contains three
+BootInfo v5 is 232 bytes. Its 24-byte `BootPayload` descriptor contains three
 fixed-width `u64` fields in order: `physical_start`, `byte_len`, and `virtual_start`.
 `shared/boot_payload.rs` defines the shared descriptor and limits. All fields zero means
 absent; partially populated descriptors are invalid. A present file must have 1 byte
@@ -106,7 +106,7 @@ request/reply and rooted terminal waiting, rather than fixture exit/reclamation.
 
 ## Firmware discovery is independent of executable delivery
 
-BootInfo v4 appends a 32-byte optional ACPI snapshot descriptor. UEFI copies
+BootInfo v5 retains the 32-byte optional ACPI snapshot descriptor introduced in v4. UEFI copies
 validated discovery tables into owned, reserved memory before firmware exit.
 The snapshot has a separate supervisor RO/NX alias at `0xffff_fffe_0200_0000`,
 outside the boot-payload window. RISC-V supplies an absent descriptor.
@@ -114,5 +114,14 @@ outside the boot-payload window. RISC-V supplies an absent descriptor.
 The snapshot supports platform discovery; its presence does not activate
 interrupts, device assignment or DMA translation. Those console mechanisms
 remain under development. Existing init boots retain their interrupt-disabled
-execution contract. Loader and kernel must agree on BootInfo v4; older handoff
+execution contract. Loader and kernel must agree on BootInfo v5; older handoff
 versions are rejected rather than reinterpreted.
+
+
+## Controller resource metadata is optional
+
+BootInfo v5 appends a 64-byte inline controller resource record to the previous
+168-byte structure. Diagnostic UEFI builds fill it from validated firmware BAR
+metadata; normal builds and RISC-V provide an entirely zero record. It contains
+no firmware pointers and does not alter executable delivery. See the
+[xHCI handoff diagnostic](xhci-handoff.md) for the selection and reset contract.

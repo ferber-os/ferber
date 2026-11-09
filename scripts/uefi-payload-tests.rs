@@ -9,6 +9,8 @@ mod paging;
 mod payload;
 #[path = "../boot/uefi/src/uefi.rs"]
 mod uefi;
+#[path = "../boot/uefi/src/pci_resource.rs"]
+mod pci_resource_capture;
 const PAGE_SIZE: u64 = 4096;
 struct Segment {
     start: u64,

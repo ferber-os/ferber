@@ -91,3 +91,8 @@ faults, expired deadlines and clock failures poison the engine. After activation
 is attempted, its tables remain retained until reboot even on failure. Firmware
 ownership and requester draining remain platform prerequisites, not consequences
 of an IOMMU command completing.
+
+
+The separate [USB controller handoff diagnostic](xhci-handoff.md) checks selected
+controller ownership transfer and reset. It leaves the controller stopped and
+publishes no userspace Device handle.

@@ -13,6 +13,8 @@ bitflags = { version = "2.6", default-features = false }
 [features]
 # Emulator-only diagnostic port; ordinary hardware builds disable it.
 qemu-debug-port = []
+xhci-handoff-probe = []
+xhci-target-msi = ["xhci-handoff-probe"]
 # Opt-in verification scenarios; ordinary builds use the resident probes.
 cooperative-deadlock-probe = []
 userspace-elf-probe = []

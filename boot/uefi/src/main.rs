@@ -6,6 +6,8 @@ mod acpi;
 mod elf;
 mod paging;
 mod payload;
+#[cfg(feature = "xhci-handoff-probe")]
+mod pci_resource;
 mod uefi;
 
 use abi::{BootInfo, Framebuffer, MemoryRegion};
@@ -88,6 +90,7 @@ fn stage_name(stage: usize) -> &'static str {
         9 => "stack allocation",
         10 => "firmware memory map",
         11 => "boot payload read",
+        12 => "xHCI resource capture",
         _ => "startup",
     }
 }
@@ -247,6 +250,21 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
         Ok(value) => value,
         Err(status) => return status,
     };
+    #[cfg(feature = "xhci-handoff-probe")]
+    BOOT_STAGE.store(12, Ordering::Relaxed);
+    #[cfg(feature = "xhci-handoff-probe")]
+    let controller_resource = match pci_resource::discover(services) {
+        Ok(record) => record,
+        Err(status) => {
+            #[cfg(not(feature = "xhci-target-msi"))]
+            for byte in b"[FERBER_TEST] xhci_resource: FAIL\n" {
+                core::arch::asm!("out dx, al", in("dx") 0xe9u16, in("al") *byte, options(nomem, nostack));
+            }
+            return status;
+        }
+    };
+    #[cfg(not(feature = "xhci-handoff-probe"))]
+    let controller_resource = abi::ControllerResource::NONE;
     let boot_info = boot_page as *mut BootInfo;
     ptr::write(
         boot_info,
@@ -265,6 +283,7 @@ unsafe fn boot(image: Handle, table: *mut SystemTable) -> Status {
             framebuffer,
             boot_payload,
             acpi,
+            controller_resource,
         },
     );
 

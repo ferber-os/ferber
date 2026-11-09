@@ -122,3 +122,77 @@ impl Controller {
         Ok(())
     }
 }
+
+#[path = "../../../../../shared/xhci_handoff.rs"]
+pub mod handoff;
+struct Adapter<'a> {
+    controller: &'a Controller,
+    clock: &'a Clock,
+    bar: u64,
+    identity: u32,
+    class_revision: u32,
+}
+impl handoff::Hardware for Adapter<'_> {
+    type Deadline = super::hpet::Deadline;
+    fn read(&self, at: usize) -> Result<u32, handoff::Error> {
+        self.controller
+            .registers
+            .read32(at)
+            .map_err(|_| handoff::Error::Layout)
+    }
+    fn write(&mut self, at: usize, value: u32) -> Result<(), handoff::Error> {
+        unsafe { self.controller.registers.write32(at, value) }.map_err(|_| handoff::Error::Layout)
+    }
+    fn deadline(&self) -> Result<Self::Deadline, handoff::Error> {
+        self.clock
+            .deadline(1_000_000)
+            .map_err(|_| handoff::Error::Verify)
+    }
+    fn expired(&self, deadline: &mut Self::Deadline) -> Result<bool, handoff::Error> {
+        self.clock
+            .expired(deadline)
+            .map_err(|_| handoff::Error::Verify)
+    }
+    fn mask_interrupts(&mut self) -> Result<(), handoff::Error> {
+        unsafe { self.controller.pci.mask_interrupts() }.map_err(|_| handoff::Error::Interrupts)
+    }
+    fn mask_dma(&mut self) -> Result<(), handoff::Error> {
+        unsafe { self.controller.pci.clear_bus_mastering() }.map_err(|_| handoff::Error::Verify)
+    }
+    fn verify(&self) -> Result<(), handoff::Error> {
+        let pci = self.controller.pci;
+        let low = pci.read32(0x10).map_err(|_| handoff::Error::Verify)?;
+        let high = if low & 6 == 4 {
+            pci.read32(0x14).map_err(|_| handoff::Error::Verify)?
+        } else {
+            0
+        };
+        if pci.read32(0).map_err(|_| handoff::Error::Verify)? != self.identity
+            || pci.read32(8).map_err(|_| handoff::Error::Verify)? != self.class_revision
+            || (low as u64 | ((high as u64) << 32)) != self.bar
+            || pci.read16(4).map_err(|_| handoff::Error::Verify)? & 0x404 != 0x400
+        {
+            return Err(handoff::Error::Verify);
+        }
+        Ok(())
+    }
+}
+impl Controller {
+    pub unsafe fn diagnostic_handoff(
+        &self,
+        clock: &Clock,
+        bar: u64,
+        identity: u32,
+        class_revision: u32,
+    ) -> Result<(), handoff::Error> {
+        let mut adapter = Adapter {
+            controller: self,
+            clock,
+            bar,
+            identity,
+            class_revision,
+        };
+        let plan = handoff::Plan::inspect(&adapter, self.registers.length())?;
+        plan.run(&mut adapter)
+    }
+}

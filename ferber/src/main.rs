@@ -41,7 +41,13 @@ pub unsafe extern "C" fn kernel_main(boot_info: *const boot_info::BootInfo) -> !
     let info = unsafe { boot_info.as_ref() }.expect("missing boot information");
     info.validate().expect("invalid boot information");
     arch::init(info);
-    kernel_start("x86-64", || kernel::memory::init_from_boot_info(info))
+    kernel_start("x86-64", || {
+        let memory = kernel::memory::init_from_boot_info(info);
+        #[cfg(feature = "xhci-handoff-probe")]
+        { let _ = memory; unsafe { arch::x86_64::platform::handoff_probe::run(info) } }
+        #[cfg(not(feature = "xhci-handoff-probe"))]
+        { memory }
+    })
 }
 
 fn kernel_start(

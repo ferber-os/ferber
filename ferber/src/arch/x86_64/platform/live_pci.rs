@@ -50,8 +50,20 @@ impl ConfigFunction {
     pub unsafe fn mask_bus_mastering(&self) -> Result<(), Error> {
         // Contain new DMA and legacy IRQs before inspecting optional capability
         // data. Malformed chains must never leave bus mastering enabled.
-        self.write16(4, (self.read16(4)? & !4) | 0x400)?;
-        if self.read16(4)? & 0x404 != 0x400 {
+        self.clear_bus_mastering()?;
+        self.mask_interrupts()?;
+        Ok(())
+    }
+    pub unsafe fn clear_bus_mastering(&self) -> Result<(), Error> {
+        self.write16(4, self.read16(4)? & !4)?;
+        if self.read16(4)? & 4 != 0 {
+            return Err(Error);
+        }
+        Ok(())
+    }
+    pub unsafe fn mask_interrupts(&self) -> Result<(), Error> {
+        self.write16(4, self.read16(4)? | 0x400)?;
+        if self.read16(4)? & 0x400 == 0 {
             return Err(Error);
         }
         if self.identity.header == 2 {
@@ -62,8 +74,18 @@ impl ConfigFunction {
             let at = cap.offset as usize;
             let control = self.read16(at + 2)?;
             match cap.id {
-                5 => self.write16(at + 2, control & !1)?,
-                0x11 => self.write16(at + 2, (control | 0x4000) & !0x8000)?,
+                5 => {
+                    self.write16(at + 2, control & !1)?;
+                    if self.read16(at + 2)? & 1 != 0 {
+                        return Err(Error);
+                    }
+                }
+                0x11 => {
+                    self.write16(at + 2, (control | 0x4000) & !0x8000)?;
+                    if self.read16(at + 2)? & 0xc000 != 0x4000 {
+                        return Err(Error);
+                    }
+                }
                 _ => {}
             }
         }

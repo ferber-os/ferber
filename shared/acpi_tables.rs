@@ -96,7 +96,7 @@ impl Hpet {
         acpi::sdt(bytes, b"HPET")?;
         if bytes.len() != 56
             || bytes[40] != 0
-            || bytes[41] != 64
+            || !matches!(bytes[41], 0 | 64)
             || bytes[42] != 0
             || !matches!(bytes[43], 0 | 4)
         {
