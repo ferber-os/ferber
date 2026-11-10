@@ -1,6 +1,19 @@
 //! HPET-backed deadlines for bootstrap hardware protocols; no TSC calibration guesses.
 #![allow(dead_code)]
 use super::{acpi::Error, mmio::MappedRegion};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitError {
+    Capabilities,
+    Period,
+    CounterWidth,
+    Revision,
+    Disable,
+    TimerRead(u8),
+    TimerWrite(u8),
+    CounterReset,
+    Enable,
+    Readback,
+}
 #[derive(Clone, Copy)]
 pub struct Clock {
     registers: MappedRegion,
@@ -27,26 +40,29 @@ impl Clock {
     /// # Safety
     /// Exclusive kernel ownership of a validated, uncached HPET aperture. No
     /// firmware agent or driver may use its counter or timer routes concurrently.
-    pub unsafe fn initialize(registers: MappedRegion) -> Result<Self, Error> {
-        let cap = registers.read64(0).map_err(|_| Error)?;
+    pub unsafe fn initialize(registers: MappedRegion) -> Result<Self, InitError> {
+        let cap = registers.read64(0).map_err(|_| InitError::Capabilities)?;
         let period_fs = cap >> 32;
-        ticks_for_us(period_fs, 1)?;
-        if cap & (1 << 13) == 0 || cap & 255 == 0 {
-            return Err(Error);
+        ticks_for_us(period_fs, 1).map_err(|_| InitError::Period)?;
+        if cap & (1 << 13) == 0 {
+            return Err(InitError::CounterWidth);
+        }
+        if cap & 255 == 0 {
+            return Err(InitError::Revision);
         }
         let timers = ((cap >> 8) & 31) + 1;
-        registers.write64(0x10, 0).map_err(|_| Error)?;
+        registers.write64(0x10, 0).map_err(|_| InitError::Disable)?;
         for index in 0..timers as usize {
             let at = 0x100 + index * 0x20;
-            let config = registers.read64(at).map_err(|_| Error)?;
+            let config = registers.read64(at).map_err(|_| InitError::TimerRead(index as u8))?;
             registers
                 .write64(at, config & !((1 << 2) | (1 << 14)))
-                .map_err(|_| Error)?;
+                .map_err(|_| InitError::TimerWrite(index as u8))?;
         }
-        registers.write64(0xf0, 0).map_err(|_| Error)?;
-        registers.write64(0x10, 1).map_err(|_| Error)?;
-        if registers.read64(0x10).map_err(|_| Error)? & 3 != 1 {
-            return Err(Error);
+        registers.write64(0xf0, 0).map_err(|_| InitError::CounterReset)?;
+        registers.write64(0x10, 1).map_err(|_| InitError::Enable)?;
+        if registers.read64(0x10).map_err(|_| InitError::Readback)? & 3 != 1 {
+            return Err(InitError::Readback);
         }
         Ok(Self {
             registers,

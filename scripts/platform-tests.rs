@@ -355,6 +355,41 @@ fn hardware_deadlines_use_specified_hpet_period() {
     assert!(hpet::ticks_for_us(100_000_001, 1).is_err());
     assert!(hpet::ticks_for_us(1, u64::MAX).is_err());
 }
+#[test]
+fn hpet_initialization_identifies_rejected_capabilities_before_writes() {
+    let valid = (100_000_000u64 << 32) | (1 << 13) | 1;
+    for (cap, error) in [
+        ((1 << 13) | 1, hpet::InitError::Period),
+        (((100_000_001u64) << 32) | (1 << 13) | 1, hpet::InitError::Period),
+        (valid & !(1 << 13), hpet::InitError::CounterWidth),
+        (valid & !255, hpet::InitError::Revision),
+    ] {
+        let mut words = vec![0x1234u64; 512];
+        words[0] = cap;
+        let before = words.clone();
+        let result = unsafe { hpet::Clock::initialize(mmio::MappedRegion {
+            base: words.as_mut_ptr() as usize, length: 4096, physical: 0xfed00000,
+        }) };
+        assert_eq!(result.err(), Some(error));
+        assert_eq!(words, before);
+    }
+}
+#[test]
+fn hpet_initialization_reports_bounded_register_failures() {
+    for (length, timers, error) in [
+        (0, 0, hpet::InitError::Capabilities),
+        (16, 0, hpet::InitError::Disable),
+        (0x100, 0, hpet::InitError::TimerRead(0)),
+        (0x108, 1, hpet::InitError::TimerRead(1)),
+    ] {
+        let mut words = vec![0u64; 512];
+        words[0] = (100_000_000u64 << 32) | (1 << 13) | 1 | (timers << 8);
+        let result = unsafe { hpet::Clock::initialize(mmio::MappedRegion {
+            base: words.as_mut_ptr() as usize, length, physical: 0xfed00000,
+        }) };
+        assert_eq!(result.err(), Some(error));
+    }
+}
 #[path = "../ferber/src/arch/x86_64/platform/xhci.rs"]
 mod xhci;
 #[test]

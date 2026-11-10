@@ -131,12 +131,19 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
     if overlap(r.base, r.length, hpet.address, 0x1000) || overlap(r.base, r.length, apic, 0x1000) {
         return Err("BAR overlaps platform control");
     }
-    let clock = Clock::initialize(
-        mapper
-            .map(hpet.address, 0x1000)
-            .map_err(|_| "HPET mapping")?,
-    )
-    .map_err(|_| "HPET clock")?;
+    let hpet_registers = mapper
+        .map(hpet.address, 0x1000)
+        .map_err(|_| "HPET mapping")?;
+    let initial_capabilities = hpet_registers.read64(0);
+    let initial_configuration = hpet_registers.read64(0x10);
+    let clock = Clock::initialize(hpet_registers).map_err(|error| {
+        crate::kprintln!("[hpet] initialization: {:?}", error);
+        crate::kprintln!("[hpet] base: {:#x}", hpet.address);
+        crate::kprintln!("[hpet] initial capabilities (hex): {:x?}", initial_capabilities);
+        crate::kprintln!("[hpet] initial configuration (hex): {:x?}", initial_configuration);
+        crate::kprintln!("[hpet] final configuration (hex): {:x?}", hpet_registers.read64(0x10));
+        "HPET clock"
+    })?;
     let registers = mapper.map(r.base, r.length).map_err(|_| "BAR mapping")?;
     let controller = Controller::new(selected, registers).map_err(|_| "xHCI register layout")?;
     crate::kprintln!(
