@@ -47,10 +47,16 @@ The kernel compares that record against live identity and BAR configuration,
 validates the aperture and platform descriptions, and checks supported capability
 state before the first controller write. It does not size an active BAR or guess
 an aperture length from the controller identity. The initial diagnostic accepts
-only USB Legacy Support (ID 1) and Supported Protocol (ID 2) extended capabilities.
+USB Legacy Support (ID 1), Supported Protocol (ID 2) and inactive Debug Capability
+(ID 10) extended capabilities.
 It bounds each complete record, including protocol speed entries, and rejects
 unknown IDs or overlapping register descriptions before writes. Other capability
 layouts require explicit support before that controller can pass the probe.
+The complete 64-byte Debug Capability must fit without overlap. Its enable and
+run bits must be clear during inspection, before takeover and after reset. The
+probe never writes Debug Capability registers or takes over an active debug engine.
+If the engine becomes active after inspection, the probe fails and attempts PCI
+containment.
 
 IVRS coverage remains mandatory for the selected controller and ordinary inventory
 functions. The diagnostic permits absent coverage only for a host bridge on the

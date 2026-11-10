@@ -2,6 +2,8 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Layout,
+    UnsupportedCapability(u8),
+    DebugActive,
     Ownership,
     Interrupts,
     Halt,
@@ -21,6 +23,7 @@ pub trait Hardware {
 pub struct Plan {
     operational: usize,
     legacy: Option<usize>,
+    debug: Option<usize>,
 }
 impl Plan {
     pub fn inspect(h: &impl Hardware, length: usize) -> Result<Self, Error> {
@@ -74,6 +77,7 @@ impl Plan {
         let mut seen = [0; 256];
         let mut count = 0;
         let mut legacy = None;
+        let mut debug = None;
         while at != 0 {
             if at < 0x20
                 || at & 3 != 0
@@ -87,7 +91,8 @@ impl Plan {
             let minimum = match header & 255 {
                 1 => 8,
                 2 => 16,
-                _ => return Err(Error::Layout),
+                10 => 64,
+                id => return Err(Error::UnsupportedCapability(id as u8)),
             };
             let mut end = at.checked_add(minimum).ok_or(Error::Layout)?;
             if end > length || regions.iter().chain(spans[..count].iter()).any(|other| overlaps((at, end), *other)) {
@@ -111,6 +116,12 @@ impl Plan {
                 }
                 h.read(at + 4)?;
             }
+            if header & 255 == 10 {
+                if debug.replace(at).is_some() {
+                    return Err(Error::Layout);
+                }
+                Self::debug_inactive(h, at)?;
+            }
             let next = ((header >> 8) & 255) as usize;
             at = if next == 0 {
                 0
@@ -121,7 +132,15 @@ impl Plan {
         Ok(Self {
             operational,
             legacy,
+            debug,
         })
+    }
+    fn debug_inactive(h: &impl Hardware, at: usize) -> Result<(), Error> {
+        if h.read(at + 0x20)? & ((1 << 31) | 1) != 0 {
+            Err(Error::DebugActive)
+        } else {
+            Ok(())
+        }
     }
     fn wait(
         h: &impl Hardware,
@@ -143,6 +162,9 @@ impl Plan {
     }
     pub fn run(&self, h: &mut impl Hardware) -> Result<(), Error> {
         let result = (|| {
+            if let Some(at) = self.debug {
+                Self::debug_inactive(h, at)?;
+            }
             h.mask_interrupts().map_err(|_| Error::Interrupts)?;
             if let Some(at) = self.legacy {
                 let header = h.read(at)?;
@@ -170,6 +192,9 @@ impl Plan {
                 {
                     return Err(Error::Verify);
                 }
+            }
+            if let Some(at) = self.debug {
+                Self::debug_inactive(h, at)?;
             }
             h.verify()
         })();
