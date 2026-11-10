@@ -5,7 +5,6 @@ use super::{acpi::Error, mmio::MappedRegion};
 pub enum InitError {
     Capabilities,
     Period,
-    CounterWidth,
     Revision,
     Disable,
     TimerRead(u8),
@@ -18,6 +17,7 @@ pub enum InitError {
 pub struct Clock {
     registers: MappedRegion,
     period_fs: u64,
+    counter_mask: u64,
 }
 pub struct Deadline {
     start: u64,
@@ -44,9 +44,7 @@ impl Clock {
         let cap = registers.read64(0).map_err(|_| InitError::Capabilities)?;
         let period_fs = cap >> 32;
         ticks_for_us(period_fs, 1).map_err(|_| InitError::Period)?;
-        if cap & (1 << 13) == 0 {
-            return Err(InitError::CounterWidth);
-        }
+        let counter_mask = if cap & (1 << 13) == 0 { u32::MAX as u64 } else { u64::MAX };
         if cap & 255 == 0 {
             return Err(InitError::Revision);
         }
@@ -59,7 +57,11 @@ impl Clock {
                 .write64(at, config & !((1 << 2) | (1 << 14)))
                 .map_err(|_| InitError::TimerWrite(index as u8))?;
         }
-        registers.write64(0xf0, 0).map_err(|_| InitError::CounterReset)?;
+        if counter_mask == u32::MAX as u64 {
+            registers.write32(0xf0, 0).map_err(|_| InitError::CounterReset)?;
+        } else {
+            registers.write64(0xf0, 0).map_err(|_| InitError::CounterReset)?;
+        }
         registers.write64(0x10, 1).map_err(|_| InitError::Enable)?;
         if registers.read64(0x10).map_err(|_| InitError::Readback)? & 3 != 1 {
             return Err(InitError::Readback);
@@ -67,21 +69,31 @@ impl Clock {
         Ok(Self {
             registers,
             period_fs,
+            counter_mask,
         })
     }
     pub fn now(&self) -> Result<u64, Error> {
-        self.registers.read64(0xf0).map_err(|_| Error)
+        if self.counter_mask == u32::MAX as u64 {
+            self.registers.read32(0xf0).map(u64::from).map_err(|_| Error)
+        } else {
+            self.registers.read64(0xf0).map_err(|_| Error)
+        }
     }
     pub fn deadline(&self, microseconds: u64) -> Result<Deadline, Error> {
+        let ticks = ticks_for_us(self.period_fs, microseconds)?;
+        if ticks == 0 || ticks > self.counter_mask >> 1 {
+            return Err(Error);
+        }
         let start = self.now()?;
         Ok(Deadline {
             start,
-            ticks: ticks_for_us(self.period_fs, microseconds)?,
+            ticks,
             last: start,
             stalled: 0,
         })
     }
     pub fn expired(&self, d: &mut Deadline) -> Result<bool, Error> {
+        // shortcut: poll before a full counter wrap; extend the clock before scheduling or suspend.
         let now = self.now()?;
         // This is a broken-clock watchdog, not a timing estimate. Real timeout
         // decisions use only HPET ticks; a stopped clock fails closed.
@@ -94,7 +106,7 @@ impl Clock {
             d.last = now;
             d.stalled = 0;
         }
-        Ok(now.wrapping_sub(d.start) >= d.ticks)
+        Ok((now.wrapping_sub(d.start) & self.counter_mask) >= d.ticks)
     }
     pub fn wait_us(&self, microseconds: u64) -> Result<(), Error> {
         let mut d = self.deadline(microseconds)?;

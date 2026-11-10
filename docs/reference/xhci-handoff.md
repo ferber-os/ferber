@@ -63,6 +63,13 @@ activation.
 ## Success means the selected controller is stopped
 
 The probe uses HPET deadlines for BIOS ownership release, halt, reset and readiness.
+Both 32-bit and 64-bit main counters are supported, with counter-width register
+accesses and modular elapsed-time checks. Each deadline must fit within half the
+counter range. These are continuously polled boot deadlines: callers must not
+leave a deadline unchecked for a complete counter wrap. This is not a persistent
+monotonic clock across suspend or arbitrary scheduling delays. At the observed MSI
+counter period, a wrap takes about 300 seconds; current hardware waits are at most
+one second. A stopped-counter watchdog still fails closed.
 It disables defined legacy SMI enables and verifies PCI interrupt masking and bus
 master disable. It rechecks identity, BAR placement and final controller state.
 Only successful completion emits:

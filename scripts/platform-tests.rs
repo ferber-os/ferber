@@ -361,7 +361,6 @@ fn hpet_initialization_identifies_rejected_capabilities_before_writes() {
     for (cap, error) in [
         ((1 << 13) | 1, hpet::InitError::Period),
         (((100_000_001u64) << 32) | (1 << 13) | 1, hpet::InitError::Period),
-        (valid & !(1 << 13), hpet::InitError::CounterWidth),
         (valid & !255, hpet::InitError::Revision),
     ] {
         let mut words = vec![0x1234u64; 512];
@@ -389,6 +388,55 @@ fn hpet_initialization_reports_bounded_register_failures() {
         }) };
         assert_eq!(result.err(), Some(error));
     }
+}
+fn initialize_hpet(words: &mut [u64], capabilities: u64) -> hpet::Clock {
+    words[0] = capabilities;
+    unsafe { hpet::Clock::initialize(mmio::MappedRegion {
+        base: words.as_mut_ptr() as usize, length: words.len() * 8, physical: 0xfed00000,
+    }) }.unwrap()
+}
+#[test]
+fn physical_32_bit_hpet_uses_only_the_main_counter_low_word() {
+    let mut words = vec![0u64; 512];
+    words[0xf0 / 8] = 0xdeadbeef_ffffffff;
+    let clock = initialize_hpet(&mut words, 0x0429b17f10228201);
+    assert_eq!(words[0xf0 / 8], 0xdeadbeef_00000000);
+    assert_eq!(clock.now().unwrap(), 0);
+    words[0xf0 / 8] = 0xaabbccdd_12345678;
+    assert_eq!(clock.now().unwrap(), 0x12345678);
+    assert!(clock.deadline(1_000_000).is_ok());
+}
+#[test]
+fn hpet_deadlines_cross_both_counter_widths_without_early_expiry() {
+    for wide in [false, true] {
+        let mut words = vec![0u64; 512];
+        let clock = initialize_hpet(&mut words,
+            (100_000_000u64 << 32) | 1 | if wide { 1 << 13 } else { 0 });
+        let mask = if wide { u64::MAX } else { u32::MAX as u64 };
+        words[0xf0 / 8] = mask - 15;
+        let mut deadline = clock.deadline(3).unwrap();
+        words[0xf0 / 8] = mask - 1;
+        assert!(!clock.expired(&mut deadline).unwrap());
+        words[0xf0 / 8] = 13;
+        assert!(!clock.expired(&mut deadline).unwrap());
+        words[0xf0 / 8] = 14;
+        assert!(clock.expired(&mut deadline).unwrap());
+        words[0xf0 / 8] = 15;
+        assert!(clock.expired(&mut deadline).unwrap());
+    }
+}
+#[test]
+fn hpet_32_bit_deadlines_reject_ambiguous_intervals_and_stopped_clock() {
+    let mut words = vec![0u64; 512];
+    let clock = initialize_hpet(&mut words, (100_000_000u64 << 32) | 1);
+    assert!(clock.deadline(0).is_err());
+    assert!(clock.deadline(214_748_364).is_ok());
+    assert!(clock.deadline(214_748_365).is_err());
+    let mut deadline = clock.deadline(1).unwrap();
+    for _ in 0..999_999 {
+        assert!(!clock.expired(&mut deadline).unwrap());
+    }
+    assert!(clock.expired(&mut deadline).is_err());
 }
 #[path = "../ferber/src/arch/x86_64/platform/xhci.rs"]
 mod xhci;
