@@ -46,6 +46,15 @@ firmware-DMA draining, peer-to-peer containment or interrupt isolation. A malfor
 missing or unreadable prerequisite instead produces an inventory FAIL with its
 stage. There is no readiness or isolation PASS marker.
 
+An extended-capability decode failure is reported as `UNKNOWN`, with the function's
+full PCI address, raw header at `0x100` and last-read context. The diagnostic
+continues collecting the other functions, then prints its summary and inventory
+FAIL if any extension snapshot remains unknown. `-` means a successfully parsed
+snapshot did not contain that capability; `UNKNOWN` does not mean absent or disabled.
+Other collection failures can still stop the report early. The final counters
+separate functions with known enabled extensions from functions with unknown state.
+
+
 The report separates requester IDs and aliases, IOMMU coverage and routing facts
 from requirements that the current kernel cannot establish. Observing bus mastering
 disabled or Transactions Pending clear cannot by itself prove that earlier posted

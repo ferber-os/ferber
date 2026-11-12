@@ -23,6 +23,30 @@ pub struct Extensions {
     pub pasid: Option<bool>,
     pub acs: Option<Acs>,
 }
+/// Counts known observations without turning a failed decode into absence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExtensionSummary {
+    pub known_enabled: usize,
+    pub unknown: usize,
+}
+impl ExtensionSummary {
+    pub fn record(&mut self, observation: Result<Extensions, Error>) {
+        match observation {
+            Ok(value)
+                if value.ats == Some(true)
+                    || value.pri == Some(true)
+                    || value.pasid == Some(true) =>
+            {
+                self.known_enabled += 1
+            }
+            Ok(_) => {}
+            Err(_) => self.unknown += 1,
+        }
+    }
+    pub fn complete(&self) -> bool {
+        self.unknown == 0
+    }
+}
 /// Observe enable bits without rejecting enabled devices or changing configuration.
 pub fn extensions(mut read: impl FnMut(usize) -> Result<u32, Error>) -> Result<Extensions, Error> {
     let mut result = Extensions::default();

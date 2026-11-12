@@ -195,3 +195,27 @@ fn every_ancestor_must_forward_the_observed_requester_bus() {
     let valid = [bridge(0x08, 1, 0x12), bridge(0x100, 0x12, 0x12)];
     assert_eq!(ancestry(&valid, 0, 0x1200, &[0]).unwrap().count, 2);
 }
+
+#[test]
+fn unknown_extension_snapshots_do_not_become_absent_or_complete() {
+    // Actual MSI host bridge: vendor/device-looking DWORD, not a valid next pointer.
+    let failed = extensions(|at| Ok(if at == 0x100 { 0x14d8_1022 } else { 0 }));
+    assert_eq!(failed, Err(Error::Chain));
+    let absent = extensions(|_| Ok(0));
+    assert_eq!(absent, Ok(Extensions::default()));
+    let enabled = Ok(Extensions {
+        ats: Some(true),
+        ..Extensions::default()
+    });
+    let mut summary = ExtensionSummary::default();
+    summary.record(absent);
+    summary.record(enabled);
+    assert!(summary.complete());
+    assert_eq!(summary.known_enabled, 1);
+    summary.record(failed);
+    summary.record(Err(Error::Read));
+    summary.record(absent);
+    assert_eq!(summary.unknown, 2);
+    assert_eq!(summary.known_enabled, 1);
+    assert!(!summary.complete());
+}

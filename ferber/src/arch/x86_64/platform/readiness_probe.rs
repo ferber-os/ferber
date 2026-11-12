@@ -9,13 +9,14 @@ struct Snapshot {
     function: observations::Function,
     command: u16,
     coverage: Option<(u16, u16)>,
-    extensions: observations::Extensions,
+    extensions: Result<observations::Extensions, observations::Error>,
 }
-fn state(value: Option<bool>) -> &'static str {
+fn state(value: Result<Option<bool>, observations::Error>) -> &'static str {
     match value {
-        None => "-",
-        Some(false) => "off",
-        Some(true) => "ON",
+        Err(_) => "UNKNOWN",
+        Ok(None) => "-",
+        Ok(Some(false)) => "off",
+        Ok(Some(true)) => "ON",
     }
 }
 fn overlaps(a: u64, n: u64, b: u64, m: u64) -> bool {
@@ -83,7 +84,7 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         .map_err(|_| "routing quota")?;
     let mut uncovered = 0;
     let mut bus_mastering = 0;
-    let mut enabled_extensions = 0;
+    let mut extensions_summary = observations::ExtensionSummary::default();
     for function in inventory.functions() {
         let f = function.function;
         let rid = f.requester().map_err(|_| "requester")?;
@@ -95,24 +96,25 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         if command & 4 != 0 {
             bus_mastering += 1;
         }
+        let mut last_read = None;
         let extensions = observations::extensions(|at| {
-            function.read32(at).map_err(|_| observations::Error::Read)
-        })
-        .map_err(|error| {
+            let value = function.read32(at).map_err(|_| observations::Error::Read);
+            last_read = Some((at, value));
+            value
+        });
+        if let Err(error) = extensions {
             crate::kprintln!(
-                "[ready] unsupported config {:04x}:{:04x}: {:?}",
+                "[ready] UNKNOWN config {:04x}:{:02x}:{:02x}.{}: {:?} raw100 {:x?} last {:?}",
                 f.segment,
-                rid,
-                error
+                f.bus,
+                f.device,
+                f.function,
+                error,
+                function.read32(0x100),
+                last_read
             );
-            "PCI extension snapshot"
-        })?;
-        if extensions.ats == Some(true)
-            || extensions.pri == Some(true)
-            || extensions.pasid == Some(true)
-        {
-            enabled_extensions += 1;
         }
+        extensions_summary.record(extensions);
         let mut node = observations::Function {
             segment: f.segment,
             requester: rid,
@@ -178,9 +180,9 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         let (unit, alias) = snapshot.coverage.unwrap_or((0xffff, 0xffff));
         crate::kprintln!("[ready] {:04x}:{:04x} unit {:04x} alias {:04x} BME {} INTx-mask {} ATS {} PRI {} PASID {} parents {}{}",
             f.segment,f.requester,unit,alias,u8::from(snapshot.command&4!=0),u8::from(snapshot.command&0x400!=0),
-            state(snapshot.extensions.ats),state(snapshot.extensions.pri),state(snapshot.extensions.pasid),
+            state(snapshot.extensions.map(|e|e.ats)),state(snapshot.extensions.map(|e|e.pri)),state(snapshot.extensions.map(|e|e.pasid)),
             path.as_ref().map(|p|p.count).unwrap_or(usize::MAX),if shared {" SHARED"} else {""});
-        if let Some(acs) = snapshot.extensions.acs {
+        if let Ok(Some(acs)) = snapshot.extensions.map(|e| e.acs) {
             crate::kprintln!(
                 "[ready] ACS {:04x}:{:04x} capability {:#x} control {:#x}",
                 f.segment,
@@ -264,11 +266,12 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         selected_path.ok_or("missing selected routing snapshot")?
     );
     crate::kprintln!(
-        "[ready] functions {} structural-uncovered {} BME {} extensions-on {}",
+        "[ready] functions {} structural-uncovered {} BME {} known-extensions-on {} unknown-extensions {}",
         snapshots.len(),
         uncovered,
         bus_mastering,
-        enabled_extensions
+        extensions_summary.known_enabled,
+        extensions_summary.unknown
     );
     crate::kprintln!("[ready] invalid-paths {} shared-aliases {} active-units {} missing-IASup {} missing-SMI-filter {}",invalid_paths,shared_aliases,active_units,missing_invalidate,missing_smi);
     crate::kprintln!(
@@ -277,6 +280,9 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
     );
     if invalid_paths != 0 {
         return Err("invalid or unsupported bridge ancestry");
+    }
+    if !extensions_summary.complete() {
+        return Err("PCI extension snapshot");
     }
     crate::kprintln!("[FERBER_TEST] iommu_inventory: PASS");
     Ok(())
