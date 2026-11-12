@@ -137,7 +137,9 @@ impl Hardware for Mock {
 }
 #[test]
 fn exact_descriptors_and_commands() {
-    assert_eq!(DENY, [3, 0, 1, 0]);
+    assert_eq!(DENY, [1, 0, 1, 0]);
+    assert_eq!(DENY[0] & 3, 1); // Valid DTE, invalid translation: DMA must abort.
+    assert_eq!(DENY[0] & (IR | IW), 0);
     assert_eq!(Command::invalidate_all(), Command([0x8000000000000000, 0]));
     assert_eq!(
         device_entry(0x12345000, 0x23456000, 9),
@@ -400,4 +402,96 @@ fn failed_command_submission_poisoned_after_enable_or_mapping() {
     assert!(engine.poisoned());
     assert_ne!(engine.hardware().read(Buffer::Leaves, 8), Ok(0));
     assert_eq!(engine.unmap(0x1000, 4096, 7), Err(Error::Fault));
+}
+
+#[test]
+fn emulator_policy_is_explicit_and_preserves_production_rejection() {
+    let hardware = Mock::new();
+    hardware.registers[EXTENDED_FEATURES / 8].set(IASUP);
+    let mut engine = Engine::new(hardware);
+    assert_eq!(unsafe { engine.enable() }, Err(Error::Invalid));
+    assert_eq!(engine.hardware().writes.get(), 0);
+    unsafe { engine.enable_qemu_dma_probe().unwrap() };
+    assert_eq!(
+        engine.hardware().read_register(CONTROL),
+        Ok(ENABLE & !((1 << 22) | (1 << 24)))
+    );
+    assert_eq!(engine.hardware().read(Buffer::Devices, 0), Ok(DENY[0]));
+    assert_eq!(unsafe { engine.enable() }, Err(Error::Busy));
+}
+#[test]
+fn emulator_policy_still_requires_invalidation_and_inactive_unit() {
+    for active in [false, true] {
+        let hardware = Mock::new();
+        hardware.registers[EXTENDED_FEATURES / 8].set(if active { IASUP } else { 0 });
+        hardware.registers[CONTROL / 8].set(u64::from(active));
+        let mut engine = Engine::new(hardware);
+        assert_eq!(
+            unsafe { engine.enable_qemu_dma_probe() },
+            Err(if active { Error::Busy } else { Error::Invalid })
+        );
+        assert_eq!(engine.hardware().writes.get(), 0);
+        assert!(!engine.enabled());
+    }
+}
+fn event(engine: &mut Engine<Mock>, info: u16, requester: u16, address: u64) {
+    engine
+        .hardware_mut()
+        .write(
+            Buffer::Events,
+            0,
+            (u64::from(info) << 48) | u64::from(requester),
+        )
+        .unwrap();
+    engine
+        .hardware_mut()
+        .write(Buffer::Events, 8, address)
+        .unwrap();
+    engine.hardware().registers[EVENT_TAIL / 8].set(16);
+}
+#[test]
+fn typed_qemu_fault_keeps_requester_address_access_and_log() {
+    for permissions in [1, 2, 3] {
+        let mut engine = enabled();
+        assert_eq!(engine.qemu_dma_fault(), Ok(None));
+        event(&mut engine, 0x2008 | permissions, 0x18, 0x12345080);
+        assert_eq!(
+            engine.qemu_dma_fault(),
+            Ok(Some(QemuDmaFault {
+                requester: 0x18,
+                address: 0x12345080,
+                permissions: permissions as u8,
+            }))
+        );
+        assert!(engine.poisoned());
+        assert_eq!(engine.hardware().read_register(EVENT_HEAD), Ok(0));
+        assert_eq!(engine.map(0x1000, &[0x2000], 3, 7), Err(Error::Fault));
+    }
+}
+#[test]
+fn unrelated_or_malformed_event_cannot_prove_dma_denial() {
+    for info in [0x100a, 0x2008, 0x201a, 0x300a] {
+        let mut engine = enabled();
+        event(&mut engine, info, 0x18, 0x1000);
+        assert_eq!(engine.qemu_dma_fault(), Err(Error::Fault));
+        assert!(engine.poisoned());
+    }
+    for (head, tail, status) in [(1, 16, 0), (0, PAGE as u64, 0), (0, 16, 1), (0, 0, 2)] {
+        let mut engine = enabled();
+        engine.hardware().registers[EVENT_HEAD / 8].set(head);
+        engine.hardware().registers[EVENT_TAIL / 8].set(tail);
+        engine.hardware().registers[STATUS / 8].set(status);
+        assert_eq!(engine.qemu_dma_fault(), Err(Error::Fault));
+        assert!(engine.poisoned());
+    }
+}
+#[test]
+fn emulator_enable_failure_keeps_retention_signal_and_poison() {
+    let mut hardware = Mock::new();
+    hardware.registers[EXTENDED_FEATURES / 8].set(IASUP);
+    hardware.fail_active_tail = true;
+    let mut engine = Engine::new(hardware);
+    assert_eq!(unsafe { engine.enable_qemu_dma_probe() }, Err(Error::Fault));
+    assert!(engine.enabled() && engine.poisoned());
+    assert_eq!(engine.map(0x1000, &[0x2000], 3, 7), Err(Error::Fault));
 }

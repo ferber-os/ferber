@@ -70,3 +70,6 @@ pub mod xhci;
 
 #[cfg(feature = "xhci-handoff-probe")]
 pub mod handoff_probe;
+
+#[cfg(feature = "qemu-dma-probe")]
+pub mod dma_probe;

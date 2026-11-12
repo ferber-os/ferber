@@ -22,9 +22,10 @@ fn page(address: u64) -> Result<u64, Error> {
         Ok(address)
     }
 }
-/// All-zero DTEs bypass translation. This valid entry instead denies DMA,
-/// port I/O and remapped interrupts. SMIs require the separate deny-all filter.
-pub const DENY: [u64; 4] = [3, 0, 1, 0];
+/// V=1, TV=0 terminates DMA translation (AMD 48882 table 8); IV=1
+/// aborts interrupts. Avoid mode-zero IR/IW denial, which QEMU bypasses.
+/// SMIs require the separate deny-all filter.
+pub const DENY: [u64; 4] = [1, 0, 1, 0];
 pub fn device_entry(root: u64, interrupt_table: u64, domain: u16) -> Result<[u64; 4], Error> {
     let root = page(root)?;
     let interrupt_table = page(interrupt_table)?;
@@ -99,6 +100,14 @@ pub const COMMAND_TAIL: usize = 0x2008;
 pub const EVENT_HEAD: usize = 0x2010;
 pub const EVENT_TAIL: usize = 0x2018;
 pub const ENABLE: u64 = 1 | (1 << 2) | (1 << 10) | (1 << 12) | (1 << 22) | (1 << 24);
+#[cfg(any(test, feature = "qemu-dma-probe"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuDmaFault {
+    pub requester: u16,
+    pub address: u64,
+    /// QEMU amdvi_page_fault encodes IOMMU_RO/WO in info bits 0/1.
+    pub permissions: u8,
+}
 /// Coherent memory identifiers are private to a trusted owner. Implementations
 /// retain all buffers while enabled, including on failed completion/quiescence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +165,18 @@ impl<H: Hardware> Engine<H> {
     /// ATS and device interrupt generation disabled. Firmware ownership is over;
     /// no other CPU/driver can touch this unit or its private coherent buffers.
     pub unsafe fn enable(&mut self) -> Result<(), Error> {
+        self.enable_policy(true)
+    }
+    /// # Safety
+    /// Only the controlled QEMU DMA diagnostic may call this. The caller owns
+    /// the complete verified topology, has stopped every DMA producer and masked
+    /// device interrupts, and excludes SMI generation and physical hardware.
+    /// This proves DMA translation only, never SMI or interrupt isolation.
+    #[cfg(any(test, feature = "qemu-dma-probe"))]
+    pub unsafe fn enable_qemu_dma_probe(&mut self) -> Result<(), Error> {
+        self.enable_policy(false)
+    }
+    unsafe fn enable_policy(&mut self, require_smi_filter: bool) -> Result<(), Error> {
         if self.enabled || self.poisoned {
             return Err(Error::Busy);
         }
@@ -167,10 +188,14 @@ impl<H: Hardware> Engine<H> {
         // SMIs bypass DTE interrupt controls. Reject units without an enforceable filter.
         let features = self.hardware.read_register(EXTENDED_FEATURES)?;
         let count = (features >> 18) & 7;
-        if features & IASUP == 0 || (features >> 16) & 3 != 1 || count > 4 {
+        if features & IASUP == 0 || require_smi_filter && ((features >> 16) & 3 != 1 || count > 4) {
             return Err(Error::Invalid);
         }
-        for index in 0..(1usize << count) {
+        for index in 0..if require_smi_filter {
+            1usize << count
+        } else {
+            0
+        } {
             let register = 0x60 + index * 8;
             self.hardware.write_register(register, 0)?;
             // A firmware-locked valid allow entry cannot be taken over safely.
@@ -227,14 +252,22 @@ impl<H: Hardware> Engine<H> {
         self.hardware.fence();
         // Once this write is attempted the caller must retain buffers even on error.
         self.enabled = true;
-        let result = self.hardware.write_register(CONTROL, ENABLE).and_then(|_| {
-            if self.hardware.read_register(CONTROL)? & ENABLE != ENABLE {
-                return Err(Error::Fault);
-            }
-            // Disabled translation does not imply empty hardware caches.
-            self.submit(Command::invalidate_all())?;
-            self.complete()
-        });
+        let control = if require_smi_filter {
+            ENABLE
+        } else {
+            ENABLE & !((1 << 22) | (1 << 24))
+        };
+        let result = self
+            .hardware
+            .write_register(CONTROL, control)
+            .and_then(|_| {
+                if self.hardware.read_register(CONTROL)? & control != control {
+                    return Err(Error::Fault);
+                }
+                // Disabled translation does not imply empty hardware caches.
+                self.submit(Command::invalidate_all())?;
+                self.complete()
+            });
         if result.is_err() {
             self.poisoned = true;
         }
@@ -389,6 +422,39 @@ impl<H: Hardware> Engine<H> {
             self.poisoned = true;
         }
         result
+    }
+    /// Inspect, but never acknowledge or recover from, the first QEMU DMA fault.
+    /// QEMU's event access bits differ from the physical AMD RW encoding.
+    #[cfg(any(test, feature = "qemu-dma-probe"))]
+    pub fn qemu_dma_fault(&mut self) -> Result<Option<QemuDmaFault>, Error> {
+        self.ensure()?;
+        self.poisoned = true;
+        let status = self.hardware.read_register(STATUS)?;
+        let head = self.hardware.read_register(EVENT_HEAD)?;
+        let tail = self.hardware.read_register(EVENT_TAIL)?;
+        if status & 1 != 0 || head >= PAGE as u64 || tail >= PAGE as u64 || (head | tail) & 15 != 0
+        {
+            return Err(Error::Fault);
+        }
+        if head == tail {
+            if status & 2 != 0 {
+                return Err(Error::Fault);
+            }
+            self.poisoned = false;
+            return Ok(None);
+        }
+        self.hardware.fence();
+        let word = self.hardware.read(Buffer::Events, head as usize)?;
+        let address = self.hardware.read(Buffer::Events, head as usize + 8)?;
+        let info = (word >> 48) as u16;
+        if info >> 12 != 2 || info & 3 == 0 || info & 0x0ffc != 8 {
+            return Err(Error::Fault);
+        }
+        Ok(Some(QemuDmaFault {
+            requester: word as u16,
+            address,
+            permissions: (info & 3) as u8,
+        }))
     }
     /// Faults are never hidden: any pending event quarantines the assignment.
     pub fn check_faults(&mut self) -> Result<(), Error> {

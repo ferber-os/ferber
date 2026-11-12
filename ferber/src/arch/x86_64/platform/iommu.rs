@@ -21,14 +21,14 @@ fn device_error(error: encoding::Error) -> Error {
         _ => Error::Hardware,
     }
 }
-struct Coherent {
+pub(super) struct Coherent {
     registers: MappedRegion,
     clock: Clock,
     buffers: [Option<Vmo>; 7],
     retain: bool,
 }
 impl Coherent {
-    fn new(registers: MappedRegion, clock: Clock) -> Result<Self, Error> {
+    pub(super) fn new(registers: MappedRegion, clock: Clock) -> Result<Self, Error> {
         if registers.length() < 0x4000 {
             return Err(Error::Invalid);
         }

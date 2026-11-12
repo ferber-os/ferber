@@ -19,6 +19,9 @@ mod kernel;
 
 use core::panic::PanicInfo;
 
+#[cfg(all(feature = "qemu-dma-probe", feature = "xhci-handoff-probe"))]
+compile_error!("select either the QEMU DMA diagnostic or the xHCI handoff diagnostic");
+
 #[cfg(target_arch = "riscv64")]
 core::arch::global_asm!(include_str!("arch/riscv64/boot.S"));
 
@@ -43,9 +46,11 @@ pub unsafe extern "C" fn kernel_main(boot_info: *const boot_info::BootInfo) -> !
     arch::init(info);
     kernel_start("x86-64", || {
         let memory = kernel::memory::init_from_boot_info(info);
+        #[cfg(feature = "qemu-dma-probe")]
+        { let _ = memory; unsafe { arch::x86_64::platform::dma_probe::run(info) } }
         #[cfg(feature = "xhci-handoff-probe")]
         { let _ = memory; unsafe { arch::x86_64::platform::handoff_probe::run(info) } }
-        #[cfg(not(feature = "xhci-handoff-probe"))]
+        #[cfg(not(any(feature = "xhci-handoff-probe", feature = "qemu-dma-probe")))]
         { memory }
     })
 }

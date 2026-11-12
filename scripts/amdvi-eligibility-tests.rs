@@ -1,6 +1,68 @@
 #[path = "../shared/amdvi_eligibility.rs"]
 mod eligibility;
-use eligibility::{qemu_edu, Coverage, Entry, Error};
+use eligibility::{qemu_edu, qemu_iommu_msi_offset, Coverage, Entry, Error};
+
+fn unit_config() -> [u8; 256] {
+    let mut b = [0; 256];
+    b[..4].copy_from_slice(&[0x22, 0x10, 0x19, 0x14]);
+    b[6] = 0x10;
+    b[9..12].copy_from_slice(&[0, 6, 8]);
+    b[0x34] = 0x60;
+    b[0x40..0x44].copy_from_slice(&[0x0f, 0, 0x03, 0x1f]);
+    b[0x58..0x5a].copy_from_slice(&[0x05, 0x40]);
+    b[0x5c..0x5e].copy_from_slice(&[0x08, 0x58]);
+    b[0x60..0x62].copy_from_slice(&[0x05, 0x5c]);
+    b[0x62] = 0x80;
+    b
+}
+
+#[test]
+fn emulator_unit_selects_only_real_msi() {
+    let mut b = unit_config();
+    assert_eq!(qemu_iommu_msi_offset(&b), Ok(0x60));
+    b[0x62] |= 1;
+    assert_eq!(qemu_iommu_msi_offset(&b), Ok(0x60));
+}
+
+#[test]
+fn documented_legacy_qemu_unit_id_is_bounded_to_the_unit() {
+    let mut entries = topology();
+    entries[1].device = 0;
+    qemu_edu(&entries).unwrap();
+    let mut config = unit_config();
+    config[2..4].fill(0);
+    assert_eq!(qemu_iommu_msi_offset(&config), Ok(0x60));
+    for id in [1u16, 0x1418, 0x141a, 0xffff] {
+        entries[1].device = id;
+        assert_eq!(qemu_edu(&entries), Err(Error::Topology(8)));
+        config[2..4].copy_from_slice(&id.to_le_bytes());
+        assert_eq!(qemu_iommu_msi_offset(&config), Err(Error::UnitCapabilities));
+    }
+    entries = topology();
+    entries[2].device = 0;
+    assert_eq!(qemu_edu(&entries), Err(Error::Topology(0x20)));
+}
+
+#[test]
+fn emulator_unit_rejects_identity_layout_and_control_changes() {
+    for at in [
+        0, 2, 9, 10, 11, 14, 6, 0x34, 0x40, 0x41, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x60, 0x61,
+        0x63,
+    ] {
+        let mut b = unit_config();
+        b[at] ^= if at == 6 { 0x10 } else { 1 };
+        assert_eq!(
+            qemu_iommu_msi_offset(&b),
+            Err(Error::UnitCapabilities),
+            "offset {at:#x}"
+        );
+    }
+    for control in [0x00, 0x02, 0x82, 0x84, 0xa0] {
+        let mut b = unit_config();
+        b[0x62] = control;
+        assert_eq!(qemu_iommu_msi_offset(&b), Err(Error::UnitCapabilities));
+    }
+}
 
 fn topology() -> [Entry; 7] {
     [

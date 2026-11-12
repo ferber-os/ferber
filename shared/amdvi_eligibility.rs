@@ -32,6 +32,31 @@ pub enum Error {
     WrongUnit(u16),
     SharedAlias(u16),
     UnsupportedAlias(u16),
+    UnitCapabilities,
+}
+
+/// QEMU's AMD-Vi exposes a four-byte placeholder MSI capability followed by HT
+/// and the real MSI capability. Do not accept this overlap in the generic parser.
+/// Only the known QEMU 8.2 zero ID and QEMU 11.1.3 ID are accepted here.
+pub fn qemu_iommu_msi_offset(bytes: &[u8; 256]) -> Result<usize, Error> {
+    let word = |at| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+    if word(0) != 0x1022
+        || !matches!(word(2), 0x0000 | 0x1419)
+        || bytes[9..12] != [0, 6, 8]
+        || bytes[14] != 0
+        || word(6) & 0x10 == 0
+        || bytes[0x34] != 0x60
+        || bytes[0x40..0x42] != [0x0f, 0]
+        || bytes[0x58..0x5a] != [0x05, 0x40]
+        || word(0x5a) != 0
+        || bytes[0x5c..0x5e] != [0x08, 0x58]
+        || bytes[0x60..0x62] != [0x05, 0x5c]
+        || word(0x62) & !0x81 != 0
+        || word(0x62) & 0x80 == 0
+    {
+        return Err(Error::UnitCapabilities);
+    }
+    Ok(0x60)
 }
 
 /// Exact Q35 profile with AMD-Vi, EDU at04.0 and standard VGA at02.0 for GOP.
@@ -52,7 +77,10 @@ pub fn qemu_edu(entries: &[Entry]) -> Result<(), Error> {
         // Reject bridge paths; same-bus routing still relies on the QEMU model contract.
         let expected = match rid {
             0x00 => (0x8086, 0x29c0, 0x06, 0x00, 0x00),
-            0x08 => (0x1022, 0x1419, 0x08, 0x06, 0x00),
+            // QEMU 8.2 left the ID zero; QEMU 11.1.3 advertises 1419. Model-only.
+            0x08 if matches!(entry.device, 0x0000 | 0x1419) => {
+                (0x1022, entry.device, 0x08, 0x06, 0x00)
+            }
             0x10 => (0x1234, 0x1111, 0x03, 0x00, 0x00),
             0x20 => (0x1234, 0x11e8, 0x00, 0xff, 0x00),
             0xf8 => (0x8086, 0x2918, 0x06, 0x01, 0x00),
