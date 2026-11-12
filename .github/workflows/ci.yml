@@ -59,6 +59,13 @@ jobs:
             (cd boot/uefi && cargo +nightly clippy --release --target x86_64-unknown-uefi --features "$feature" -- -D warnings)
           done
 
+      - name: Clippy (QEMU DMA diagnostic)
+        working-directory: ferber
+        run: |
+          for feature in qemu-dma-probe qemu-dma-unmapped qemu-dma-readonly qemu-dma-unmap qemu-dma-production; do
+            cargo clippy --target x86_64-unknown-none --features "qemu-debug-port,$feature" -- -D warnings
+          done
+
       - name: Clippy (separately compiled userspace ELF)
         run: |
           for target in riscv64gc-unknown-none-elf x86_64-unknown-none; do
@@ -77,11 +84,12 @@ jobs:
 
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh scripts/job-accounting-tests.sh scripts/task-tests.sh scripts/scheduler-tests.sh scripts/boot-bundle-tests.sh scripts/build-init-bundle.sh scripts/initramfs.sh scripts/initramfs-tests.sh scripts/platform-tests.sh scripts/device-tests.sh scripts/iommu-tests.sh scripts/terminal-tests.sh scripts/console-tests.sh scripts/console-client-tests.sh scripts/irq-notification-tests.sh scripts/build-xhci-handoff.sh scripts/xhci-handoff-smoke.sh scripts/xhci-handoff-tests.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh scripts/job-accounting-tests.sh scripts/task-tests.sh scripts/scheduler-tests.sh scripts/boot-bundle-tests.sh scripts/build-init-bundle.sh scripts/initramfs.sh scripts/initramfs-tests.sh scripts/platform-tests.sh scripts/device-tests.sh scripts/iommu-tests.sh scripts/terminal-tests.sh scripts/console-tests.sh scripts/console-client-tests.sh scripts/irq-notification-tests.sh scripts/build-xhci-handoff.sh scripts/xhci-handoff-smoke.sh scripts/xhci-handoff-tests.sh scripts/build-iommu-probe.sh scripts/build-qemu-dma.sh scripts/iommu-smoke.sh scripts/amdvi-eligibility-tests.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
           bash scripts/xhci-handoff-smoke.sh --self-test
+          bash scripts/iommu-smoke.sh --self-test
 
       - name: Test hierarchical Job allocation accounting
         run: |
@@ -96,6 +104,7 @@ jobs:
           bash scripts/xhci-handoff-tests.sh
           bash scripts/device-tests.sh
           bash scripts/iommu-tests.sh
+          bash scripts/amdvi-eligibility-tests.sh
           bash scripts/terminal-tests.sh
           bash scripts/console-tests.sh
           bash scripts/console-client-tests.sh
@@ -135,7 +144,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [riscv, x86, iso, handoff]
+        suite: [riscv, x86, iso, handoff, iommu]
     env:
       OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
       OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
@@ -166,6 +175,24 @@ jobs:
       - name: Smoke test (xHCI handoff diagnostic)
         if: matrix.suite == 'handoff'
         run: bash scripts/xhci-handoff-smoke.sh
+
+      - name: Install DMA emulator build dependencies
+        if: matrix.suite == 'iommu'
+        run: sudo apt-get install -y ninja-build meson gcc pkg-config libglib2.0-dev libpixman-1-dev libfdt-dev python3-venv python3-setuptools python3-wheel
+
+      - name: Cache DMA test emulator
+        if: matrix.suite == 'iommu'
+        uses: actions/cache@v4
+        with:
+          path: target/qemu-dma/11.1.3
+          key: ${{ runner.os }}-${{ runner.arch }}-qemu-dma-11.1.3-fault-bitpos-v1
+
+      - name: Smoke test (QEMU DMA isolation)
+        if: matrix.suite == 'iommu'
+        run: |
+          QEMU_X86=$(bash scripts/build-qemu-dma.sh)
+          export QEMU_X86
+          bash scripts/iommu-smoke.sh
 
       - name: Smoke test (x86-64 release ISO)
         if: matrix.suite == 'iso'

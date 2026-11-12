@@ -366,6 +366,8 @@ The long-term roadmap toward running Ferber as a daily operating system.
 - [ ] Native Ethernet / Wi-Fi network stack (TCP/UDP/IP)
 - [ ] Userspace graphical compositor running over GOP framebuffer VMO
 - [ ] Hardware IOMMU protection for zero-trust userspace DMA isolation
+  - [x] [QEMU AMD-Vi DMA diagnostic](docs/reference/iommu-diagnostic.md): mapped transfers, missing/read-only/unmapped translation rejection and strict fault evidence
+  - [ ] Establish physical requester containment, firmware-DMA draining and peer-to-peer isolation before physical assignment
 
 ---
 

@@ -26,7 +26,8 @@ rules matter when constructing programs or reviewing kernel changes.
 - Authority and communication: [capabilities](reference/capability-model.md),
   [IPC](reference/ipc.md), [syscalls](reference/syscall-abi.md),
   [device authority](reference/device-abi.md),
-  [USB controller handoff diagnostic](reference/xhci-handoff.md).
+  [USB controller handoff diagnostic](reference/xhci-handoff.md),
+  [QEMU DMA isolation diagnostic](reference/iommu-diagnostic.md).
 - Program startup: [ELF loading](reference/elf-loading.md),
   [startup record](reference/userspace-startup.md),
   [task construction](reference/task-creation.md), [init](reference/init.md).
