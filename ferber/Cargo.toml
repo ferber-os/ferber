@@ -15,6 +15,7 @@ bitflags = { version = "2.6", default-features = false }
 qemu-debug-port = []
 xhci-handoff-probe = []
 xhci-target-msi = ["xhci-handoff-probe"]
+iommu-readiness-probe = ["xhci-handoff-probe"]
 # Explicit emulator-only DMA diagnostic; never an automatic hardware fallback.
 qemu-dma-probe = ["qemu-debug-port"]
 qemu-dma-unmapped = ["qemu-dma-probe"]

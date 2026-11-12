@@ -48,7 +48,9 @@ pub unsafe extern "C" fn kernel_main(boot_info: *const boot_info::BootInfo) -> !
         let memory = kernel::memory::init_from_boot_info(info);
         #[cfg(feature = "qemu-dma-probe")]
         { let _ = memory; unsafe { arch::x86_64::platform::dma_probe::run(info) } }
-        #[cfg(feature = "xhci-handoff-probe")]
+        #[cfg(feature = "iommu-readiness-probe")]
+        { let _ = memory; unsafe { arch::x86_64::platform::readiness_probe::run(info) } }
+        #[cfg(all(feature = "xhci-handoff-probe", not(feature = "iommu-readiness-probe")))]
         { let _ = memory; unsafe { arch::x86_64::platform::handoff_probe::run(info) } }
         #[cfg(not(any(feature = "xhci-handoff-probe", feature = "qemu-dma-probe")))]
         { memory }

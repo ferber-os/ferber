@@ -59,6 +59,12 @@ jobs:
             (cd boot/uefi && cargo +nightly clippy --release --target x86_64-unknown-uefi --features "$feature" -- -D warnings)
           done
 
+      - name: Clippy (IOMMU readiness profiles)
+        working-directory: ferber
+        run: |
+          cargo clippy --target x86_64-unknown-none --features iommu-readiness-probe,qemu-debug-port -- -D warnings
+          cargo clippy --target x86_64-unknown-none --features iommu-readiness-probe,xhci-target-msi -- -D warnings
+
       - name: Clippy (QEMU DMA diagnostic)
         working-directory: ferber
         run: |
@@ -84,12 +90,13 @@ jobs:
 
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh scripts/job-accounting-tests.sh scripts/task-tests.sh scripts/scheduler-tests.sh scripts/boot-bundle-tests.sh scripts/build-init-bundle.sh scripts/initramfs.sh scripts/initramfs-tests.sh scripts/platform-tests.sh scripts/device-tests.sh scripts/iommu-tests.sh scripts/terminal-tests.sh scripts/console-tests.sh scripts/console-client-tests.sh scripts/irq-notification-tests.sh scripts/build-xhci-handoff.sh scripts/xhci-handoff-smoke.sh scripts/xhci-handoff-tests.sh scripts/build-iommu-probe.sh scripts/build-qemu-dma.sh scripts/iommu-smoke.sh scripts/amdvi-eligibility-tests.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh scripts/job-accounting-tests.sh scripts/task-tests.sh scripts/scheduler-tests.sh scripts/boot-bundle-tests.sh scripts/build-init-bundle.sh scripts/initramfs.sh scripts/initramfs-tests.sh scripts/platform-tests.sh scripts/device-tests.sh scripts/iommu-tests.sh scripts/terminal-tests.sh scripts/console-tests.sh scripts/console-client-tests.sh scripts/irq-notification-tests.sh scripts/build-xhci-handoff.sh scripts/xhci-handoff-smoke.sh scripts/xhci-handoff-tests.sh scripts/build-iommu-probe.sh scripts/build-qemu-dma.sh scripts/iommu-smoke.sh scripts/amdvi-eligibility-tests.sh scripts/build-iommu-readiness.sh scripts/iommu-readiness-smoke.sh scripts/pci-readiness-tests.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
           bash scripts/xhci-handoff-smoke.sh --self-test
           bash scripts/iommu-smoke.sh --self-test
+          bash scripts/iommu-readiness-smoke.sh --self-test
 
       - name: Test hierarchical Job allocation accounting
         run: |
@@ -105,6 +112,7 @@ jobs:
           bash scripts/device-tests.sh
           bash scripts/iommu-tests.sh
           bash scripts/amdvi-eligibility-tests.sh
+          bash scripts/pci-readiness-tests.sh
           bash scripts/terminal-tests.sh
           bash scripts/console-tests.sh
           bash scripts/console-client-tests.sh
@@ -144,7 +152,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [riscv, x86, iso, handoff, iommu]
+        suite: [riscv, x86, iso, handoff, iommu, readiness]
     env:
       OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
       OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
@@ -175,6 +183,10 @@ jobs:
       - name: Smoke test (xHCI handoff diagnostic)
         if: matrix.suite == 'handoff'
         run: bash scripts/xhci-handoff-smoke.sh
+
+      - name: Smoke test (read-only IOMMU readiness)
+        if: matrix.suite == 'readiness'
+        run: bash scripts/iommu-readiness-smoke.sh
 
       - name: Install DMA emulator build dependencies
         if: matrix.suite == 'iommu'
