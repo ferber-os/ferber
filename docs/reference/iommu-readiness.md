@@ -47,7 +47,11 @@ missing or unreadable prerequisite instead produces an inventory FAIL with its
 stage. There is no readiness or isolation PASS marker.
 
 An extended-capability decode failure is reported as `UNKNOWN`, with the function's
-full PCI address, raw header at `0x100` and last-read context. The diagnostic
+full PCI address, raw header at `0x100` and last-read context. Unknown entries are
+repeated together after the final counters, using cached original reads rather
+than reading PCI configuration again. The final summary starts on a fresh framebuffer
+page; QEMU debug-port output is unchanged. Very small displays or many unknown entries can
+still exceed one page. The diagnostic
 continues collecting the other functions, then prints its summary and inventory
 FAIL if any extension snapshot remains unknown. `-` means a successfully parsed
 snapshot did not contain that capability; `UNKNOWN` does not mean absent or disabled.

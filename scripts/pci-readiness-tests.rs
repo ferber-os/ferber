@@ -219,3 +219,35 @@ fn unknown_extension_snapshots_do_not_become_absent_or_complete() {
     assert_eq!(summary.known_enabled, 1);
     assert!(!summary.complete());
 }
+
+#[test]
+fn captured_failure_context_is_original_and_does_not_reread() {
+    let mut reads = Vec::new();
+    let captured = capture_extensions(|at| {
+        reads.push(at);
+        Ok(0x14d8_1022)
+    });
+    assert_eq!(reads, [0x100]);
+    assert_eq!(captured.result, Err(Error::Chain));
+    assert_eq!(captured.raw100, Some(Ok(0x14d8_1022)));
+    assert_eq!(captured.last_read, Some((0x100, Ok(0x14d8_1022))));
+    // Inspecting the cached context must not perform another configuration access.
+    assert_eq!(captured.raw100, captured.last_read.map(|(_, value)| value));
+    assert_eq!(reads, [0x100]);
+    let failed = capture_extensions(|at| {
+        if at == 0x100 {
+            Ok(header(0x0f, 0))
+        } else {
+            Err(Error::Read)
+        }
+    });
+    assert_eq!(failed.result, Err(Error::Read));
+    assert_eq!(failed.raw100, Some(Ok(header(0x0f, 0))));
+    assert_eq!(failed.last_read, Some((0x104, Err(Error::Read))));
+    let unreadable = capture_extensions(|_| Err(Error::Read));
+    assert_eq!(unreadable.raw100, Some(Err(Error::Read)));
+    assert_eq!(unreadable.last_read, Some((0x100, Err(Error::Read))));
+    let absent = capture_extensions(|_| Ok(0));
+    assert_eq!(absent.result, Ok(Extensions::default()));
+    assert_eq!(absent.raw100, Some(Ok(0)));
+}

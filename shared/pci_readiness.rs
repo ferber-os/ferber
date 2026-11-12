@@ -47,6 +47,30 @@ impl ExtensionSummary {
         self.unknown == 0
     }
 }
+/// Original reads retained for diagnostics; reporting never rereads configuration.
+#[derive(Clone, Copy, Debug)]
+pub struct ExtensionSnapshot {
+    pub result: Result<Extensions, Error>,
+    pub raw100: Option<Result<u32, Error>>,
+    pub last_read: Option<(usize, Result<u32, Error>)>,
+}
+pub fn capture_extensions(mut read: impl FnMut(usize) -> Result<u32, Error>) -> ExtensionSnapshot {
+    let mut raw100 = None;
+    let mut last_read = None;
+    let result = extensions(|at| {
+        let value = read(at);
+        if at == 0x100 {
+            raw100 = Some(value);
+        }
+        last_read = Some((at, value));
+        value
+    });
+    ExtensionSnapshot {
+        result,
+        raw100,
+        last_read,
+    }
+}
 /// Observe enable bits without rejecting enabled devices or changing configuration.
 pub fn extensions(mut read: impl FnMut(usize) -> Result<u32, Error>) -> Result<Extensions, Error> {
     let mut result = Extensions::default();

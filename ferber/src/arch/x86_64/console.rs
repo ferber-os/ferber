@@ -193,6 +193,11 @@ pub fn init(fb: &Framebuffer) {
     });
 }
 
+#[cfg(feature = "iommu-readiness-probe")]
+pub fn begin_readiness_summary() {
+    CONSOLE.with(|console| console.clear());
+}
+
 pub fn _print(args: fmt::Arguments) {
     #[cfg(feature = "qemu-debug-port")]
     {

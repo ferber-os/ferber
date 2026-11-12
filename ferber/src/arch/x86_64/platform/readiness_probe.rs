@@ -9,7 +9,7 @@ struct Snapshot {
     function: observations::Function,
     command: u16,
     coverage: Option<(u16, u16)>,
-    extensions: Result<observations::Extensions, observations::Error>,
+    extensions: observations::ExtensionSnapshot,
 }
 fn state(value: Result<Option<bool>, observations::Error>) -> &'static str {
     match value {
@@ -17,6 +17,27 @@ fn state(value: Result<Option<bool>, observations::Error>) -> &'static str {
         Ok(None) => "-",
         Ok(Some(false)) => "off",
         Ok(Some(true)) => "ON",
+    }
+}
+fn print_unknown(function: observations::Function, extensions: &observations::ExtensionSnapshot) {
+    if let Err(error) = extensions.result {
+        let f = function;
+        match extensions.last_read {
+                Some((offset, Ok(value))) => crate::kprintln!(
+                    "[ready] UNKNOWN {:04x}:{:02x}:{:02x}.{} {:?} offset={:#x} value={:#x} raw100={:x?}",
+                    f.segment, f.requester >> 8, (f.requester >> 3) & 31, f.requester & 7,
+                    error, offset, value, extensions.raw100
+                ),
+                Some((offset, Err(_))) => crate::kprintln!(
+                    "[ready] UNKNOWN {:04x}:{:02x}:{:02x}.{} {:?} offset={:#x} value=UNREADABLE raw100={:x?}",
+                    f.segment, f.requester >> 8, (f.requester >> 3) & 31, f.requester & 7,
+                    error, offset, extensions.raw100
+                ),
+                None => crate::kprintln!(
+                    "[ready] UNKNOWN {:04x}:{:02x}:{:02x}.{} {:?} no-read-context",
+                    f.segment, f.requester >> 8, (f.requester >> 3) & 31, f.requester & 7, error
+                ),
+            }
     }
 }
 fn overlaps(a: u64, n: u64, b: u64, m: u64) -> bool {
@@ -96,25 +117,10 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         if command & 4 != 0 {
             bus_mastering += 1;
         }
-        let mut last_read = None;
-        let extensions = observations::extensions(|at| {
-            let value = function.read32(at).map_err(|_| observations::Error::Read);
-            last_read = Some((at, value));
-            value
+        let extensions = observations::capture_extensions(|at| {
+            function.read32(at).map_err(|_| observations::Error::Read)
         });
-        if let Err(error) = extensions {
-            crate::kprintln!(
-                "[ready] UNKNOWN config {:04x}:{:02x}:{:02x}.{}: {:?} raw100 {:x?} last {:?}",
-                f.segment,
-                f.bus,
-                f.device,
-                f.function,
-                error,
-                function.read32(0x100),
-                last_read
-            );
-        }
-        extensions_summary.record(extensions);
+        extensions_summary.record(extensions.result);
         let mut node = observations::Function {
             segment: f.segment,
             requester: rid,
@@ -123,6 +129,7 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
             secondary: 0,
             subordinate: 0,
         };
+        print_unknown(node, &extensions);
         if function.identity.header == 1 {
             let buses = function
                 .read32(0x18)
@@ -180,9 +187,9 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         let (unit, alias) = snapshot.coverage.unwrap_or((0xffff, 0xffff));
         crate::kprintln!("[ready] {:04x}:{:04x} unit {:04x} alias {:04x} BME {} INTx-mask {} ATS {} PRI {} PASID {} parents {}{}",
             f.segment,f.requester,unit,alias,u8::from(snapshot.command&4!=0),u8::from(snapshot.command&0x400!=0),
-            state(snapshot.extensions.map(|e|e.ats)),state(snapshot.extensions.map(|e|e.pri)),state(snapshot.extensions.map(|e|e.pasid)),
+            state(snapshot.extensions.result.map(|e|e.ats)),state(snapshot.extensions.result.map(|e|e.pri)),state(snapshot.extensions.result.map(|e|e.pasid)),
             path.as_ref().map(|p|p.count).unwrap_or(usize::MAX),if shared {" SHARED"} else {""});
-        if let Ok(Some(acs)) = snapshot.extensions.map(|e| e.acs) {
+        if let Ok(Some(acs)) = snapshot.extensions.result.map(|e| e.acs) {
             crate::kprintln!(
                 "[ready] ACS {:04x}:{:04x} capability {:#x} control {:#x}",
                 f.segment,
@@ -254,7 +261,8 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
             features
         );
     }
-    // Repeat this compact summary last: the early physical console clears when full.
+    // Keep the footer together instead of straddling the early console's page clear.
+    super::super::console::begin_readiness_summary();
     crate::kprintln!(
         "[ready] selected {:04x}:{:02x}:{:02x}.{} unit {:04x} alias {:04x} parents {}",
         f.segment,
@@ -278,6 +286,9 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         "[ready] firmware-locked valid SMI filters {}",
         locked_smi_allow
     );
+    for snapshot in &snapshots {
+        print_unknown(snapshot.function, &snapshot.extensions);
+    }
     if invalid_paths != 0 {
         return Err("invalid or unsupported bridge ancestry");
     }
