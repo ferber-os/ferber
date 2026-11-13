@@ -1,5 +1,11 @@
+#[path = "../shared/acpi.rs"]
+mod acpi;
+#[path = "../ferber/src/arch/x86_64/platform/pci.rs"]
+mod pci;
 #[path = "../shared/pci_readiness.rs"]
 mod readiness;
+#[path = "../shared/acpi_tables.rs"]
+mod tables;
 use readiness::*;
 fn header(id: u16, next: usize) -> u32 {
     id as u32 | (1 << 16) | (next as u32) << 20
@@ -250,4 +256,114 @@ fn captured_failure_context_is_original_and_does_not_reread() {
     let absent = capture_extensions(|_| Ok(0));
     assert_eq!(absent.result, Ok(Extensions::default()));
     assert_eq!(absent.raw100, Some(Ok(0)));
+}
+
+fn conventional(class: u8, subclass: u8, device: u16) -> [u8; 256] {
+    let mut b = [0; 256];
+    b[..4].copy_from_slice(&((device as u32) << 16 | 0x1022).to_le_bytes());
+    b[11] = class;
+    b[10] = subclass;
+    b
+}
+fn capability(b: &mut [u8; 256], id: u8, at: u8) {
+    b[6] = 0x10;
+    b[0x34] = at;
+    b[at as usize] = id;
+}
+#[test]
+fn conventional_fch_functions_never_read_extended_configuration() {
+    for b in [conventional(0x0c, 5, 0x790b), conventional(6, 1, 0x790e)] {
+        let captured =
+            capture_configuration(Ok(b), |_| panic!("extended read on conventional function"));
+        assert_eq!(captured.space, ConfigSpace::ConventionalOnly);
+        assert_eq!(captured.result, Ok(Extensions::default()));
+        assert_eq!(captured.raw100, None);
+    }
+}
+#[test]
+fn host_pcie_and_pcix_classification_preserves_unknown_and_enabled_state() {
+    let host = capture_configuration(Ok(conventional(6, 0, 0x14d8)), |_| Ok(0x14d81022));
+    assert_eq!(host.space, ConfigSpace::Extended);
+    assert_eq!(host.result, Err(Error::Chain));
+    assert_eq!(host.raw100, Some(Ok(0x14d81022)));
+    let mut pcie = conventional(2, 0, 1);
+    capability(&mut pcie, 0x10, 0x40);
+    let observed = capture_configuration(Ok(pcie), |at| {
+        Ok(if at == 0x100 { header(0xf, 0) } else { 1 << 31 })
+    });
+    assert_eq!(observed.result.unwrap().ats, Some(true));
+    let observed = capture_configuration(Ok(pcie), |at| {
+        Ok(match at {
+            0x100 => header(0xf, 0x108),
+            0x104 => 1 << 31,
+            0x108 => header(0x13, 0x118),
+            0x10c => 1,
+            0x118 => header(0x1b, 0),
+            0x11c => 1 << 16,
+            _ => 0,
+        })
+    });
+    let value = observed.result.unwrap();
+    assert_eq!(
+        (value.ats, value.pri, value.pasid),
+        (Some(true), Some(true), Some(true))
+    );
+
+    for bits in [0, 1 << 30, 1 << 31] {
+        let mut pcix = conventional(2, 0, 1);
+        capability(&mut pcix, 7, 0x40);
+        pcix[0x44..0x48].copy_from_slice(&u32::to_le_bytes(bits));
+        let mut reads = 0;
+        let observed = capture_configuration(Ok(pcix), |_| {
+            reads += 1;
+            Ok(0)
+        });
+        assert_eq!(reads, usize::from(bits != 0));
+        assert_eq!(
+            observed.space,
+            if bits == 0 {
+                ConfigSpace::ConventionalOnly
+            } else {
+                ConfigSpace::Extended
+            }
+        );
+    }
+}
+#[test]
+fn conventional_errors_and_truncated_pcix_remain_unknown_without_extended_reads() {
+    let mut cycle = conventional(2, 0, 1);
+    capability(&mut cycle, 1, 0x40);
+    cycle[0x41] = 0x40;
+    let mut truncated = conventional(2, 0, 1);
+    capability(&mut truncated, 7, 0xfc);
+    let mut overlap = conventional(2, 0, 1);
+    capability(&mut overlap, 7, 0x40);
+    overlap[0x41] = 0x44;
+    overlap[0x44] = 1;
+    for bytes in [Err(Error::Read), Ok(cycle), Ok(truncated), Ok(overlap)] {
+        let observed =
+            capture_configuration(bytes, |_| panic!("extended read after invalid metadata"));
+        assert_eq!(observed.space, ConfigSpace::Unknown);
+        assert!(observed.result.is_err());
+    }
+    let mut pcie = conventional(2, 0, 1);
+    capability(&mut pcie, 0x10, 0x40);
+    let observed = capture_configuration(Ok(pcie), |_| Err(Error::Read));
+    assert_eq!(observed.space, ConfigSpace::Extended);
+    assert_eq!(observed.result, Err(Error::Read));
+}
+
+#[test]
+fn qemu_iommu_dummy_msi_overlap_remains_unknown() {
+    let mut bytes = conventional(8, 6, 0x1419);
+    capability(&mut bytes, 5, 0x60);
+    bytes[0x61] = 0x5c;
+    bytes[0x62] = 0x80;
+    bytes[0x5c..0x5e].copy_from_slice(&[8, 0x58]);
+    bytes[0x58..0x5a].copy_from_slice(&[5, 0x40]);
+    bytes[0x40] = 0x0f;
+    let observed =
+        capture_configuration(Ok(bytes), |_| panic!("extended read after overlapping MSI"));
+    assert_eq!(observed.space, ConfigSpace::Unknown);
+    assert_eq!(observed.result, Err(Error::Chain));
 }

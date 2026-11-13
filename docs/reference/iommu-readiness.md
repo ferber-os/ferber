@@ -15,6 +15,10 @@ bash scripts/iommu-readiness-smoke.sh
 ```
 
 The smoke suite boots the inventory image with one `qemu-xhci` controller and AMD-Vi.
+The tested QEMU AMD-Vi model exposes an overlapping dummy MSI capability in its
+conventional chain. The suite requires an unknown observation for that exact
+function and an inventory FAIL, followed by readiness BLOCKED. It does not apply
+the separate DMA diagnostic's model-specific capability exception.
 Separate boots require explicit rejection of missing IVRS data, a missing controller
 and duplicate target controllers. `OVMF_CODE` and `OVMF_VARS` select the firmware
 files, using the same conventions as other UEFI smoke suites.
@@ -46,6 +50,19 @@ firmware-DMA draining, peer-to-peer containment or interrupt isolation. A malfor
 missing or unreadable prerequisite instead produces an inventory FAIL with its
 stage. There is no readiness or isolation PASS marker.
 
+The diagnostic validates the conventional 256-byte snapshot before deciding whether
+extended capabilities apply. Host bridges, PCI Express functions and PCI-X functions
+advertising 266/533 MHz support are extended-space candidates. Other conventional
+functions are labeled `conventional-only`; the probe does not read beyond `0xff`
+for them. Invalid conventional metadata remains unknown. This classification is
+limited to this read-only report and changes no activation eligibility checks.
+
+The MSI board's SMBus `0000:00:14.0` and LPC `0000:00:14.3` functions advertise no
+conventional capability list. They therefore use the conventional-only path. The
+host bridge `0000:00:00.0` remains an extended-space candidate: its observed
+`0x14d81022` at `0x100` is still an unresolved malformed snapshot. A repeated device
+ID is not accepted as proof that extended capabilities are absent.
+
 An extended-capability decode failure is reported as `UNKNOWN`, with the function's
 full PCI address, raw header at `0x100` and last-read context. Unknown entries are
 repeated together after the final counters, using cached original reads rather
@@ -53,10 +70,11 @@ than reading PCI configuration again. The final summary starts on a fresh frameb
 page; QEMU debug-port output is unchanged. Very small displays or many unknown entries can
 still exceed one page. The diagnostic
 continues collecting the other functions, then prints its summary and inventory
-FAIL if any extension snapshot remains unknown. `-` means a successfully parsed
+FAIL if any extension snapshot remains unknown. `N/A` labels conventional-only functions. `-` means a successfully parsed
 snapshot did not contain that capability; `UNKNOWN` does not mean absent or disabled.
 Other collection failures can still stop the report early. The final counters
-separate functions with known enabled extensions from functions with unknown state.
+separate conventional-only functions, functions with known enabled extensions and
+functions with unknown state.
 
 
 The report separates requester IDs and aliases, IOMMU coverage and routing facts

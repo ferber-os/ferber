@@ -11,7 +11,13 @@ struct Snapshot {
     coverage: Option<(u16, u16)>,
     extensions: observations::ExtensionSnapshot,
 }
-fn state(value: Result<Option<bool>, observations::Error>) -> &'static str {
+fn state(
+    value: Result<Option<bool>, observations::Error>,
+    space: observations::ConfigSpace,
+) -> &'static str {
+    if space == observations::ConfigSpace::ConventionalOnly {
+        return "N/A";
+    }
     match value {
         Err(_) => "UNKNOWN",
         Ok(None) => "-",
@@ -117,10 +123,14 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         if command & 4 != 0 {
             bus_mastering += 1;
         }
-        let extensions = observations::capture_extensions(|at| {
-            function.read32(at).map_err(|_| observations::Error::Read)
-        });
+        let extensions = observations::capture_configuration(
+            function.snapshot().map_err(|_| observations::Error::Read),
+            |at| function.read32(at).map_err(|_| observations::Error::Read),
+        );
         extensions_summary.record(extensions.result);
+        if extensions.space == observations::ConfigSpace::ConventionalOnly {
+            extensions_summary.conventional_only += 1;
+        }
         let mut node = observations::Function {
             segment: f.segment,
             requester: rid,
@@ -187,8 +197,15 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         let (unit, alias) = snapshot.coverage.unwrap_or((0xffff, 0xffff));
         crate::kprintln!("[ready] {:04x}:{:04x} unit {:04x} alias {:04x} BME {} INTx-mask {} ATS {} PRI {} PASID {} parents {}{}",
             f.segment,f.requester,unit,alias,u8::from(snapshot.command&4!=0),u8::from(snapshot.command&0x400!=0),
-            state(snapshot.extensions.result.map(|e|e.ats)),state(snapshot.extensions.result.map(|e|e.pri)),state(snapshot.extensions.result.map(|e|e.pasid)),
+            state(snapshot.extensions.result.map(|e|e.ats), snapshot.extensions.space),state(snapshot.extensions.result.map(|e|e.pri), snapshot.extensions.space),state(snapshot.extensions.result.map(|e|e.pasid), snapshot.extensions.space),
             path.as_ref().map(|p|p.count).unwrap_or(usize::MAX),if shared {" SHARED"} else {""});
+        if snapshot.extensions.space == observations::ConfigSpace::ConventionalOnly {
+            crate::kprintln!(
+                "[ready] CONFIG {:04x}:{:04x} conventional-only",
+                f.segment,
+                f.requester
+            );
+        }
         if let Ok(Some(acs)) = snapshot.extensions.result.map(|e| e.acs) {
             crate::kprintln!(
                 "[ready] ACS {:04x}:{:04x} capability {:#x} control {:#x}",
@@ -274,10 +291,11 @@ unsafe fn probe(info: &BootInfo) -> Result<(), &'static str> {
         selected_path.ok_or("missing selected routing snapshot")?
     );
     crate::kprintln!(
-        "[ready] functions {} structural-uncovered {} BME {} known-extensions-on {} unknown-extensions {}",
+        "[ready] functions {} structural-uncovered {} BME {} conventional-only {} known-extensions-on {} unknown-extensions {}",
         snapshots.len(),
         uncovered,
         bus_mastering,
+        extensions_summary.conventional_only,
         extensions_summary.known_enabled,
         extensions_summary.unknown
     );

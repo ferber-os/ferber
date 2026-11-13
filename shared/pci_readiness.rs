@@ -1,5 +1,6 @@
 //! Read-only PCI observations. These values never authorize physical DMA takeover.
 #![allow(dead_code)]
+use super::pci::{Capabilities, Identity};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Read,
@@ -26,6 +27,7 @@ pub struct Extensions {
 /// Counts known observations without turning a failed decode into absence.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExtensionSummary {
+    pub conventional_only: usize,
     pub known_enabled: usize,
     pub unknown: usize,
 }
@@ -50,9 +52,61 @@ impl ExtensionSummary {
 /// Original reads retained for diagnostics; reporting never rereads configuration.
 #[derive(Clone, Copy, Debug)]
 pub struct ExtensionSnapshot {
+    pub space: ConfigSpace,
     pub result: Result<Extensions, Error>,
     pub raw100: Option<Result<u32, Error>>,
     pub last_read: Option<(usize, Result<u32, Error>)>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigSpace {
+    Unknown,
+    ConventionalOnly,
+    Extended,
+}
+/// Conventional metadata determines whether an extended-capability read applies.
+pub fn capture_configuration(
+    bytes: Result<[u8; 256], Error>,
+    read: impl FnMut(usize) -> Result<u32, Error>,
+) -> ExtensionSnapshot {
+    let space = bytes.and_then(|bytes| configuration_space(&bytes));
+    match space {
+        Ok(ConfigSpace::Extended) => capture_extensions(read),
+        other => ExtensionSnapshot {
+            space: other.unwrap_or(ConfigSpace::Unknown),
+            result: other.map(|_| Extensions::default()),
+            raw100: None,
+            last_read: None,
+        },
+    }
+}
+fn configuration_space(bytes: &[u8; 256]) -> Result<ConfigSpace, Error> {
+    let identity = Identity::parse(bytes)
+        .map_err(|_| Error::Chain)?
+        .ok_or(Error::Chain)?;
+    let caps = Capabilities::parse(bytes).map_err(|_| Error::Chain)?;
+    let mut extended = identity.class == 6 && identity.subclass == 0;
+    for cap in caps.entries() {
+        if cap.id == 0x10 {
+            extended = true;
+        } else if cap.id == 7 {
+            let at = cap.offset as usize;
+            // PCI-X status occupies bytes 4..8; do not consume another capability.
+            if at + 8 > bytes.len()
+                || caps
+                    .entries()
+                    .any(|next| next.offset > cap.offset && (next.offset as usize) < at + 8)
+            {
+                return Err(Error::Chain);
+            }
+            let status = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap());
+            extended |= status & ((1 << 30) | (1 << 31)) != 0;
+        }
+    }
+    Ok(if extended {
+        ConfigSpace::Extended
+    } else {
+        ConfigSpace::ConventionalOnly
+    })
 }
 pub fn capture_extensions(mut read: impl FnMut(usize) -> Result<u32, Error>) -> ExtensionSnapshot {
     let mut raw100 = None;
@@ -66,6 +120,7 @@ pub fn capture_extensions(mut read: impl FnMut(usize) -> Result<u32, Error>) -> 
         value
     });
     ExtensionSnapshot {
+        space: ConfigSpace::Extended,
         result,
         raw100,
         last_read,

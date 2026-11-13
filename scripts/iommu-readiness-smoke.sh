@@ -13,12 +13,13 @@ log_ok() {
         ! rg -qi '\[FERBER_TEST\].*: FAIL' "$log"
     else
         case "$expected" in
+            extensions) marker='[FERBER_TEST] iommu_inventory: FAIL (PCI extension snapshot)' ;;
             no-ivrs) marker='[FERBER_TEST] iommu_inventory: FAIL (IVRS)' ;;
             resource) marker='[FERBER_TEST] xhci_resource: FAIL' ;;
             *) return 1 ;;
         esac
         rg -Fxq "$marker" "$log" || return 1
-        if [[ "$expected" == no-ivrs ]]; then
+        if [[ "$expected" == no-ivrs || "$expected" == extensions ]]; then
             [[ $(rg -Fxc "$marker" "$log") == 1 ]] || return 1
             [[ $(rg -Fxc '[FERBER_TEST] iommu_readiness: BLOCKED' "$log") == 1 ]] || return 1
             [[ $(rg -c '^\[FERBER_TEST\]' "$log") == 2 ]]
@@ -52,6 +53,10 @@ if [[ ${1:-} == --self-test ]]; then
     if log_ok "$test_dir/log" resource; then exit 1; fi
     : > "$test_dir/log"
     if log_ok "$test_dir/log" blocked || log_ok "$test_dir/log" resource; then exit 1; fi
+    printf '[ready] UNKNOWN 0000:00:03.0 Chain no-read-context\n[FERBER_TEST] iommu_inventory: FAIL (PCI extension snapshot)\n[FERBER_TEST] iommu_readiness: BLOCKED\n' > "$test_dir/log"
+    log_ok "$test_dir/log" extensions
+    printf '[FERBER_TEST] iommu_inventory: PASS\n' >> "$test_dir/log"
+    if log_ok "$test_dir/log" extensions; then exit 1; fi
     echo 'IOMMU readiness log checks passed'
     exit
 fi
@@ -89,12 +94,18 @@ for scenario in present missing duplicate no-ivrs; do
         -debugcon "file:$log" -global isa-debugcon.iobase=0xe9 \
         > "$trial_dir/$scenario-qemu.log" 2>&1 || status=$?
     expected=resource
-    [[ $scenario != present ]] || expected=blocked
+    # QEMU's AMD-Vi model contains an overlapping dummy MSI capability.
+    # Conventional validation must reject it rather than suppressing that failure.
+    [[ $scenario != present ]] || expected=extensions
     [[ $scenario != no-ivrs ]] || expected=no-ivrs
     if [[ $status != 124 ]] || ! log_ok "$log" "$expected"; then
         cat "$trial_dir/$scenario-qemu.log" "$trial_dir/$scenario-serial.log" "$log" >&2
         echo "IOMMU readiness smoke failed: $scenario (status $status)" >&2
         exit 1
+    fi
+    if [[ $scenario == present ]]; then
+        rg -Fxq '[ready] UNKNOWN 0000:00:03.0 Chain no-read-context' "$log"
+        rg -q 'conventional-only [1-9][0-9]* known-extensions-on 0 unknown-extensions 1$' "$log"
     fi
     echo "IOMMU readiness smoke passed: $scenario"
 done
