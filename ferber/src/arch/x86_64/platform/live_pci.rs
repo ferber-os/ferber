@@ -7,6 +7,8 @@ use super::{
     tables::Mcfg,
 };
 use alloc::vec::Vec;
+#[path = "../../../../../shared/pci_config_access.rs"]
+mod config_access;
 #[derive(Clone, Copy, Debug)]
 pub struct ConfigFunction {
     pub function: Function,
@@ -15,7 +17,14 @@ pub struct ConfigFunction {
 }
 impl ConfigFunction {
     pub fn read32(&self, offset: usize) -> Result<u32, Error> {
-        self.registers.read32(offset).map_err(|_| Error)
+        unsafe {
+            config_access::read32(
+                self.registers.virtual_base(),
+                self.registers.length(),
+                offset,
+            )
+        }
+        .ok_or(Error)
     }
     pub fn read16(&self, offset: usize) -> Result<u16, Error> {
         if offset & 1 != 0 || offset > 4094 {
@@ -27,14 +36,25 @@ impl ConfigFunction {
     /// # Safety
     /// Kernel owns this configuration register and its hardware protocol.
     pub unsafe fn write32(&self, offset: usize, value: u32) -> Result<(), Error> {
-        self.registers.write32(offset, value).map_err(|_| Error)
+        config_access::write32(
+            self.registers.virtual_base(),
+            self.registers.length(),
+            offset,
+            value,
+        )
+        .ok_or(Error)
     }
     pub(super) unsafe fn write16(&self, offset: usize, value: u16) -> Result<(), Error> {
         if offset & 1 != 0 || offset > 4094 {
             return Err(Error);
         }
-        core::ptr::write_volatile((self.registers.virtual_base() + offset) as *mut u16, value);
-        Ok(())
+        config_access::write16(
+            self.registers.virtual_base(),
+            self.registers.length(),
+            offset,
+            value,
+        )
+        .ok_or(Error)
     }
     pub fn snapshot(&self) -> Result<[u8; 256], Error> {
         let mut b = [0; 256];
@@ -220,7 +240,9 @@ pub unsafe fn inventory(mapper: &mut MmioMapper, mcfg: &Mcfg<'_>) -> Result<Inve
                     let mut bytes = [0; 64];
                     for i in (0..64).step_by(4) {
                         bytes[i..i + 4].copy_from_slice(
-                            &registers.read32(i).map_err(|_| Error)?.to_le_bytes(),
+                            &config_access::read32(registers.virtual_base(), registers.length(), i)
+                                .ok_or(Error)?
+                                .to_le_bytes(),
                         );
                     }
                     let Some(identity) = Identity::parse(&bytes)? else {

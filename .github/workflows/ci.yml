@@ -90,7 +90,7 @@ jobs:
 
       - name: Check smoke scripts
         run: |
-          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh scripts/job-accounting-tests.sh scripts/task-tests.sh scripts/scheduler-tests.sh scripts/boot-bundle-tests.sh scripts/build-init-bundle.sh scripts/initramfs.sh scripts/initramfs-tests.sh scripts/platform-tests.sh scripts/device-tests.sh scripts/iommu-tests.sh scripts/terminal-tests.sh scripts/console-tests.sh scripts/console-client-tests.sh scripts/irq-notification-tests.sh scripts/build-xhci-handoff.sh scripts/xhci-handoff-smoke.sh scripts/xhci-handoff-tests.sh scripts/build-iommu-probe.sh scripts/build-qemu-dma.sh scripts/iommu-smoke.sh scripts/amdvi-eligibility-tests.sh scripts/build-iommu-readiness.sh scripts/iommu-readiness-smoke.sh scripts/pci-readiness-tests.sh; do
+          for script in scripts/riscv-smoke.sh scripts/x86-smoke.sh scripts/x86-preview.sh scripts/smoke-log.sh scripts/build-iso.sh scripts/x86-iso-smoke.sh scripts/memory-tests.sh scripts/channel-tests.sh scripts/build-user-elf.sh scripts/build-user.sh scripts/build-init-test.sh scripts/init-protocol-tests.sh scripts/elf-tests.sh scripts/elf-load-tests.sh scripts/uefi-payload-tests.sh scripts/vmo-core-tests.sh scripts/vmo-syscall-tests.sh scripts/riscv-paging-tests.sh scripts/x86-paging-tests.sh scripts/job-accounting-tests.sh scripts/task-tests.sh scripts/scheduler-tests.sh scripts/boot-bundle-tests.sh scripts/build-init-bundle.sh scripts/initramfs.sh scripts/initramfs-tests.sh scripts/platform-tests.sh scripts/device-tests.sh scripts/iommu-tests.sh scripts/terminal-tests.sh scripts/console-tests.sh scripts/console-client-tests.sh scripts/irq-notification-tests.sh scripts/build-xhci-handoff.sh scripts/xhci-handoff-smoke.sh scripts/xhci-handoff-tests.sh scripts/build-iommu-probe.sh scripts/build-qemu-dma.sh scripts/iommu-smoke.sh scripts/amdvi-eligibility-tests.sh scripts/build-iommu-readiness.sh scripts/iommu-readiness-smoke.sh scripts/pci-readiness-tests.sh scripts/pci-config-tests.sh; do
             bash -n "$script"
           done
           bash scripts/smoke-log.sh --self-test
@@ -113,6 +113,7 @@ jobs:
           bash scripts/iommu-tests.sh
           bash scripts/amdvi-eligibility-tests.sh
           bash scripts/pci-readiness-tests.sh
+          bash scripts/pci-config-tests.sh
           bash scripts/terminal-tests.sh
           bash scripts/console-tests.sh
           bash scripts/console-client-tests.sh

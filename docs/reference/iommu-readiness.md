@@ -93,3 +93,15 @@ The [xHCI handoff diagnostic](xhci-handoff.md) actively stops and resets the sel
 controller. The [QEMU DMA diagnostic](iommu-diagnostic.md) exercises translation and
 denial in a bounded emulator contract. The readiness image performs neither action;
 it gathers the evidence needed to identify the remaining physical takeover work.
+
+## Configuration accesses follow the processor contract
+
+PCI configuration MMIO uses explicit accumulator-register MOV instructions, as
+required by AMD PPR 56713 revision 3.05, section 2.1.5.1 (pages 41–42). The kernel
+preserves alignment, range and UC mapping checks. Ordinary device BAR and IOMMU
+MMIO retain their existing accessors. The UEFI loader reads configuration through
+the firmware PCI I/O protocol rather than direct ECAM access.
+
+Host tests check access widths and bounds, and inspect debug and optimized code
+generation for EAX/AX accesses. These checks establish the instruction contract;
+they do not explain the root complex's repeated device ID or establish DMA isolation.
